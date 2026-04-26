@@ -1,0 +1,20 @@
+SPEC.md
+.pax/
+*.pdf
+projects/
+project/
+BACKLOG.md
+DOCKER.md
+DD Source Code/
+AGENTS.override.md
+blogs/
+hot_sum*
+SOW-01-Extra.md
+SOW*
+cover_db/
+support/
+pax-runtime-probe-*.pl
+pax-webapp/
+PAX-*.tar.gz
+PAX-*
+t/tmp*

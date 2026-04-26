@@ -1,0 +1,23 @@
+0.003  Sat Apr 25 23:53:33 2026
+    - Version bump
+    - Neutralized PAX code-unit compiler operation names for entry command, file
+      registry, and completion helpers so core compiler output no longer encodes
+      Developer Dashboard-specific op names.
+    - Added generic standalone runtime app metadata/env handling for compiled
+      entry commands, file aliases, command naming, and result inline limits.
+    - Added SOW-03 and changed the primary `pax build` / `pax run` workflow to
+      build standalone binaries from CLI or paxfile defaults, with `-o`/`--output`
+      supported by both commands.
+
+0.002  Sat Apr 25 23:51:57 2026
+    - Version bump
+
+Revision history for PAX
+
+0.001  2026-04-25
+    - Added initial CPAN release gate documentation and project metadata scaffold.
+    - Added CPAN release rule set to AGENTS.override.md.
+    - Added `cpanfile`, `Changes`, `README.md`, `dist.ini`, and `lib/PAX.pm`.
+    - Added version anchor in `lib/PAX.pm` (`0.001`) to support synchronized module
+      versioning.
+    - Added standalone build output option and `-o` alias support already in progress.

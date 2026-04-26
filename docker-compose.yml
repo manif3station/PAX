@@ -1,0 +1,11 @@
+services:
+  pax-dev:
+    build:
+      context: .
+    image: pax-dev:perl-5.42
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      PAX_TARGET_PERL_FAMILY: "5.42.x"
+    command: make test

@@ -1,0 +1,64 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use Cwd qw(abs_path);
+use File::Spec;
+use lib do {
+    my $self = abs_path(__FILE__) || __FILE__;
+    my ($vol, $dir) = File::Spec->splitpath($self);
+    File::Spec->catdir($dir, '..', 'lib');
+};
+
+my $APP_VERSION = '0.1.0';
+
+sub main {
+    my (@argv) = @_;
+    my $cmd = shift @argv || 'version';
+
+    if ($cmd eq 'version') {
+        print $APP_VERSION, "\n";
+        return 0;
+    }
+
+    if ($cmd eq 'serve') {
+        require Example::PaxWeb;
+        require Starman::Server;
+        my $host = '127.0.0.1';
+        my $port = 5000;
+        while (@argv) {
+            my $arg = shift @argv;
+            if ($arg eq '--host') {
+                $host = shift @argv // die "--host requires a value\n";
+                next;
+            }
+            if ($arg eq '--port') {
+                $port = shift @argv // die "--port requires a value\n";
+                next;
+            }
+            die "unexpected argument: $arg\n";
+        }
+
+        my $self = abs_path(__FILE__) || __FILE__;
+        my ($vol, $dir) = File::Spec->splitpath($self);
+        my $asset_root = $ENV{PAX_EMBEDDED_ASSET_ROOT}
+            || File::Spec->catdir($dir, '..', 'share');
+
+        my $app = Example::PaxWeb->build_psgi_app(asset_root => $asset_root);
+        my $server = Starman::Server->new;
+        $server->run($app, {
+            host => $host,
+            port => $port,
+            listen => ["$host:$port"],
+            workers => 1,
+        });
+        return 0;
+    }
+
+    die "unknown command: $cmd\n";
+}
+
+exit main(@ARGV) unless caller;
+
+1;

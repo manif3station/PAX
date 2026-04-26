@@ -1,0 +1,9 @@
+**
+!.dockerignore
+!bin/
+!bin/**
+!lib/
+!lib/**
+!examples/
+!examples/webapp/
+!examples/webapp/**
