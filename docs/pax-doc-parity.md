@@ -40,6 +40,26 @@ When documenting PAX, use this structure:
 10. For major behavior changes, update both the operator manual and the module
     reference in the same change set.
 
+## Changes File Rule
+
+The `Changes` file is part of the operator-facing documentation set.
+
+When writing changelog entries:
+
+1. describe meaningful project progress
+2. describe user-visible workflow changes, release-gate changes, packaging
+   changes, neutrality improvements, validation milestones, or honest internal
+   checkpoints
+3. do not fill entries with placeholder text such as `Version bump`
+4. do not narrate file edits that carry no audience value
+5. mention files only when the filename itself matters to the operator-facing
+   behavior or release contract
+6. if a release has no user-visible feature, describe the real checkpoint in
+   plain language instead of pretending there was feature progress
+
+The changelog audience is the project operator, evaluator, or contributor who
+wants to understand what changed in substance, not which files were touched.
+
 ## Section Expectations
 
 PAX main documentation should keep these section families available over time:

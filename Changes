@@ -1,11 +1,9 @@
 0.010  Mon Apr 27 12:57:43 2026
-    - Version bump
     - Excluded `BACKLOG.md` from the Dist::Zilla tarball.
     - Extended tarball verification so `BACKLOG.md` is rejected if it appears in
       a release archive.
 
 0.009  Mon Apr 27 12:35:03 2026
-    - Version bump
     - Applied the DD-style documentation rule to PAX so the README and main POD
       now read as an operator manual plus architecture reference instead of a
       short command summary.
@@ -17,7 +15,6 @@
       keeping the exclusions enforced in packaging and release gates.
 
 0.008  Mon Apr 27 12:28:33 2026
-    - Version bump
     - Excluded repository-only Docker and packaging helper material from the
       Dist::Zilla tarball using DD-style gather rules.
     - Added tarball exclusions for `examples/`, `tools/`, `docs/`,
@@ -26,24 +23,23 @@
       checked explicitly during release validation.
 
 0.007  Mon Apr 27 12:21:21 2026
-    - Version bump
+    - Closed the SOW-03 release checkpoint with a full passing test run, active
+      release gates, and a clean backup commit for the standalone build/run
+      workflow.
 
 0.006  Mon Apr 27 12:08:37 2026
-    - Version bump
     - Fixed the CPAN gate flow to validate the tarball for the current bumped
       version instead of using stale pre-bump make variables.
     - Switched version checking to a dedicated support script so release gates
       run cleanly and deterministically.
 
 0.005  Mon Apr 27 12:07:53 2026
-    - Version bump
     - Added enforced release preparation gates for version consistency, Changes,
       and documentation before Dist::Zilla build.
     - Added automatic +0.001 version bumping to the CPAN distribution build
       flow so release tarballs are not rebuilt forever at the same version.
 
 0.004  Mon Apr 27 12:10:00 2026
-    - Version bump
     - Completed the SOW-03 public workflow around `pax build` and `pax run`.
     - Reduced the public CLI surface to only `build` and `run`.
     - Made `pax build` and `pax run` read `paxfile.yml` by default and honor
@@ -53,7 +49,6 @@
       packaging with embedded assets.
 
 0.003  Sat Apr 25 23:53:33 2026
-    - Version bump
     - Neutralized PAX code-unit compiler operation names for entry command, file
       registry, and completion helpers so core compiler output no longer encodes
       Developer Dashboard-specific op names.
@@ -64,7 +59,8 @@
       supported by both commands.
 
 0.002  Sat Apr 25 23:51:57 2026
-    - Version bump
+    - Established an early internal release checkpoint while stabilizing the
+      synchronized distribution versioning and packaging baseline.
 
 Revision history for PAX
 
