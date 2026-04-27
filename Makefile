@@ -108,9 +108,23 @@ git-gate:
 	@echo "git-gate: forbidden tracked files absent and working tree clean"
 
 cpan-release:
-	command -v dzil >/dev/null 2>&1 || (echo "Dist::Zilla is required: cpanm Dist::Zilla" && exit 1)
-	$(MAKE) cpan-dist
-	dzil release
+	command -v cpan-upload >/dev/null 2>&1 || (echo "CPAN::Uploader is required: cpanm CPAN::Uploader" && exit 1)
+	$(MAKE) cpan-gate
+	@version="$$( $(PERL) -Ilib -MPAX -e 'print $$PAX::VERSION' )"; \
+	tarball="PAX-$$version.tar.gz"; \
+	if [ ! -f "$$tarball" ]; then \
+		echo "missing tarball $$tarball"; \
+		exit 1; \
+	fi; \
+	if [ -z "$${PAUSE_USER:-}" ]; then \
+		echo "PAUSE_USER is required"; \
+		exit 1; \
+	fi; \
+	if [ -z "$${PAUSE_PASS:-}" ]; then \
+		echo "PAUSE_PASS is required"; \
+		exit 1; \
+	fi; \
+	cpan-upload -u "$$PAUSE_USER" -p "$$PAUSE_PASS" "$$tarball"
 
 cpan-sync-versions:
 	$(PERL) tools/sync_versions.pl

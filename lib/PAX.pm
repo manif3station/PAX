@@ -414,6 +414,10 @@ C<cpan-gate> also verifies that release tarballs and the git index exclude
 temporary probes, generated workspaces, planning artifacts, and other
 non-release paths.
 
+C<make cpan-release> follows the DD-style PAUSE flow: run the repo gates,
+locate the built tarball in the repository root, and upload it with
+C<cpan-upload> using C<PAUSE_USER> plus C<PAUSE_PASS>.
+
 The version bump happens before C<dzil build>, for example with
 C<make cpan-bump-version VERSION=0.011> or C<make cpan-auto-bump>. After the
 bump, the operator must write a meaningful top C<Changes> entry for that
