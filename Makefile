@@ -88,12 +88,19 @@ cpan-verify-paths:
 	@echo "cpan-gate: tarball path filters OK"
 
 git-gate:
-		@if [ -n "$$(git ls-files | grep -E '^(AGENTS[.]override[.]md|DD Source Code/|projects?/|project/|cover_db/|support/|pax-webapp/|blogs/|(^|/)t/tmp[^/]*(/|$$)|(^|/)pax-runtime-probe-[^/]+[.]pl$$|(^|/)SOW[^/]*($$|/))' )" ]; then \
+	@forbidden="$$(git ls-files | grep -E '^(AGENTS[.]override[.]md|DD Source Code/|projects?/|project/|cover_db/|support/|pax-webapp/|blogs/|(^|/)t/tmp[^/]*(/|$$)|(^|/)pax-runtime-probe-[^/]+[.]pl$$|(^|/)SOW[^/]*($$|/))' || true)"; \
+		if [ -n "$$forbidden" ]; then \
 			echo "git-gate: forbidden tracked files found in repository index"; \
-			git ls-files | grep -E '^(AGENTS[.]override[.]md|DD Source Code/|projects?/|project/|cover_db/|support/|pax-webapp/|blogs/|(^|/)t/tmp[^/]*(/|$$)|(^|/)pax-runtime-probe-[^/]+[.]pl$$|(^|/)SOW[^/]*($$|/))'; \
+			echo "$$forbidden"; \
 			exit 1; \
 	fi
-	@echo "git-gate: forbidden tracked files are not staged in git"
+	@dirty="$$(git status --short)"; \
+		if [ -n "$$dirty" ]; then \
+			echo "git-gate: working tree is not clean"; \
+			echo "$$dirty"; \
+			exit 1; \
+		fi
+	@echo "git-gate: forbidden tracked files absent and working tree clean"
 
 cpan-release:
 	command -v dzil >/dev/null 2>&1 || (echo "Dist::Zilla is required: cpanm Dist::Zilla" && exit 1)

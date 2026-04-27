@@ -80,6 +80,23 @@ Rules:
 This rule exists to keep the repository clean, reduce operator noise, and make
 release gates meaningful.
 
+## Git Gate Rule
+
+PAX has two git-gate requirements and both must pass before work is considered
+closed:
+
+1. forbidden non-release paths must not be tracked
+2. the working tree must be clean after the required commit
+
+That means `git-gate` is not complete if `git status --short` shows any staged,
+modified, deleted, renamed, copied, or untracked files.
+
+The correct end state is:
+
+- required changes committed
+- forbidden paths not tracked
+- `git status --short` is empty
+
 ## Section Expectations
 
 PAX main documentation should keep these section families available over time:
