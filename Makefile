@@ -74,7 +74,7 @@ cpan-verify-paths:
 				if (index(line, root forbidden[i]) == 1) { ok = 1; break; } \
 			} \
 			if (!ok && substr(base, 1, 17) == "pax-runtime-probe-" && substr(base, length(base) - 2) == ".pl") { ok = 1; } \
-			if (!ok && (base == "Dockerfile" || base == "DOCKER.md" || base == "docker-compose.yml")) { ok = 1; } \
+			if (!ok && (base == "BACKLOG.md" || base == "Dockerfile" || base == "DOCKER.md" || base == "docker-compose.yml")) { ok = 1; } \
 				if (!ok && (line == root "SOW" || index(line, root "SOW") == 1 || index(line, "/SOW") > 0)) { ok = 1; } \
 				if (!ok && index(line, "/.pax/") > 0) { ok = 1; } \
 				if (!ok && index(line, root "t/tmp") == 1) { ok = 1; } \

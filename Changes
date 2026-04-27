@@ -1,3 +1,9 @@
+0.010  Mon Apr 27 12:57:43 2026
+    - Version bump
+    - Excluded `BACKLOG.md` from the Dist::Zilla tarball.
+    - Extended tarball verification so `BACKLOG.md` is rejected if it appears in
+      a release archive.
+
 0.009  Mon Apr 27 12:35:03 2026
     - Version bump
     - Applied the DD-style documentation rule to PAX so the README and main POD
