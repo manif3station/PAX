@@ -345,6 +345,7 @@ Primary local validation:
 ```bash
 make test
 make release-gate
+make cpan-build
 make cpan-gate
 ```
 
@@ -353,6 +354,8 @@ make cpan-gate
 Release readiness is checked by the repository gates:
 
 ```bash
+make cpan-bump-version VERSION=0.011
+# update Changes with a meaningful top entry for 0.011
 make test
 make release-gate
 make cpan-build
@@ -379,10 +382,12 @@ other non-release files.
 
 Release flow rule:
 
-- `make cpan-dist` and `make cpan-build` bump the version by `0.001` before
-  running `dzil build`.
-- the build then runs `version-gate`, `changes-gate`, and `doc-gate`.
-- `Changes` must have the new version as the top entry.
+- bump the version before `dzil build`, for example with
+  `make cpan-bump-version VERSION=0.011` or `make cpan-auto-bump`.
+- after the bump, update `Changes` with a meaningful top entry for that version
+  and commit the release-preparation changes.
+- `make cpan-dist` and `make cpan-build` then run `version-gate`,
+  `changes-gate`, and `doc-gate` without mutating tracked source files.
 - `README.md` and `lib/PAX.pm` must satisfy the documentation gate before the
   tarball is built.
 

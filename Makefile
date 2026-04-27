@@ -38,7 +38,7 @@ cpan-auto-bump:
 	echo "cpan-auto-bump: bumping version to $$next"; \
 	$(PERL) tools/bump_version.pl "$$next"
 
-cpan-dist: cpan-auto-bump release-gate
+cpan-dist: release-gate
 	command -v dzil >/dev/null 2>&1 || (echo "Dist::Zilla is required: cpanm Dist::Zilla" && exit 1)
 	$(MAKE) cpan-reset
 	dzil build

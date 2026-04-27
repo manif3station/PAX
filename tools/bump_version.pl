@@ -24,25 +24,9 @@ close $out;
 system $^X, 'tools/sync_versions.pl';
 die "sync failed\n" if $?;
 
-my $changes = 'Changes';
-my $entry = "$version  " . scalar(localtime) . "\n    - Version bump\n";
-
-if (-f $changes) {
-    open my $chg, '<', $changes or die "open $changes: $!";
-    local $/;
-    my $changelog = <$chg>;
-    close $chg;
-
-    if ($changelog !~ /^\Q$version\E\b/m) {
-        open my $chg_out, '>', $changes or die "write $changes: $!";
-        print {$chg_out} "$entry\n$changelog";
-        close $chg_out;
-    }
-}
-
 _update_dist_ini($version);
 
-say "Bumped VERSION to $version and synced lib/PAX/**/*.pm.";
+say "Bumped VERSION to $version and synced lib/PAX/**/*.pm. Update Changes with a meaningful top entry before running release gates.";
 
 sub _update_dist_ini {
     my ($version) = @_;

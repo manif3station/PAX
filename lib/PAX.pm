@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.010';
+our $VERSION = '0.011';
 
 1;
 
@@ -402,6 +402,10 @@ Release readiness requires:
 
 =item * C<make release-gate>.
 
+=item * a deliberate version-bump step such as
+C<make cpan-bump-version VERSION=0.011> followed by a meaningful top entry in
+C<Changes>.
+
 =item * C<make cpan-build> and C<make cpan-gate>.
 
 =back
@@ -410,10 +414,13 @@ C<cpan-gate> also verifies that release tarballs and the git index exclude
 temporary probes, generated workspaces, planning artifacts, and other
 non-release paths.
 
-C<make cpan-dist> and C<make cpan-build> bump the distribution version by
-C<0.001> before running C<dzil build>. The release flow then enforces a version
-gate, a C<Changes> gate, and a documentation gate for C<README.md> plus this
-module POD before building the tarball.
+The version bump happens before C<dzil build>, for example with
+C<make cpan-bump-version VERSION=0.011> or C<make cpan-auto-bump>. After the
+bump, the operator must write a meaningful top C<Changes> entry for that
+version and commit the release-preparation changes. C<make cpan-dist> and
+C<make cpan-build> then enforce the version gate, the C<Changes> gate, and the
+documentation gate for C<README.md> plus this module POD without mutating
+tracked source files during the packaging step.
 
 =head1 TESTING AND COVERAGE
 
@@ -421,6 +428,7 @@ Primary validation from a repository checkout is:
 
   make test
   make release-gate
+  make cpan-build
   make cpan-gate
 
 =head1 KNOWN LIMITATIONS

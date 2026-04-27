@@ -97,6 +97,26 @@ The correct end state is:
 - forbidden paths not tracked
 - `git status --short` is empty
 
+## Release Flow Rule
+
+Release preparation and release verification are separate steps.
+
+Rules:
+
+1. version bumping is a deliberate release-preparation step
+2. release-preparation steps may change tracked files such as `lib/PAX.pm`,
+   `dist.ini`, and `Changes`
+3. release-verification steps such as `make cpan-dist` and `make cpan-gate`
+   must not invent changelog text or mutate tracked source files
+4. `Changes` content must be written by the operator or change author in
+   meaningful language before `release-gate` runs
+5. `git-gate` must verify a clean tree after the release-preparation commit;
+   it must not be paired with a target that dirties tracked files during the
+   same verification pass
+
+This keeps the release flow reproducible and prevents the cycle where a build
+target creates new tracked changes and then fails its own git cleanliness gate.
+
 ## Section Expectations
 
 PAX main documentation should keep these section families available over time:

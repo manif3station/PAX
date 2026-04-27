@@ -1,3 +1,11 @@
+0.011  Mon Apr 27 13:10:42 2026
+    - Separated release preparation from release verification so the CPAN gate
+      no longer dirties tracked files while also requiring a clean git tree.
+    - Kept version bumping explicit and stopped auto-generating placeholder
+      changelog text, so release notes must describe real project progress.
+    - Kept the current release tarball available after normal cleanup while
+      reserving destructive artifact removal for the explicit reset path.
+
 0.010  Mon Apr 27 12:57:43 2026
     - Excluded `BACKLOG.md` from the Dist::Zilla tarball.
     - Extended tarball verification so `BACKLOG.md` is rejected if it appears in
