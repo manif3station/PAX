@@ -9,6 +9,9 @@
       gates, use the tarball built in the repo root, and upload it through the
       local CPAN uploader configuration instead of exposing credential plumbing
       in the project docs.
+    - Fixed the Dist::Zilla release layout so the built tarball now includes
+      installer metadata such as `Makefile.PL`, which `cpanm` requires when
+      configuring a CPAN distribution.
 
 0.010  Mon Apr 27 12:57:43 2026
     - Excluded `BACKLOG.md` from the Dist::Zilla tarball.
