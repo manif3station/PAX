@@ -370,7 +370,7 @@ make cpan-release
 
 `make cpan-release` follows the same release shape used by the DD source:
 verify the repo gates, locate the built tarball in the repository root, and
-upload it with `cpan-upload` using `PAUSE_USER` and `PAUSE_PASS`.
+upload it with the local `cpan-upload` configuration.
 
 Required release files:
 

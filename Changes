@@ -6,8 +6,9 @@
     - Kept the current release tarball available after normal cleanup while
       reserving destructive artifact removal for the explicit reset path.
     - Switched `make cpan-release` to the DD-style PAUSE flow: verify the repo
-      gates, use the tarball built in the repo root, and upload it with
-      `cpan-upload` plus explicit PAUSE credentials.
+      gates, use the tarball built in the repo root, and upload it through the
+      local CPAN uploader configuration instead of exposing credential plumbing
+      in the project docs.
 
 0.010  Mon Apr 27 12:57:43 2026
     - Excluded `BACKLOG.md` from the Dist::Zilla tarball.

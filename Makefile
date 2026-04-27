@@ -116,15 +116,7 @@ cpan-release:
 		echo "missing tarball $$tarball"; \
 		exit 1; \
 	fi; \
-	if [ -z "$${PAUSE_USER:-}" ]; then \
-		echo "PAUSE_USER is required"; \
-		exit 1; \
-	fi; \
-	if [ -z "$${PAUSE_PASS:-}" ]; then \
-		echo "PAUSE_PASS is required"; \
-		exit 1; \
-	fi; \
-	cpan-upload -u "$$PAUSE_USER" -p "$$PAUSE_PASS" "$$tarball"
+	cpan-upload "$$tarball"
 
 cpan-sync-versions:
 	$(PERL) tools/sync_versions.pl

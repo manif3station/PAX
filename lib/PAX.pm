@@ -416,7 +416,7 @@ non-release paths.
 
 C<make cpan-release> follows the DD-style PAUSE flow: run the repo gates,
 locate the built tarball in the repository root, and upload it with
-C<cpan-upload> using C<PAUSE_USER> plus C<PAUSE_PASS>.
+C<cpan-upload> using the local uploader configuration.
 
 The version bump happens before C<dzil build>, for example with
 C<make cpan-bump-version VERSION=0.011> or C<make cpan-auto-bump>. After the
