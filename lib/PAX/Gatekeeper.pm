@@ -30,8 +30,8 @@ sub new {
 sub sow01_report {
     my ($self) = @_;
     my @checks = (
-        $self->_check_file('source_sow', 'SOW-01.pdf', 'Approved SOW-01 PDF exists'),
-        $self->_check_file('source_sow_02', 'SOW-02.pdf', 'Approved SOW-02 PDF exists when SOW-02 is indexed'),
+        $self->_check_file('source_sow', 'project/SOW-01.pdf', 'Approved SOW-01 PDF exists'),
+        $self->_check_file('source_sow_02', 'project/SOW-02.pdf', 'Approved SOW-02 PDF exists when SOW-02 is indexed'),
         $self->_check_backlog_approved_sows,
         $self->_check_docker_pin,
         $self->_check_cli_surface,
@@ -139,14 +139,14 @@ sub _check_no_path {
 
 sub _check_backlog_approved_sows {
     my ($self) = @_;
-    my $path = "$self->{root}/BACKLOG.md";
+    my $path = "$self->{root}/project/BACKLOG.md";
     my $content = _slurp($path);
     my $ok = $content =~ /\| SOW-01 \|/ && $content =~ /\| SOW-02 \|/ && $content !~ /\| SOW-03 \|/;
     return {
         id => 'approved_sows_indexed',
         description => 'Backlog indexes approved SOW-01 and SOW-02 only',
         status => $ok ? 'passed' : 'blocked',
-        evidence => 'BACKLOG.md',
+        evidence => 'project/BACKLOG.md',
     };
 }
 
@@ -352,7 +352,7 @@ sub _check_performance_observability_fields {
 sub _check_current_docs_no_gap_language {
     my ($self) = @_;
     my @paths = qw(
-        BACKLOG.md
+        project/BACKLOG.md
         DOCKER.md
         projects/sow-01-project-pax/SOW.md
         projects/sow-01-project-pax/implementation-status.md
