@@ -242,6 +242,11 @@ Then build:
 
   perl bin/pax build
 
+Long builds print a DD-style task rundown on C<stderr> when stderr is an
+interactive terminal. Set C<PAX_PROGRESS=1> to force the same rundown in
+non-interactive runs while keeping the machine-readable build payload on
+C<stdout>.
+
 And run the result directly:
 
   ./build/example-app

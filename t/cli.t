@@ -62,6 +62,22 @@ my $override_run_output = `$^X $pax run --paxfile t/fixtures/paxfile.yml --outpu
 is($? >> 8, 0, 'pax run accepts --output override');
 is($override_run_output, "embedded-fixture-asset\n", 'run command executes binary with embedded asset');
 
+my $progress_json = "$sow03_root/progress-build.json";
+my $progress_stderr = "$sow03_root/progress-build.stderr";
+system("PAX_PROGRESS=1 $^X $pax build --compact --paxfile t/fixtures/paxfile.yml >$progress_json 2>$progress_stderr");
+is($? >> 8, 0, 'pax build still succeeds when progress rundown is enabled');
+open my $progress_fh, '<', $progress_stderr or die "cannot read progress stderr: $!";
+my $progress_text = do { local $/; <$progress_fh> };
+close $progress_fh;
+like($progress_text, qr/pax build progress/, 'pax build progress output prints the task-board title');
+like($progress_text, qr/\[ \] Resolve build inputs/, 'pax build progress output prints the full task list before work begins');
+like($progress_text, qr/\[OK\] Compile standalone launcher/, 'pax build progress output marks the launcher phase complete');
+open my $progress_json_fh, '<', $progress_json or die "cannot read progress json: $!";
+my $progress_payload = do { local $/; <$progress_json_fh> };
+close $progress_json_fh;
+my $progress_build = decode_json($progress_payload);
+is($progress_build->{status}, 'built', 'pax build keeps machine-readable payload on stdout while progress prints on stderr');
+
 my $workdir = "$sow03_root/work";
 make_path($workdir);
 my $no_arg_binary = "$sow03_root/no-arg-binary";

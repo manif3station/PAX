@@ -26,10 +26,23 @@ sub new {
     }, $class;
 }
 
+sub build_progress_tasks {
+    return [
+        { id => 'resolve_inputs', label => 'Resolve build inputs' },
+        { id => 'compile_code_units', label => 'Compile Perl code units' },
+        { id => 'discover_dependencies', label => 'Discover runtime dependencies' },
+        { id => 'package_runtime', label => 'Package runtime payloads' },
+        { id => 'package_assets', label => 'Embed asset payloads' },
+        { id => 'compile_launcher', label => 'Compile standalone launcher' },
+    ];
+}
+
 sub build {
     my ($self, %args) = @_;
+    my $progress = $args{progress};
     my $entrypoint = $args{entrypoint} // die 'entrypoint required';
     my $name = $args{name} // _default_name($entrypoint);
+    _progress_emit($progress, { task_id => 'resolve_inputs', status => 'running' });
     my $abs_entrypoint = abs_path($entrypoint) || die "entrypoint not found: $entrypoint";
     my @lib_dirs = _abs_existing([
         @{ $args{lib_dirs} // [] },
@@ -37,7 +50,18 @@ sub build {
     ]);
     my @source_roots = _abs_existing($args{source_roots} // []);
     my @scan_roots = grep { defined && $_ ne '' } (_safe_dir_abs($abs_entrypoint), @lib_dirs, @source_roots);
+    _progress_emit($progress, {
+        task_id => 'resolve_inputs',
+        status => 'done',
+        label => sprintf('Resolve build inputs (%d lib dirs, %d source roots)', scalar(@lib_dirs), scalar(@source_roots)),
+    });
+    _progress_emit($progress, { task_id => 'compile_code_units', status => 'running' });
     my @code_units = _code_manifest($abs_entrypoint, \@lib_dirs, \@source_roots);
+    _progress_emit($progress, {
+        task_id => 'compile_code_units',
+        status => 'done',
+        label => sprintf('Compile Perl code units (%d packaged units)', scalar(@code_units)),
+    });
 
     my $inferred_namespace = _infer_app_namespace(
         units => \@code_units,
@@ -62,19 +86,36 @@ sub build {
     );
     my $runtime_mode = $args{runtime_mode} // 'bundled_perl';
     my @cpanfiles = _abs_existing($args{cpanfiles} // []);
+    _progress_emit($progress, { task_id => 'package_assets', status => 'running' });
     my $assets = _asset_manifest($args{assets} // [], $args{asset_dirs} // []);
+    _progress_emit($progress, {
+        task_id => 'package_assets',
+        status => 'done',
+        label => sprintf('Embed asset payloads (%d assets)', scalar(@$assets)),
+    });
 
     my $analysis = PAX::StandaloneAnalysis->new;
+    _progress_emit($progress, { task_id => 'discover_dependencies', status => 'running' });
     my $dependencies = $analysis->dependencies(
         entrypoint => $abs_entrypoint,
         code_units => \@code_units,
         cpanfiles => \@cpanfiles,
     );
+    _progress_emit($progress, {
+        task_id => 'discover_dependencies',
+        status => 'done',
+        label => sprintf(
+            'Discover runtime dependencies (%d packaged, %d bundled XS)',
+            $dependencies->{summary}{packaged_app} // 0,
+            $dependencies->{summary}{bundled_xs} // 0,
+        ),
+    });
     my $native = $analysis->native_artifacts(
         entrypoint => $abs_entrypoint,
         code_units => \@code_units,
     );
     my $native_payloads = _native_payloads($native->{items});
+    _progress_emit($progress, { task_id => 'package_runtime', status => 'running' });
     my $runtime = _runtime_manifest(
         mode => $runtime_mode,
         dependencies => $dependencies->{items},
@@ -85,6 +126,11 @@ sub build {
         app_namespace => $app_namespace,
         app_legacy_namespace => $app_meta->{compat}{legacy_namespace},
     );
+    _progress_emit($progress, {
+        task_id => 'package_runtime',
+        status => 'done',
+        label => sprintf('Package runtime payloads (%d payloads)', scalar(@{ $runtime->{payloads} // [] })),
+    });
     my $standalone_dir = File::Spec->catdir($self->{root}, $name);
     make_path($standalone_dir);
 
@@ -143,7 +189,15 @@ sub build {
     };
 
     _write_json(File::Spec->catfile($standalone_dir, 'manifest.json'), $manifest);
+    _progress_emit($progress, { task_id => 'compile_launcher', status => 'running' });
     my $compile = _compile_launcher($manifest);
+    _progress_emit($progress, {
+        task_id => 'compile_launcher',
+        status => $compile->{status} eq 'built' ? 'done' : 'failed',
+        label => $compile->{status} eq 'built'
+            ? 'Compile standalone launcher'
+            : 'Compile standalone launcher (' . ($compile->{reason} // 'failed') . ')',
+    });
     $manifest->{launcher_status} = $compile->{status};
     $manifest->{launcher_reason} = $compile->{reason} if $compile->{reason};
     _write_json(File::Spec->catfile($standalone_dir, 'manifest.json'), $manifest);
@@ -152,6 +206,13 @@ sub build {
         standalone => _manifest_without_bytes($manifest),
         manifest_path => File::Spec->catfile($standalone_dir, 'manifest.json'),
     };
+}
+
+sub _progress_emit {
+    my ($progress, $event) = @_;
+    return 1 if !$progress || ref($progress) ne 'CODE';
+    $progress->($event);
+    return 1;
 }
 
 sub load {

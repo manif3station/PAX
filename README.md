@@ -91,6 +91,13 @@ Build from a local `paxfile.yml`:
 perl bin/pax build
 ```
 
+Long builds print a DD-style task rundown on `stderr` when `stderr` is an
+interactive terminal. To force the same rundown in non-interactive runs:
+
+```bash
+PAX_PROGRESS=1 perl bin/pax build --compact
+```
+
 Build an explicit entrypoint:
 
 ```bash

@@ -37,6 +37,7 @@ remove_tree($root) if -d $root;
 local $ENV{PAX_STANDALONE_ROOT} = $root;
 
 my $builder = PAX::StandaloneImage->new(root => $root);
+my @progress_events;
 
 sub _free_tcp_port {
     my $sock = IO::Socket::INET->new(
@@ -57,9 +58,13 @@ my $built = $builder->build(
     lib_dirs => ["$FindBin::Bin/fixtures/app_lib"],
     cpanfiles => ["$FindBin::Bin/fixtures/standalone_policy.cpanfile"],
     assets => ["$FindBin::Bin/fixtures/app_assets/banner.txt"],
+    progress => sub { push @progress_events, { %{ $_[0] } } if ref($_[0]) eq 'HASH' },
 );
 
 is($built->{status}, 'built', 'standalone image built');
+ok(@progress_events >= 6, 'standalone image build emits progress events');
+ok((grep { ($_->{task_id} // '') eq 'compile_code_units' && ($_->{status} // '') eq 'running' } @progress_events) >= 1, 'standalone image build reports code-unit compilation start');
+ok((grep { ($_->{task_id} // '') eq 'compile_launcher' && ($_->{status} // '') eq 'done' } @progress_events) >= 1, 'standalone image build reports launcher completion');
 ok(-f $built->{manifest_path}, 'manifest written');
 ok(-x $built->{standalone}{output_path}, 'standalone executable built');
 is($built->{standalone}{runtime}{app_server_required}, JSON::PP::false, 'standalone does not require app server');

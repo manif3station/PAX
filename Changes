@@ -12,6 +12,9 @@
     - Fixed the Dist::Zilla release layout so the built tarball now includes
       installer metadata such as `Makefile.PL`, which `cpanm` requires when
       configuring a CPAN distribution.
+    - Added a DD-style progress rundown for `pax build`, keeping structured
+      JSON on stdout while phase-by-phase task updates print on stderr during
+      long standalone builds.
 
 0.010  Mon Apr 27 12:57:43 2026
     - Excluded `BACKLOG.md` from the Dist::Zilla tarball.

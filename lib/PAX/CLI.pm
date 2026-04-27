@@ -6,6 +6,7 @@ use strict;
 use warnings;
 use JSON::PP qw(encode_json);
 use PAX::Capture;
+use PAX::CLI::Progress;
 use PAX::Manifest;
 use PAX::RegionSelector;
 use PAX::HIR;
@@ -1105,6 +1106,7 @@ sub _build_standalone {
 
 sub _standalone_build_from_config {
     my ($class, $cfg) = @_;
+    my $progress = $class->_standalone_build_progress;
     my $result = PAX::StandaloneImage->new->build(
         name => $cfg->{name},
         entrypoint => $cfg->{entrypoint},
@@ -1122,11 +1124,27 @@ sub _standalone_build_from_config {
         app_command => $cfg->{app_command},
         paxfile_applied => $cfg->{paxfile_applied},
         override_fields => $cfg->{override_fields},
+        progress => $progress ? $progress->callback : undef,
     );
+    $progress->finish if $progress;
     return {
         result => $result,
         pretty => $cfg->{pretty},
     };
+}
+
+sub _standalone_build_progress {
+    my ($class) = @_;
+    my $enabled = $ENV{PAX_PROGRESS} ? 1 : 0;
+    $enabled = 1 if !$enabled && -t STDERR;
+    return if !$enabled;
+    return PAX::CLI::Progress->new(
+        title   => 'pax build progress',
+        tasks   => PAX::StandaloneImage->build_progress_tasks,
+        stream  => \*STDERR,
+        dynamic => ( -t STDERR ? 1 : 0 ),
+        color   => ( -t STDERR ? 1 : 0 ),
+    );
 }
 
 sub _standalone_run {
