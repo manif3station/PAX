@@ -60,6 +60,26 @@ When writing changelog entries:
 The changelog audience is the project operator, evaluator, or contributor who
 wants to understand what changed in substance, not which files were touched.
 
+## Temporary File Rule
+
+PAX must not leave temporary files in the project working tree.
+
+Rules:
+
+1. temporary runtime probes, scratch manifests, generated helper scripts, and
+   transient extraction metadata must be created under the OS temporary area
+   such as C</tmp> or the platform temp directory returned by the runtime
+2. a project checkout is not a temp directory
+3. if a temporary file is not meaningful project output, it must not be created
+   in the repository root or inside normal source directories
+4. when using C<File::Temp>, prefer an explicit temp-directory strategy such as
+   C<TMPDIR =E<gt> 1>, C<DIR =E<gt> ...>, or C<tempdir(CLEANUP =E<gt> 1)>
+5. generated temp-file names such as C<pax-runtime-probe-*> are implementation
+   detail and must be cleaned up automatically
+
+This rule exists to keep the repository clean, reduce operator noise, and make
+release gates meaningful.
+
 ## Section Expectations
 
 PAX main documentation should keep these section families available over time:

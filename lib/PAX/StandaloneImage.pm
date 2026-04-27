@@ -1466,7 +1466,12 @@ sub _probe_loaded_runtime_files {
     my @modules = @{ $args{modules} // [] };
     return () if !@modules;
 
-    my ($fh, $path) = tempfile('pax-runtime-probe-XXXXXX', SUFFIX => '.pl', UNLINK => 1);
+    my ($fh, $path) = tempfile(
+        'pax-runtime-probe-XXXXXX',
+        SUFFIX => '.pl',
+        TMPDIR => 1,
+        UNLINK => 1,
+    );
     print {$fh} <<'PL';
 use strict;
 use warnings;
