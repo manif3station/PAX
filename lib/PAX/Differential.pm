@@ -1,12 +1,13 @@
 package PAX::Differential;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 use strict;
 use warnings;
 use IPC::Open3;
 use JSON::PP ();
 use Symbol qw(gensym);
+use PAX::Capture;
 
 sub new {
     my ($class, %args) = @_;
@@ -18,7 +19,13 @@ sub new {
 sub compare_capture {
     my ($self, $entrypoint) = @_;
     my $stock = _run($^X, $entrypoint);
-    my $pax = _run($^X, $self->{pax_bin}, 'capture', '--compact', $entrypoint);
+    my $capture = eval { PAX::Capture->new(mode => 'live')->capture($entrypoint) };
+    my $pax = {
+        command => ['PAX::Capture', $entrypoint],
+        exit => ($@ || !$capture || ($capture->{status} // '') ne 'ok') ? 1 : 0,
+        stdout => '',
+        stderr => $@ // '',
+    };
 
     return {
         entrypoint => $entrypoint,
@@ -52,3 +59,29 @@ sub _run {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+PAX::Differential - compare stock Perl execution with PAX capture behavior
+
+=head1 DESCRIPTION
+
+C<PAX::Differential> is an internal validation helper. It keeps differential
+capture checks available after SOW-03 removed C<pax capture> from the public CLI
+by invoking C<PAX::Capture> directly.
+
+=head1 METHODS
+
+=head2 new
+
+Constructs a differential runner. The historical C<pax_bin> argument is accepted
+for compatibility with older tests but no longer drives capture through the CLI.
+
+=head2 compare_capture
+
+Runs the entrypoint with stock Perl, captures it through C<PAX::Capture>, and
+returns comparable exit/status metadata.
+
+=cut

@@ -1,3 +1,30 @@
+0.007  Mon Apr 27 12:21:21 2026
+    - Version bump
+
+0.006  Mon Apr 27 12:08:37 2026
+    - Version bump
+    - Fixed the CPAN gate flow to validate the tarball for the current bumped
+      version instead of using stale pre-bump make variables.
+    - Switched version checking to a dedicated support script so release gates
+      run cleanly and deterministically.
+
+0.005  Mon Apr 27 12:07:53 2026
+    - Version bump
+    - Added enforced release preparation gates for version consistency, Changes,
+      and documentation before Dist::Zilla build.
+    - Added automatic +0.001 version bumping to the CPAN distribution build
+      flow so release tarballs are not rebuilt forever at the same version.
+
+0.004  Mon Apr 27 12:10:00 2026
+    - Version bump
+    - Completed the SOW-03 public workflow around `pax build` and `pax run`.
+    - Reduced the public CLI surface to only `build` and `run`.
+    - Made `pax build` and `pax run` read `paxfile.yml` by default and honor
+      `-o` and `--output`.
+    - Validated standalone self-build for `bin/pax`, nested self-hosted build,
+      external standalone app Docker proof, and single-binary Dancer2 webapp
+      packaging with embedded assets.
+
 0.003  Sat Apr 25 23:53:33 2026
     - Version bump
     - Neutralized PAX code-unit compiler operation names for entry command, file

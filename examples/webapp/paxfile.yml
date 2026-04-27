@@ -1,9 +1,9 @@
 name: pax-webapp
-entrypoint: "examples/webapp/bin/pax-webapp"
+entrypoint: "bin/pax-webapp"
 libs:
-  - "examples/webapp/lib"
+  - "lib"
 cpanfiles:
-  - "examples/webapp/cpanfile"
+  - "cpanfile"
 asset_dirs:
-  - "examples/webapp/share"
+  - "share"
 runtime_mode: "bundled_perl"

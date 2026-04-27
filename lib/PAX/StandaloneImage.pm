@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 use strict;
 use warnings;
@@ -31,7 +31,10 @@ sub build {
     my $entrypoint = $args{entrypoint} // die 'entrypoint required';
     my $name = $args{name} // _default_name($entrypoint);
     my $abs_entrypoint = abs_path($entrypoint) || die "entrypoint not found: $entrypoint";
-    my @lib_dirs = _abs_existing($args{lib_dirs} // []);
+    my @lib_dirs = _abs_existing([
+        @{ $args{lib_dirs} // [] },
+        _entrypoint_declared_lib_dirs($abs_entrypoint),
+    ]);
     my @source_roots = _abs_existing($args{source_roots} // []);
     my @scan_roots = grep { defined && $_ ne '' } (_safe_dir_abs($abs_entrypoint), @lib_dirs, @source_roots);
     my @code_units = _code_manifest($abs_entrypoint, \@lib_dirs, \@source_roots);
@@ -259,6 +262,25 @@ sub _abs_existing {
         push @abs, $abs if defined $abs;
     }
     return @abs;
+}
+
+sub _entrypoint_declared_lib_dirs {
+    my ($entrypoint) = @_;
+    my $source = _slurp_bytes($entrypoint);
+    return () if $source eq '';
+    my $bin_dir = dirname($entrypoint);
+    my @dirs;
+    while ($source =~ /^\s*use\s+lib\s+(.+?);/mg) {
+        my $expr = $1;
+        while ($expr =~ /(['"])(.*?)\1/g) {
+            my $path = $2;
+            $path =~ s/\$FindBin::Bin|\$Bin/$bin_dir/g;
+            $path = File::Spec->rel2abs($path, $bin_dir) if !File::Spec->file_name_is_absolute($path);
+            push @dirs, $path if -d $path;
+        }
+    }
+    my %seen;
+    return grep { !$seen{$_}++ } @dirs;
 }
 
 sub _logical_root {
@@ -552,10 +574,16 @@ sub _compile_launcher {
     my $parent = $manifest->{output_path};
     $parent =~ s{/[^/]+\z}{};
     make_path($parent) if length $parent && !-d $parent;
-    my $code_pkg = "$parent/code.pkg";
-    my $runtime_pkg = "$parent/runtime.pkg";
-    my $asset_pkg = "$parent/assets.pkg";
-    my $native_pkg = "$parent/native.pkg";
+    my $build_dir = File::Spec->catdir($parent, '.pax-launcher-build');
+    make_path($build_dir) if !-d $build_dir;
+    my $code_pkg = File::Spec->catfile($build_dir, 'code.pkg');
+    my $runtime_pkg = File::Spec->catfile($build_dir, 'runtime.pkg');
+    my $asset_pkg = File::Spec->catfile($build_dir, 'assets.pkg');
+    my $native_pkg = File::Spec->catfile($build_dir, 'native.pkg');
+    my $code_obj = File::Spec->catfile($build_dir, 'code.pkg.o');
+    my $runtime_obj = File::Spec->catfile($build_dir, 'runtime.pkg.o');
+    my $asset_obj = File::Spec->catfile($build_dir, 'assets.pkg.o');
+    my $native_obj = File::Spec->catfile($build_dir, 'native.pkg.o');
     _write_binary($code_pkg, _payload_package_blob($manifest->{code_units}));
     _write_binary($runtime_pkg, _payload_package_blob($manifest->{runtime_payloads}));
     _write_binary($asset_pkg, _payload_package_blob($manifest->{assets}));
@@ -567,10 +595,12 @@ sub _compile_launcher {
     my $objcopy = _which('objcopy');
     return { status => 'not_built', reason => 'no C compiler available' } if !$cc;
     return { status => 'not_built', reason => 'no objcopy available' } if !$objcopy;
+    my $tool_path = _toolchain_path($cc, $objcopy);
     require Cwd;
     my $cwd = Cwd::getcwd();
     my $ok = eval {
-        chdir $parent or die "cannot chdir to $parent: $!";
+        local $ENV{PATH} = $tool_path if defined $tool_path && $tool_path ne '';
+        chdir $build_dir or die "cannot chdir to $build_dir: $!";
         system($objcopy, '--input', 'binary', '--output', 'elf64-x86-64', '--binary-architecture', 'i386:x86-64', 'code.pkg', 'code.pkg.o');
         die "objcopy code.pkg failed" if ($? >> 8) != 0;
         system($objcopy, '--input', 'binary', '--output', 'elf64-x86-64', '--binary-architecture', 'i386:x86-64', 'runtime.pkg', 'runtime.pkg.o');
@@ -579,9 +609,18 @@ sub _compile_launcher {
         die "objcopy assets.pkg failed" if ($? >> 8) != 0;
         system($objcopy, '--input', 'binary', '--output', 'elf64-x86-64', '--binary-architecture', 'i386:x86-64', 'native.pkg', 'native.pkg.o');
         die "objcopy native.pkg failed" if ($? >> 8) != 0;
-        my (undef, undef, $out_name) = File::Spec->splitpath($manifest->{output_path});
-        my (undef, undef, $src_name) = File::Spec->splitpath($source_path);
-        system($cc, '-O2', '-o', $out_name, $src_name, 'code.pkg.o', 'runtime.pkg.o', 'assets.pkg.o', 'native.pkg.o');
+        system(
+            $cc,
+            '-O2',
+            '-Wl,-z,noexecstack',
+            '-o',
+            $manifest->{output_path},
+            $source_path,
+            'code.pkg.o',
+            'runtime.pkg.o',
+            'assets.pkg.o',
+            'native.pkg.o',
+        );
         die "launcher compile failed" if ($? >> 8) != 0;
         1;
     };
@@ -591,6 +630,22 @@ sub _compile_launcher {
     return (($? >> 8) == 0 && -x $manifest->{output_path})
         ? { status => 'built' }
         : { status => 'not_built', reason => 'standalone launcher compile failed' };
+}
+
+sub _toolchain_path {
+    my (@tools) = @_;
+    my %seen;
+    my @dirs;
+    for my $tool (@tools) {
+        next if !defined $tool || $tool eq '';
+        my $dir = dirname($tool);
+        next if !defined $dir || $dir eq '';
+        push @dirs, $dir if !$seen{$dir}++;
+    }
+    for my $dir (qw(/usr/bin /bin /usr/sbin /sbin /usr/local/bin)) {
+        push @dirs, $dir if !$seen{$dir}++;
+    }
+    return join ':', @dirs;
 }
 
 sub _launcher_source {
@@ -993,7 +1048,7 @@ sub _runtime_manifest {
         $perl = abs_path($^X) || $^X;
         my @inc_dirs = _runtime_inc_dirs($args{exclude_dirs} // []);
         push @payloads, _file_payload($perl, 'runtime_binary', 'bin/perl');
-        push @payloads, _runtime_shared_lib_payloads($perl);
+        push @payloads, _runtime_shared_lib_payloads($perl, \@inc_dirs);
         my @selected = _runtime_selected_files(
             inc_dirs => \@inc_dirs,
             dependencies => $args{dependencies} // [],
@@ -1052,19 +1107,14 @@ sub _pax_runtime_helper_payloads {
     my ($index_ref, $roots, $app_namespace, $legacy_namespace) = @_;
     $app_namespace = _normalize_namespace($app_namespace);
     $legacy_namespace = _normalize_namespace($legacy_namespace);
-    my @helpers = qw(
-        PAX/StandaloneRuntime.pm
-        PAX/NativeRunner.pm
-        PAX/GuardManager.pm
-        PAX/DeoptEngine.pm
-    );
+    my @helpers = _pax_runtime_helper_relative_paths();
     my @payloads;
-    my $repo_lib = abs_path('lib');
-    return @payloads if !defined $repo_lib || !-d $repo_lib;
+    my @helper_roots = _pax_runtime_helper_lib_roots();
+    return @payloads if !@helper_roots;
     my $prefix = sprintf('inc/%03d', $$index_ref++);
     push @$roots, $prefix;
     for my $rel (@helpers) {
-        my $path = File::Spec->catfile($repo_lib, split m{/}, $rel);
+        my $path = _helper_module_path($rel, \@helper_roots);
         next if !-f $path;
         my $logical = _safe_logical_path(File::Spec->catfile($prefix, $rel));
         if ($rel eq 'PAX/StandaloneRuntime.pm' && $app_namespace) {
@@ -1082,9 +1132,11 @@ sub _pax_runtime_helper_payloads {
 }
 
 sub _runtime_shared_lib_payloads {
-    my ($perl) = @_;
+    my ($perl, $runtime_inc_dirs) = @_;
     return () if !$perl || !-x $perl;
-    open my $fh, '-|', 'ldd', $perl or return ();
+    my $ldd = _which('ldd') || ((-x '/usr/bin/ldd') ? '/usr/bin/ldd' : '');
+    return () if $ldd eq '';
+    open my $fh, '-|', $ldd, $perl or return ();
     my @payloads;
     my %seen;
     while (my $line = <$fh>) {
@@ -1097,13 +1149,54 @@ sub _runtime_shared_lib_payloads {
             next;
         }
         next if !$path || !-f $path;
-        next if $path !~ m{\A/(?:usr/local|opt)/};
         my $abs = abs_path($path) || $path;
+        next if $seen{$abs}++;
+        push @payloads, _file_payload($abs, 'runtime_lib', _safe_logical_path(File::Spec->catfile('lib', File::Basename::basename($abs))));
+    }
+
+    for my $runtime_lib (_runtime_core_libs_from_inc_dirs($runtime_inc_dirs // [])) {
+        my $abs = abs_path($runtime_lib) || $runtime_lib;
         next if $seen{$abs}++;
         push @payloads, _file_payload($abs, 'runtime_lib', _safe_logical_path(File::Spec->catfile('lib', File::Basename::basename($abs))));
     }
     close $fh;
     return @payloads;
+}
+
+sub _which {
+    my ($program) = @_;
+    return if !defined $program || $program eq '';
+    my %seen;
+    my @dirs = split /:/, ($ENV{PATH} // '');
+    push @dirs, qw(/usr/bin /bin /usr/sbin /sbin /usr/local/bin);
+    for my $dir (@dirs) {
+        next if !defined $dir || $dir eq '';
+        next if $seen{$dir}++;
+        my $path = File::Spec->catfile($dir, $program);
+        return $path if -x $path;
+    }
+    return;
+}
+
+sub _runtime_core_libs_from_inc_dirs {
+    my ($inc_dirs) = @_;
+    my @libs;
+    my %seen;
+    my @dirs = grep { defined $_ && $_ ne '' } map { abs_path($_) || $_ } @{ $inc_dirs // [] };
+    for my $dir (@dirs) {
+        next if !-d $dir;
+        File::Find::find({
+            wanted => sub {
+                return if !-f $_;
+                return unless m{/CORE/libperl} && m/\.(?:so|dylib|dll)(?:\.[^\/\\]+)?\z/;
+                my $abs = abs_path($File::Find::name) || $File::Find::name;
+                return if $seen{$abs}++;
+                push @libs, $abs;
+            },
+            no_chdir => 1,
+        }, $dir);
+    }
+    return @libs;
 }
 
 sub _runtime_inc_dirs {
@@ -1265,6 +1358,46 @@ sub _locate_module_runtime_file {
     return;
 }
 
+sub _pax_runtime_helper_relative_paths {
+    return qw(
+        PAX/StandaloneRuntime.pm
+        PAX/NativeRunner.pm
+        PAX/GuardManager.pm
+        PAX/DeoptEngine.pm
+    );
+}
+
+sub _pax_runtime_helper_lib_roots {
+    my %seen;
+    my @roots;
+
+    my $loaded = $INC{'PAX/StandaloneImage.pm'} || __FILE__;
+    my $abs = abs_path($loaded) || $loaded;
+    my @parts = File::Spec->splitdir($abs);
+    while (@parts) {
+        my $candidate = File::Spec->catdir(@parts);
+        if (-f File::Spec->catfile($candidate, 'PAX', 'StandaloneImage.pm')) {
+            push @roots, $candidate if !$seen{$candidate}++;
+        }
+        pop @parts;
+    }
+
+    for my $inc (@INC) {
+        next if ref $inc;
+        next if !defined $inc || $inc eq '';
+        my $abs_inc = abs_path($inc) || $inc;
+        push @roots, $abs_inc if -f File::Spec->catfile($abs_inc, 'PAX', 'StandaloneRuntime.pm')
+            && !$seen{$abs_inc}++;
+    }
+
+    my $cwd_lib = abs_path('lib');
+    if (defined $cwd_lib && -d $cwd_lib) {
+        push @roots, $cwd_lib if !$seen{$cwd_lib}++;
+    }
+
+    return @roots;
+}
+
 sub _pax_runtime_helper_modules {
     my @helpers = qw(
         PAX/StandaloneRuntime.pm
@@ -1272,12 +1405,12 @@ sub _pax_runtime_helper_modules {
         PAX/GuardManager.pm
         PAX/DeoptEngine.pm
     );
-    my $repo_lib = abs_path('lib');
-    return () if !defined $repo_lib || !-d $repo_lib;
+    my @roots = _pax_runtime_helper_lib_roots();
+    return () if !@roots;
     my %seen;
     my @modules;
     for my $rel (@helpers) {
-        my $path = File::Spec->catfile($repo_lib, split m{/}, $rel);
+        my $path = _helper_module_path($rel, \@roots);
         next if !-f $path;
         my $source = _slurp_bytes($path);
         while ($source =~ /^\s*use\s+([A-Za-z_][A-Za-z0-9_:]*)\b/gm) {
@@ -1298,9 +1431,15 @@ sub _pax_runtime_helper_modules {
 }
 
 sub _pax_runtime_helper_module_files {
+    my @roots = _pax_runtime_helper_lib_roots();
     my @modules = _pax_runtime_helper_modules();
     my @files;
     my %seen;
+    for my $rel (_pax_runtime_helper_relative_paths()) {
+        my $path = _helper_module_path($rel, \@roots);
+        next if !$path;
+        push @files, $path if !$seen{$path}++;
+    }
     for my $module (@modules) {
         my $path = _locate_module_runtime_file($module) or next;
         push @files, $path if !$seen{$path}++;
@@ -1309,6 +1448,17 @@ sub _pax_runtime_helper_module_files {
         push @files, $path if !$seen{$path}++;
     }
     return @files;
+}
+
+sub _helper_module_path {
+    my ($rel, $roots) = @_;
+    return if !$rel;
+    for my $root (@{ $roots // [] }) {
+        next if !defined $root || $root eq '';
+        my $path = File::Spec->catfile($root, split m{/}, $rel);
+        return $path if -f $path;
+    }
+    return;
 }
 
 sub _probe_loaded_runtime_files {
@@ -1593,13 +1743,35 @@ sub _slurp_bytes {
     return <$fh> // '';
 }
 
-sub _which {
-    my ($cmd) = @_;
-    for my $dir (split /:/, $ENV{PATH} // '') {
-        my $path = "$dir/$cmd";
-        return $path if -x $path;
-    }
-    return;
-}
-
 1;
+
+__END__
+
+=head1 NAME
+
+PAX::StandaloneImage - build standalone PAX executable images
+
+=head1 DESCRIPTION
+
+This module packages an entrypoint, compiled code units, runtime helpers,
+dependency payloads, native artifacts, and assets into one executable. Runtime
+helper discovery is independent of the current working directory, so C<pax build
+-o output bin/pax> can be launched from a directory with no local C<lib/>
+directory.
+
+=head1 METHODS
+
+=head2 new
+
+Constructs a standalone image builder.
+
+=head2 build
+
+Builds a standalone executable from entrypoint, library paths, source roots,
+cpanfile inputs, assets, output path, and runtime mode.
+
+=head2 load
+
+Loads a previously written standalone image manifest by name.
+
+=cut

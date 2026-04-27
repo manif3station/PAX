@@ -1,12 +1,10 @@
 package PAX::Benchmark;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 use strict;
 use warnings;
-use IPC::Open3;
 use JSON::PP ();
-use Symbol qw(gensym);
 use Time::HiRes qw(time);
 use PAX::Capture;
 use PAX::Manifest;
@@ -30,7 +28,8 @@ sub run_capture_benchmark {
     my $rss_before = _current_rss_kb();
     for (1 .. $self->{iterations}) {
         my $start = time();
-        my $exit = _run_quiet($^X, $self->{pax_bin}, 'capture', '--compact', $entrypoint);
+        my $capture = eval { PAX::Capture->new(mode => 'live')->capture($entrypoint) };
+        my $exit = ($@ || !$capture || ($capture->{status} // '') ne 'ok') ? 1 : 0;
         my $elapsed = time() - $start;
         push @samples, {
             iteration => $_,
@@ -144,18 +143,6 @@ sub _summarise {
     };
 }
 
-sub _run_quiet {
-    my (@cmd) = @_;
-    my $err = gensym;
-    my $pid = open3(my $in, my $out, $err, @cmd);
-    close $in;
-    local $/;
-    <$out>;
-    <$err>;
-    waitpid($pid, 0);
-    return $? >> 8;
-}
-
 sub _current_rss_kb {
     open my $fh, '<', '/proc/self/status' or return undef;
     while (my $line = <$fh>) {
@@ -177,3 +164,32 @@ sub _memory_impact {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+PAX::Benchmark - internal benchmark helpers for PAX validation
+
+=head1 DESCRIPTION
+
+This module measures capture, reference runtime, and native-runtime behavior for
+validation gates. Under SOW-03 it calls compiler/runtime modules directly
+instead of shelling out to removed public diagnostic CLI commands.
+
+=head1 METHODS
+
+=head2 new
+
+Creates a benchmark runner. C<iterations> controls the number of samples.
+
+=head2 run_capture_benchmark
+
+Runs C<PAX::Capture> directly and records timing plus process memory fields.
+
+=head2 run_runtime_benchmark
+
+Compares stock Perl timing, capture timing, and native execution timing where a
+native region can be emitted.
+
+=cut

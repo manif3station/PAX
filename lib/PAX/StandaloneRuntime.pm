@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 use strict;
 use warnings;
@@ -66,10 +66,20 @@ sub _trace {
 
 sub run {
     my ($class, %args) = @_;
-    my $entrypoint = $args{entrypoint} // shift(@ARGV) // die 'entrypoint required';
-    my @argv = @{ $args{argv} // \@ARGV };
-
+    my $entrypoint = $args{entrypoint} // shift(@ARGV);
     _state();
+    if (!defined $entrypoint || !_entrypoint_looks_valid($entrypoint)) {
+        my $fallback = _resolve_entrypoint_from_manifest($entrypoint);
+        if (defined $fallback) {
+            _trace("entrypoint fallback from manifest: '" . ($entrypoint // '<undef>') . "' -> '$fallback'");
+            $entrypoint = $fallback;
+        }
+    }
+    die 'entrypoint required' if !defined $entrypoint;
+    if (!_entrypoint_looks_valid($entrypoint)) {
+        die "entrypoint is not a valid executable unit: $entrypoint";
+    }
+    my @argv = @{ $args{argv} // \@ARGV };
     _install_namespace_compat();
     _install_require_hook();
     _install_pending_wrappers();
@@ -79,6 +89,37 @@ sub run {
 
     _install_pending_wrappers();
     return $rv;
+}
+
+sub _entrypoint_looks_valid {
+    my ($entrypoint) = @_;
+    return 0 if !defined $entrypoint;
+    return 0 if $entrypoint =~ /\A-/;
+    return 0 if $entrypoint =~ /\A\s*\z/;
+    return 1;
+}
+
+sub _resolve_entrypoint_from_manifest {
+    my ($entrypoint) = @_;
+    my $state = _state();
+    my $manifest_entrypoint = $state->{manifest}{entrypoint}{logical_path} // '';
+    if ($manifest_entrypoint ne '') {
+        my $candidate = File::Spec->catfile($state->{root}, 'code', split m{/}, $manifest_entrypoint);
+        return $candidate if -f $candidate;
+    }
+    my @unit_candidates = grep {
+        my $unit = $_;
+        my $unit_kind = $unit->{unit_kind} // '';
+        my $packaging = $unit->{packaging} // '';
+        ($unit_kind // '') eq 'entrypoint' || ($packaging // '') =~ /\A(compiled|hybrid|residual)_(?:dispatch|cli_router|script)_pcu_v1\z/;
+    } @{ $state->{manifest}{code_units} // [] };
+    for my $unit (@unit_candidates) {
+        my $logical = $unit->{logical_path} // '';
+        next if $logical eq '';
+        my $candidate = File::Spec->catfile($state->{root}, 'code', split m{/}, $logical);
+        return $candidate if -f $candidate;
+    }
+    return;
 }
 
 sub _state {
@@ -613,9 +654,7 @@ sub _run_cli_router_unit {
 
     if ($cmd eq 'version') {
         my $version_module = $record->{version_module} || die "cli router missing version module\n";
-        (my $version_module_path = $version_module) =~ s{::}{/}g;
-        $version_module_path .= '.pm';
-        require $version_module_path;
+        _load_package_by_module_name($version_module);
         no strict 'refs';
         print ${$version_module . '::VERSION'}, "\n";
         exit 0;
@@ -687,10 +726,7 @@ sub _run_dispatch_action {
     }
     if ($op eq 'print_required_global') {
         my $module = $action->{require_module} // die 'dispatch require module missing';
-        my $path = $module;
-        $path =~ s{::}{/}g;
-        $path .= '.pm';
-        require $path;
+        _load_package_by_module_name($module);
         no strict 'refs';
         my $value = ${ $action->{symbol} };
         print $value;
@@ -724,12 +760,16 @@ sub _run_script_unit {
     open my $fh, '<', $entrypoint or die "cannot read script unit $entrypoint: $!";
     local $/;
     my $record = JSON::PP::decode_json(<$fh>);
-    my $source = $record->{script_source} // die "script source missing for $entrypoint";
+    my $source = $record->{script_source} // _script_source_from_code_units($entrypoint)
+        // _source_path_to_script_source($entrypoint)
+        // _script_source_from_residual_payload($entrypoint);
+    die "script source missing for $entrypoint" if !defined $source;
+    die "script source is empty for $entrypoint" if $source eq '';
     my $path = _virtual_entrypoint_path($entrypoint);
     my $wrapped = "package main;\n#line 1 \"$path\"\n" . $source;
     my $rv = eval $wrapped;
     die $@ if $@;
-    die "failed to run packaged script unit $path: $!" if !defined($rv) && $!;
+    return 0 if !defined($rv);
     if (my $invocation = $record->{entry_invocation}) {
         my $op = $invocation->{op} // '';
         if ($op eq 'call_main_argv_and_exit') {
@@ -739,6 +779,61 @@ sub _run_script_unit {
         die "unsupported script entry invocation op: $op";
     }
     return $rv;
+}
+
+sub _script_source_from_code_units {
+    my ($entrypoint) = @_;
+    my $state = _state();
+    my $unit = _find_code_unit_for_entrypoint($entrypoint);
+    return if !$unit;
+    return $unit->{script_source} if defined $unit->{script_source};
+    my $bytes = $unit->{bytes};
+    return if !defined $bytes;
+    my $decoded = eval { JSON::PP::decode_json($bytes) };
+    return $decoded->{script_source} if ref($decoded) eq 'HASH' && defined $decoded->{script_source};
+    return $bytes;
+}
+
+sub _source_path_to_script_source {
+    my ($entrypoint) = @_;
+    my $state = _state();
+    my $unit = _find_code_unit_for_entrypoint($entrypoint);
+    return if !$unit;
+    my $source_path = $unit->{source_path} // '';
+    return if !$source_path;
+    my $root = $state->{manifest}{entrypoint}{source_path} // '';
+    my $abs_root = File::Spec->rel2abs($source_path);
+    $source_path = $abs_root;
+    if (open my $source_fh, '<:raw', $source_path) {
+        local $/;
+        return <$source_fh>;
+    }
+    return;
+}
+
+sub _script_source_from_residual_payload {
+    my ($entrypoint) = @_;
+    my $manifest_entry = _find_code_unit_for_entrypoint($entrypoint);
+    return if !$manifest_entry;
+    my $payload = $manifest_entry->{residual_payload} // $manifest_entry->{payload} // '';
+    return if !$payload;
+    return $payload;
+}
+
+sub _find_code_unit_for_entrypoint {
+    my ($entrypoint) = @_;
+    my $state = _state();
+    my $entrypoint_name = $entrypoint;
+    for my $unit (@{ $state->{manifest}{code_units} // [] }) {
+        next unless $unit && ref($unit) eq 'HASH';
+        my $logical = $unit->{logical_path} // '';
+        my $packed = File::Spec->catfile($state->{root}, 'code', split m{/}, $logical);
+        return $unit if $unit->{logical_path} eq $entrypoint || $packed eq $entrypoint_name;
+        my $source_path = $unit->{source_path} // '';
+        next if $source_path eq '';
+        return $unit if File::Spec->rel2abs($source_path) eq File::Spec->rel2abs($entrypoint_name);
+    }
+    return;
 }
 
 sub _apply_initializer {

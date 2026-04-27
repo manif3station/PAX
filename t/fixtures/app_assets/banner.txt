@@ -1,1 +1,1 @@
-embedded-dashboard-asset
+embedded-fixture-asset

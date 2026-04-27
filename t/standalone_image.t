@@ -2,7 +2,7 @@ use strict;
 use warnings;
 use Test::More;
 use Cwd qw(abs_path);
-use File::Path qw(remove_tree);
+use File::Path qw(remove_tree make_path);
 use File::Spec;
 use FindBin;
 use HTTP::Tiny;
@@ -12,7 +12,23 @@ use POSIX qw(WNOHANG);
 use lib "$FindBin::Bin/../lib";
 
 use PAX::StandaloneImage;
+use PAX::StandaloneDispatch;
 use PAX::Paxfile;
+
+=pod
+
+=head1 NAME
+
+t/standalone_image.t - standalone binary packaging acceptance tests
+
+=head1 DESCRIPTION
+
+This file validates the standalone image subsystem behind SOW-03 C<pax build>
+and C<pax run>. Public command assertions use only C<build>; lower-level
+inspection, extraction, and native dispatch behavior is covered through the
+generated executable or internal Perl APIs.
+
+=cut
 
 my $suffix = $$;
 my $tmp_base = File::Spec->catdir(File::Spec->tmpdir, "pax-standalone-test-$suffix");
@@ -65,7 +81,32 @@ is($status, "slowload-ready\n", 'standalone executable runs without app server')
 
 my $asset = `env -i PATH=/nonexistent TMPDIR=/tmp $binary asset`;
 is($? >> 8, 0, 'standalone executable exposes embedded asset');
-is($asset, "embedded-dashboard-asset\n", 'embedded asset content matches source');
+is($asset, "embedded-fixture-asset\n", 'embedded asset content matches source');
+
+my $fake_runtime_root = File::Spec->catdir($tmp_base, 'fake-runtime-core');
+my $fake_core_dir = File::Spec->catdir($fake_runtime_root, 'x86_64-linux-gnu', 'CORE');
+make_path($fake_core_dir);
+my $fake_libperl = File::Spec->catfile($fake_core_dir, 'libperl.so.999');
+open my $libfh, '>:raw', $fake_libperl or die "cannot create fake libperl: $!";
+print {$libfh} 'fake-libperl';
+close $libfh;
+my @fake_runtime_libs = PAX::StandaloneImage::_runtime_core_libs_from_inc_dirs([$fake_runtime_root]);
+is(scalar(@fake_runtime_libs), 1, 'runtime lib discovery finds libperl in a synthetic CORE directory');
+is($fake_runtime_libs[0], $fake_libperl, 'runtime lib discovery returns exact fake lib path');
+{
+    local @INC = ($fake_runtime_root, @INC);
+    my $manifest = PAX::StandaloneImage::_runtime_manifest(
+        mode => 'bundled_perl',
+        dependencies => [],
+        lib_dirs => [],
+        code_units => [],
+        exclude_dirs => [],
+        app_namespace => '',
+        app_legacy_namespace => '',
+    );
+    my @runtime_lib_payloads = grep { ($_->{unit_kind} // '') eq 'runtime_lib' } @{ $manifest->{payloads} // [] };
+    ok((grep { ($_->{logical_path} // '') eq 'lib/libperl.so.999' } @runtime_lib_payloads), 'runtime_lib payload includes discovered libperl from runtime inc');
+}
 
 my $hybrid_fast = `env -i PATH=/nonexistent TMPDIR=/tmp $binary hybrid-fast`;
 is($? >> 8, 0, 'standalone executable runs compiled hybrid sub without residual fallback');
@@ -142,19 +183,19 @@ if (@namespace_runtime_files) {
 }
 
 my $paxfile = PAX::Paxfile->load("$FindBin::Bin/fixtures/paxfile.yml");
-is($paxfile->{name}, 'fixture-dashboard', 'existing paxfile fixture still parses');
+is($paxfile->{name}, 'fixture-app', 'existing paxfile fixture still parses');
 
 remove_tree($root) if -d $root;
-my $paxfile_output = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax standalone-build --compact --paxfile t/fixtures/paxfile.yml`;
-is($? >> 8, 0, 'standalone-build reads defaults from paxfile');
+my $paxfile_output = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax build --compact --paxfile t/fixtures/paxfile.yml`;
+is($? >> 8, 0, 'pax build reads defaults from paxfile');
 my $paxfile_build = JSON::PP->new->decode($paxfile_output);
-is($paxfile_build->{standalone}{name}, 'fixture-dashboard', 'standalone build uses paxfile name');
+is($paxfile_build->{standalone}{name}, 'fixture-app', 'standalone build uses paxfile name');
 is($paxfile_build->{standalone}{asset_count}, 1, 'standalone build uses paxfile assets');
 is(($paxfile_build->{standalone}{app}{command} // ''), 'app_entry', 'standalone manifest records derived app command');
 is(($paxfile_build->{standalone}{app}{entrypoint_fallback} // ''), 'app_entry', 'standalone manifest records app entrypoint fallback');
 
-my $override_output = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax standalone-build --compact --paxfile t/fixtures/paxfile.yml --name override-standalone --runtime-mode bundled_perl --app-command pax-test-command --app-entrypoint-env TEST_PAX_ENTRYPOINT --app-entrypoint-fallback test-fallback t/fixtures/app_entry.pl`;
-is($? >> 8, 0, 'standalone-build accepts CLI overrides');
+my $override_output = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax build --compact --paxfile t/fixtures/paxfile.yml --name override-standalone --runtime-mode bundled_perl --app-command pax-test-command --app-entrypoint-env TEST_PAX_ENTRYPOINT --app-entrypoint-fallback test-fallback t/fixtures/app_entry.pl`;
+is($? >> 8, 0, 'pax build accepts CLI overrides');
 my $override_build = JSON::PP->new->decode($override_output);
 is($override_build->{standalone}{name}, 'override-standalone', 'CLI name overrides paxfile');
 is($override_build->{standalone}{runtime}{mode}, 'bundled_perl', 'CLI runtime mode overrides paxfile');
@@ -162,24 +203,20 @@ is(($override_build->{standalone}{app}{command} // ''), 'pax-test-command', 'CLI
 is(($override_build->{standalone}{app}{entrypoint_env} // ''), 'TEST_PAX_ENTRYPOINT', 'CLI app entrypoint env is captured');
 is(($override_build->{standalone}{app}{entrypoint_fallback} // ''), 'test-fallback', 'CLI app entrypoint fallback is captured');
 my $custom_output = File::Spec->catfile($tmp_base, 'custom-output', 'standalone-custom.bin');
-my $custom_output_build = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax standalone-build --compact --paxfile t/fixtures/paxfile.yml --name override-output -o $custom_output t/fixtures/app_entry.pl`;
-is($? >> 8, 0, 'standalone-build accepts -o output override');
+my $custom_output_build = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax build --compact --paxfile t/fixtures/paxfile.yml --name override-output -o $custom_output t/fixtures/app_entry.pl`;
+is($? >> 8, 0, 'pax build accepts -o output override');
 my $custom_output_build_data = JSON::PP->new->decode($custom_output_build);
-is($custom_output_build_data->{standalone}{output_path} // '', $custom_output, 'standalone-build writes output_path as requested');
+is($custom_output_build_data->{standalone}{output_path} // '', $custom_output, 'pax build writes output_path as requested');
 ok(-x $custom_output, 'custom output binary is executable');
 
-my $inspect_cli = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax standalone-inspect --compact --name override-standalone`;
-is($? >> 8, 0, 'standalone-inspect returns manifest');
-my $inspect_cli_data = JSON::PP->new->decode($inspect_cli);
+my $inspect_cli_data = PAX::StandaloneImage->new(root => $root)->load(name => 'override-standalone');
 is($inspect_cli_data->{name}, 'override-standalone', 'standalone-inspect manifest matches build');
 
-my $why_not_cli = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax standalone-why-not --compact --name override-standalone`;
-is($? >> 8, 0, 'standalone-why-not returns explainability report');
-my $why_not_data = JSON::PP->new->decode($why_not_cli);
+my $why_not_data = PAX::StandaloneImage->new(root => $root)->load(name => 'override-standalone');
 is($why_not_data->{name}, 'override-standalone', 'standalone-why-not identifies target image');
 
-my $run_cli = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax standalone-run --name override-standalone -- status`;
-is($? >> 8, 0, 'standalone-run executes built executable');
+my $run_cli = `$override_build->{standalone}{output_path} status`;
+is($? >> 8, 0, 'standalone executable runs directly');
 is($run_cli, "slowload-ready\n", 'standalone-run output matches direct execution');
 
 my $native_rebuilt = $builder->build(
@@ -197,15 +234,22 @@ my $auto_native_rebuilt = $builder->build(
 );
 is($auto_native_rebuilt->{status}, 'built', 'auto-native standalone rebuilt after paxfile root reset');
 
-my $native_run_cli = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax standalone-native-run --compact --name fixture-native-standalone --region multiply --left 6 --right 7`;
-is($? >> 8, 0, 'standalone-native-run succeeds for packaged native region');
-my $native_run_data = JSON::PP->new->decode($native_run_cli);
+my $native_run_data = PAX::StandaloneDispatch->new->run_i64(
+    name => 'fixture-native-standalone',
+    region_name => 'multiply',
+    left => 6,
+    right => 7,
+);
 is($native_run_data->{status}, 'native', 'standalone-native-run uses packaged native execution');
 is($native_run_data->{result}{value}, 42, 'standalone-native-run returns native result');
 
-my $deopt_cli = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax standalone-native-run --compact --name fixture-native-standalone --region multiply --left 6 --right 7 --invalidate package_symbols`;
-is($? >> 8, 0, 'standalone-native-run deopt path still succeeds');
-my $deopt_data = JSON::PP->new->decode($deopt_cli);
+my $deopt_data = PAX::StandaloneDispatch->new->run_i64(
+    name => 'fixture-native-standalone',
+    region_name => 'multiply',
+    left => 6,
+    right => 7,
+    invalidate => ['package_symbols'],
+);
 is($deopt_data->{status}, 'deopt', 'standalone-native-run reports deopt when guard is invalidated');
 is($deopt_data->{result}{value}, 42, 'standalone-native-run falls back through bundled perl and preserves result');
 

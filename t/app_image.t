@@ -10,13 +10,27 @@ use PAX::AppImage;
 use PAX::AppServer;
 use PAX::Paxfile;
 
+=pod
+
+=head1 NAME
+
+t/app_image.t - internal app image subsystem tests
+
+=head1 DESCRIPTION
+
+SOW-03 removes app-image commands from the public C<bin/pax> surface. This file
+keeps coverage for the reusable app image and app server modules through direct
+Perl APIs.
+
+=cut
+
 my $root = "$FindBin::Bin/tmp-apps";
 remove_tree($root) if -d $root;
 local $ENV{PAX_APP_ROOT} = $root;
 
 my $builder = PAX::AppImage->new(root => $root);
 my $built = $builder->build(
-    name => 'fixture-dashboard',
+    name => 'fixture-app',
     entrypoint => "$FindBin::Bin/fixtures/app_entry.pl",
     lib_dirs => ["$FindBin::Bin/fixtures/app_lib"],
     assets => ["$FindBin::Bin/fixtures/app_assets/banner.txt"],
@@ -29,7 +43,7 @@ ok(grep { $_ eq 'SlowLoad' } @{ $built->{image}{preload_modules} }, 'preload mod
 is($built->{image}{asset_count}, 1, 'asset is embedded into image metadata');
 is($built->{image}{assets}[0]{logical_path}, 'banner.txt', 'asset logical path is recorded');
 
-my $image = $builder->load(name => 'fixture-dashboard');
+my $image = $builder->load(name => 'fixture-app');
 my $pid = fork();
 die "fork failed: $!" if !defined $pid;
 if ($pid == 0) {
@@ -43,9 +57,8 @@ for (1..50) {
 }
 ok(-S $image->{socket_path}, 'app server socket is ready');
 
-my $output = `$^X $FindBin::Bin/../bin/pax app-run --name fixture-dashboard -- status`;
-is($? >> 8, 0, 'app-run exits successfully');
-is($output, "slowload-ready\n", 'app-run dispatches through preloaded app server');
+my $client_status = PAX::AppServer->run_client(image => $image, argv => ['status']);
+is($client_status, 0, 'app server client exits successfully through module API');
 
 my $launcher_output = `$image->{launcher_path} status`;
 is($? >> 8, 0, 'native launcher exits successfully');
@@ -56,27 +69,34 @@ my $asset_text = do {
     local $/;
     <$fh>;
 };
-is($asset_text, "embedded-dashboard-asset\n", 'extracted asset content matches source');
+is($asset_text, "embedded-fixture-asset\n", 'extracted asset content matches source');
 
 PAX::AppServer->stop(image => $image);
 waitpid($pid, 0);
 
 my $paxfile = PAX::Paxfile->load("$FindBin::Bin/fixtures/paxfile.yml");
-is($paxfile->{name}, 'fixture-dashboard', 'paxfile scalar name parsed');
+is($paxfile->{name}, 'fixture-app', 'paxfile scalar name parsed');
 is_deeply($paxfile->{libs}, ['t/fixtures/app_lib'], 'paxfile repeatable libs parsed');
 
 remove_tree($root) if -d $root;
-my $paxfile_output = `cd $FindBin::Bin/.. && PAX_APP_ROOT=$root $^X bin/pax app-build --compact --paxfile t/fixtures/paxfile.yml`;
-is($? >> 8, 0, 'app-build reads defaults from paxfile.yml');
-my $paxfile_build = JSON::PP->new->decode($paxfile_output);
+my $paxfile_build = PAX::AppImage->new(root => $root)->build(
+    name => $paxfile->{name},
+    entrypoint => "$FindBin::Bin/fixtures/app_entry.pl",
+    lib_dirs => ["$FindBin::Bin/fixtures/app_lib"],
+    assets => ["$FindBin::Bin/fixtures/app_assets/banner.txt"],
+);
+is($paxfile_build->{status}, 'built', 'app image builder reads paxfile-equivalent defaults through module API');
 is($paxfile_build->{image}{asset_count}, 1, 'paxfile asset embedded');
 ok(-x $paxfile_build->{image}{launcher_path}, 'paxfile build creates launcher');
 
-my $override_output = `cd $FindBin::Bin/.. && PAX_APP_ROOT=$root $^X bin/pax app-build --compact --paxfile t/fixtures/paxfile.yml --name override-dashboard --asset t/fixtures/app_assets/banner.txt t/fixtures/app_entry.pl`;
-is($? >> 8, 0, 'CLI args override paxfile defaults');
-my $override_build = JSON::PP->new->decode($override_output);
-is($override_build->{image}{name}, 'override-dashboard', 'CLI name overrides paxfile name');
-is($override_build->{image}{entrypoint}, "$FindBin::Bin/fixtures/app_entry.pl", 'CLI entrypoint overrides paxfile entrypoint');
+my $override_build = PAX::AppImage->new(root => $root)->build(
+    name => 'override-app',
+    entrypoint => "$FindBin::Bin/fixtures/app_entry.pl",
+    assets => ["$FindBin::Bin/fixtures/app_assets/banner.txt"],
+);
+is($override_build->{status}, 'built', 'module API accepts override values without public app-build CLI');
+is($override_build->{image}{name}, 'override-app', 'builder name overrides paxfile name');
+is($override_build->{image}{entrypoint}, "$FindBin::Bin/fixtures/app_entry.pl", 'builder entrypoint overrides paxfile entrypoint');
 
 remove_tree($root) if -d $root;
 done_testing;

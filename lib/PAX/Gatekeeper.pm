@@ -1,6 +1,6 @@
 package PAX::Gatekeeper;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 use strict;
 use warnings;
@@ -164,12 +164,18 @@ sub _check_docker_pin {
 sub _check_cli_surface {
     my ($self) = @_;
     my $content = _slurp("$self->{root}/lib/PAX/CLI.pm");
-    my @missing = grep { $content !~ /if \(\$command eq '\Q$_\E'\)/ } ('run', 'why-not', 'trace-guards', 'bench', 'app-build', 'app-start', 'app-run', 'app-stop');
+    my @missing = grep { $content !~ /if \(\$command eq '\Q$_\E'\)/ } ('build', 'run');
+    my @extra = grep { $content =~ /if \(\$command eq '\Q$_\E'\)/ } qw(
+        capture inspect hir compile diff bench bench-matrix run-native corpus core-suite
+        cpan-matrix dispatch profile why-not trace-guards gatekeeper app-build app-start
+        app-run app-stop standalone-build standalone-run standalone-inspect standalone-extract
+        standalone-why-not standalone-native-run
+    );
     return {
-        id => 'cli_explainability_surface',
-        description => 'CLI includes run, why-not, trace-guards, bench, and whole-program app image commands',
-        status => @missing ? 'blocked' : 'passed',
-        evidence => @missing ? 'missing: ' . join(', ', @missing) : 'lib/PAX/CLI.pm',
+        id => 'cli_sow03_surface',
+        description => 'Public CLI includes only build and run; diagnostics remain internal implementation APIs',
+        status => (@missing || @extra) ? 'blocked' : 'passed',
+        evidence => @missing ? 'missing: ' . join(', ', @missing) : (@extra ? 'extra: ' . join(', ', @extra) : 'lib/PAX/CLI.pm'),
     };
 }
 
@@ -184,10 +190,9 @@ sub _check_whole_program_app_image {
     push @missing, 'embedded_asset_fixture' if !-f "$self->{root}/t/fixtures/app_assets/banner.txt";
     my $cli = _slurp("$self->{root}/lib/PAX/CLI.pm");
     my $app_image = _slurp("$self->{root}/lib/PAX/AppImage.pm");
-    for my $command (qw(app-build app-start app-run app-stop)) {
-        push @missing, "cli_$command" if $cli !~ /\Q$command\E/;
-    }
-    push @missing, 'asset_cli_flags' if $cli !~ /--asset/ || $cli !~ /--asset-dir/;
+    push @missing, 'public_build_command' if $cli !~ /if \(\$command eq 'build'\)/;
+    push @missing, 'public_run_command' if $cli !~ /if \(\$command eq 'run'\)/;
+    push @missing, 'asset_build_flags' if $cli !~ /--asset/ || $cli !~ /--asset-dir/;
     push @missing, 'paxfile_cli_flags' if $cli !~ /--paxfile/ || $cli !~ /--no-paxfile/;
     push @missing, 'asset_embedding_runtime' if $app_image !~ /pax_assets/ || $app_image !~ /PAX_EMBEDDED_ASSET_ROOT/;
     return {
@@ -205,7 +210,7 @@ sub _check_benchmark_matrix_command {
         id => 'full_benchmark_execution',
         description => 'Benchmark matrix has an executable CLI path',
         status => $content =~ /bench-matrix/ ? 'passed' : 'blocked',
-        evidence => 'pax bench-matrix --iterations 1 t/benchmark_matrix.json',
+        evidence => 'PAX::BenchmarkMatrix t/benchmark_matrix.json',
     };
 }
 
@@ -241,7 +246,7 @@ sub _check_core_suite {
         id => 'perl_core_suite',
         description => 'Perl core regression suite is wired and recorded',
         status => ($content =~ /core-suite/ && -f $report) ? 'passed' : 'blocked',
-        evidence => 'pax core-suite --compact t/perl_core_suite.json',
+        evidence => 'PAX::CoreSuite t/perl_core_suite.json',
     };
 }
 
@@ -253,7 +258,7 @@ sub _check_cpan_matrix {
         id => 'real_cpan_matrix',
         description => 'CPAN distribution matrix is wired and recorded',
         status => ($content =~ /cpan-matrix/ && -f $report) ? 'passed' : 'blocked',
-        evidence => 'pax cpan-matrix --compact t/cpan_matrix.json',
+        evidence => 'PAX::CPANMatrix t/cpan_matrix.json',
     };
 }
 
@@ -401,3 +406,29 @@ sub _slurp {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+PAX::Gatekeeper - release and SOW validation checks for PAX
+
+=head1 DESCRIPTION
+
+C<PAX::Gatekeeper> provides internal validation checks used by development and
+release gates. SOW-03 keeps these checks as module APIs while the public
+C<bin/pax> command surface is limited to C<build> and C<run>.
+
+=head1 METHODS
+
+=head2 new
+
+Creates a gatekeeper rooted at a repository path.
+
+=head2 sow01_report
+
+Returns the historical SOW validation report. The CLI-surface check now verifies
+that the public command runner exposes only C<build> and C<run>, with lower-level
+diagnostics retained as internal Perl APIs.
+
+=cut

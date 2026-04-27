@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 1;
 
@@ -11,229 +11,235 @@ __END__
 
 =head1 NAME
 
-PAX - Perl Adaptive eXecution compiler + packager
+PAX - Perl Adaptive eXecution compiler and standalone binary packager
 
 =head1 VERSION
 
-Current release version is kept in C<our $VERSION> in this module and mirrored to
-all C<lib/PAX/*.pm> modules before release.
+Current release version is kept in C<our $VERSION> in this module and mirrored
+to every C<lib/PAX/*.pm> module before release.
+
+=head1 SYNOPSIS
+
+  perl bin/pax help
+  perl bin/pax build
+  perl bin/pax build -o ./build/my-app bin/my-app
+  perl bin/pax run -- version
+  perl bin/pax run bin/my-app -- version
 
 =head1 DESCRIPTION
 
-PAX is a reusable Perl performance and packaging toolchain:
+PAX turns a Perl entrypoint plus its repeatable build inputs into a standalone
+executable. The executable can include compiled code units, native artifacts
+where supported, asset payloads, dependency payloads, and a runtime launcher.
+
+The project is deliberately neutral. Core compiler, packaging, loader, runtime,
+and dispatch code must not embed assumptions about one application, company, or
+module namespace.
+
+=head1 SOW-03 PUBLIC COMMAND SURFACE
+
+PAX exposes only two public commands through C<bin/pax>:
 
 =over 4
 
-=item * compile selected runtime regions into native units
-=item * package compiled units and assets into repeatable artifacts
-=item * provide CLI dispatch and diagnostics for mixed fallback/native execution
-=item * produce standalone server and app launch models suitable for deployment
+=item * C<build>
+
+Compile and package the source tree behind an entrypoint into one standalone
+executable.
+
+=item * C<run>
+
+Run the same build flow and then execute the resulting binary with arguments
+after C<-->.
 
 =back
 
-The project target is explicit neutrality: behavior must be reusable across arbitrary
-Perl applications and not coupled to any single module name or company codebase.
+The canonical usage is:
 
-=head1 DESIGN GOALS (SOW-03)
+  pax build ...
+  pax run ...
+
+Internal diagnostics and validation modules remain available as Perl APIs for
+the test suite and release gates. They are not public C<bin/pax> subcommands.
+
+=head1 PAXFILE CONTRACT
+
+When no positional entrypoint is supplied, C<build> and C<run> read
+C<paxfile.yml> by default. C<--paxfile> selects a different manifest and
+C<--no-paxfile> disables manifest loading.
+
+Supported manifest keys:
 
 =over 4
 
-=item * start from one Perl entrypoint and follow dependencies through capture and analysis
-=item * produce deployable outputs with no hard-coded application assumptions
-=item * compile and embed as much runtime behavior as possible while preserving fallback safety
-=item * keep project-specific hacks out of core compiler/runtime paths
-=item * make C<pax build> and C<pax run> the primary standalone binary workflow
-=item * read repeatable build inputs from C<paxfile.yml> when CLI arguments are omitted
+=item * C<name>
+
+=item * C<entrypoint>
+
+=item * C<libs>
+
+=item * C<source_roots>
+
+=item * C<assets>
+
+=item * C<asset_dirs>
+
+=item * C<cpanfiles>
+
+=item * C<output>
+
+=item * C<runtime_mode>
+
+=item * C<app_name>, C<app_namespace>, C<app_entrypoint_env>, C<app_entrypoint_fallback>, C<app_command>
+
+=back
+
+CLI flags override file values. Output path precedence is:
+
+=over 4
+
+=item 1. C<--output> / C<-o>
+
+=item 2. C<paxfile.yml> C<output>
+
+=item 3. C<.pax/standalone/<name>/<name>>
 
 =back
 
 =head1 ARCHITECTURE
 
-=head2 1) Capture and manifests
+=head2 Entrypoint and Build Configuration
 
-PAX captures runtime/compile observations from an entrypoint and emits a manifest.
-The manifest is used by inspection, compatibility checks, and compilation planning.
+C<PAX::CLI> is a small public facade. It resolves C<build> and C<run> inputs
+from CLI arguments plus C<PAX::Paxfile>, then delegates to the standalone image
+builder.
 
-Primary diagnostic commands:
+=head2 Compilation and Code Units
 
-=over 4
+C<PAX::CodeUnitCompiler> compiles supported Perl source shapes into PCU records.
+Unsupported or partially supported module shapes use hybrid or fallback payloads
+so correctness is preserved while reusable compiler support expands.
 
-=item * C<capture>
-=item * C<inspect>
-=item * C<hir>
+=head2 Dependency Discovery
 
-=back
+C<PAX::StandaloneImage> follows entrypoints, library directories, source roots,
+and C<cpanfile> inputs to collect application modules and dependency payloads.
+The mechanism is structural and path/module based, not tied to a project name.
 
-=head2 2) Analysis and code units
+=head2 Asset Embedding
 
-Selected regions are lowered, converted into guarded SSA, and passed to code generation.
+Individual assets and asset directories are embedded into the executable payload.
+The generated runtime extracts them into a private runtime directory and exposes
+that location to the packaged program.
 
-Primary commands:
+=head2 Native and Fallback Dispatch
 
-=over 4
+PAX can package native artifacts for supported hot regions. Runtime dispatch
+uses native execution when assumptions hold and falls back to bundled Perl
+payloads when they do not.
 
-=item * C<compile>
-=item * C<diff>
+=head2 Standalone Launcher
 
-=back
+The final output is an executable launcher containing package metadata, code
+units, dependency payloads, optional native artifacts, assets, and runtime helper
+code.
 
-=head2 3) Runtime dispatch
+=head1 EXAMPLES
 
-Execution uses a staged fallback strategy:
-
-=over 4
-
-=item * native artifact when safe and available
-=item * guarded execution when assumptions hold
-=item * source fallback when required
-
-=back
-
-Commands:
-
-=over 4
-
-=item * C<dispatch>, C<run-native>
-=item * C<why-not>, C<trace-guards>
-
-=back
-
-=head2 4) Packaging
-
-The primary packaging workflow is:
-
-=over 4
-
-=item * C<build> to compile a standalone executable binary
-
-=item * C<run> to build the same standalone executable and run it with arguments after C<-->
-
-=back
-
-Advanced C<app-*> and C<standalone-*> commands remain available for development and
-inspection. The public SOW-03 path is C<build> / C<run>. Standalone artifacts support
-asset embedding, code unit packaging, and command-level argument forwarding.
-
-=head1 CLI SURFACE
-
-Use:
-
-  perl bin/pax help
-
-The canonical usage list is emitted by the command runner. Primary commands:
-
-=over 4
-
-=item * C<build>
-=item * C<run>
-
-=back
-
-Advanced commands include:
-
-=over 4
-
-=item * C<capture>, C<inspect>, C<hir>, C<compile>, C<diff>
-=item * C<bench>, C<bench-matrix>, C<run-native>, C<dispatch>
-=item * C<profile>, C<why-not>, C<trace-guards>, C<gatekeeper>
-=item * C<app-build>, C<app-start>, C<app-run>, C<app-stop>
-=item * C<standalone-build>, C<standalone-run>, C<standalone-inspect>, C<standalone-extract>, C<standalone-why-not>, C<standalone-native-run>
-=item * C<cpan-matrix>, C<core-suite>, C<corpus>
-
-=back
-
-Common options:
-
-=over 4
-
-=item * C<--name>, C<--paxfile>, C<--no-paxfile>
-=item * C<--lib>, C<--source-root>, C<--asset>, C<--asset-dir>
-=item * C<--cpanfile> (standalone)
-=item * C<--runtime-mode> (standalone)
-=item * C<--output> / C<-o> (build/run standalone output, optional: overrides C<paxfile.yml>)
-=item * C<--compact> for compact JSON output
-
-=back
-
-=head1 PAXFILE SUPPORT
-
-By default, C<build>, C<run>, app builders, and standalone builders read C<paxfile.yml>. Supported keys:
-
-=over 4
-
-=item * C<name>
-=item * C<entrypoint>
-=item * C<libs>
-=item * C<source_roots>
-=item * C<assets>
-=item * C<asset_dirs>
-=item * C<cpanfiles>
-=item * C<output>
-=item * C<runtime_mode>
-=item * C<app_name>, C<app_namespace>
-=item * C<app_entrypoint_env>, C<app_entrypoint_fallback>, C<app_command>
-
-=back
-
-CLI flags override paxfile entries. Omitting file is allowed; C<--no-paxfile> disables file reads.
-
-For C<build>, C<run>, and C<standalone-build>, output path follows this precedence: CLI option, then C<paxfile.yml> C<output>, then the fallback C<./.pax/standalone/<name>/<name>>.
-
-=head1 SOW-03 EXAMPLES
-
-Build using C<paxfile.yml>:
+Build from C<paxfile.yml>:
 
   perl bin/pax build
 
-Build to an explicit output path:
+Build a specific entrypoint:
 
-  perl bin/pax build -o ./bin/my-app
+  perl bin/pax build -o ./build/example bin/example
 
-Build and run, passing arguments to the executable:
+Run after building:
 
-  perl bin/pax run -- version
-  perl bin/pax run --output ./bin/my-app -- version
+  perl bin/pax run -- status
 
-=head1 ENVIRONMENT
+Embed application assets:
 
-Runtime and build defaults support these variables:
+  perl bin/pax build \
+    --name webapp \
+    --lib lib \
+    --source-root lib \
+    --asset-dir share \
+    --cpanfile cpanfile \
+    --runtime-mode bundled_perl \
+    --output ./build/webapp \
+    bin/webapp
+
+Build PAX itself:
+
+  perl bin/pax build -o /tmp/pax bin/pax
+  /tmp/pax help
+
+=head1 DOCKER DEPLOYMENT MODEL
+
+PAX supports a minimal multi-stage image pattern:
+
+  FROM perl:5.42 AS builder
+  WORKDIR /workspace
+  COPY . /workspace
+  RUN cpanm --installdeps .
+  RUN perl bin/pax build --output /out/app
+
+  FROM debian:bookworm-slim
+  COPY --from=builder /out/app /usr/local/bin/app
+  CMD ["/usr/local/bin/app"]
+
+The final image contains only the executable. The source tree, assets, cpanfile,
+and framework installation are builder-stage inputs.
+
+=head1 ADAPTIVE COMPILATION RULE
+
+When a module or framework fails under PAX, fixes should improve a reusable
+compiler, packaging, loader, or runtime path for arbitrary modules of the same
+class. A project-specific branch is not complete when a neutral generalized
+implementation is locally actionable.
+
+=head1 RELEASE GATES
+
+Release readiness requires:
 
 =over 4
 
-=item * C<PAX_APP_ROOT> (default C<.pax/apps>)
-=item * C<PAX_STANDALONE_ROOT> (default C<.pax/standalone>)
-=item * C<PAX_CODE_UNIT_CAPTURE_TIMEOUT>
-=item * C<PAX_CODE_UNIT_MAX_CAPTURE_SUBS>
-=item * C<PAX_CODE_UNIT_MAX_CAPTURE_BYTES>
+=item * C<Changes>, C<README.md>, C<cpanfile>, C<dist.ini>, and C<lib/PAX.pm>.
+
+=item * canonical version synchronization across all PAX modules.
+
+=item * POD and README parity for public behavior.
+
+=item * C<make test>.
+
+=item * C<make release-gate>.
+
+=item * C<make cpan-build> and C<make cpan-gate>.
 
 =back
 
-=head1 CPAN GATE
+C<cpan-gate> also verifies that release tarballs and the git index exclude
+temporary probes, generated workspaces, planning artifacts, and other
+non-release paths.
 
-Distribution gates require:
-
-=over 4
-
-=item * C<Changes>, C<README.md>, C<cpanfile>, C<dist.ini>, C<lib/PAX.pm> present
-=item * canonical version sync through all PAX modules
-=item * comprehensive module POD in C<lib/PAX.pm>, aligned with C<README.md>
-=item * CPAN targets in C<Makefile>: C<cpan-dist>, C<cpan-build>, C<cpan-release>
-=item * release tarball produced via C<make cpan-build> and stale artifacts removed
-
-=back
-
-Run the gate:
-
-  make cpan-bump-version VERSION=0.004
-  make cpan-build
+C<make cpan-dist> and C<make cpan-build> bump the distribution version by
+C<0.001> before running C<dzil build>. The release flow then enforces a version
+gate, a C<Changes> gate, and a documentation gate for C<README.md> plus this
+module POD before building the tarball.
 
 =head1 KNOWN LIMITATIONS
 
 =over 4
 
-=item * Runtime behavior and speed depend on workload shape and successful region selection.
-=item * Dynamic module loading paths may stay in source fallback when they are not statically discoverable.
-=item * Standalone launcher generation depends on local compiler availability.
+=item * Dynamic loading and runtime mutation can require fallback paths.
+
+=item * Native speed depends on region selection and guard validity.
+
+=item * Bundled runtime executables are larger than wrappers because they carry
+runtime payloads needed to run without the source tree.
+
+=item * Docker validation requires local Docker access.
 
 =back
 
@@ -241,18 +247,21 @@ Run the gate:
 
 =over 4
 
-=item * C<Changes> — changelog
-=item * C<README.md> — user and operator docs
-=item * C<cpanfile> — dependency source of truth
-=item * C<dist.ini> — Dist::Zilla config
-=item * C<bin/pax> — command entrypoint
-=item * C<lib/PAX/*> — compiler/runtime modules
-=item * C<paxfile.yml> — project build defaults
+=item * C<bin/pax> - public command entrypoint.
+
+=item * C<lib/PAX/> - compiler, packaging, runtime, and validation modules.
+
+=item * C<paxfile.yml> - neutral build manifest.
+
+=item * C<README.md> - operator documentation.
+
+=item * C<Changes>, C<cpanfile>, C<dist.ini> - release metadata.
 
 =back
 
 =head1 SEE ALSO
 
-L</README.md>, and SOW documents in repository root.
+The repository C<README.md> mirrors the public command contract and operator
+workflow documented here.
 
 =cut

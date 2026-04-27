@@ -7,14 +7,14 @@ RUN apt-get update \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace
+WORKDIR /workspace/examples/webapp
 COPY bin /workspace/bin
 COPY lib /workspace/lib
 COPY examples/webapp /workspace/examples/webapp
 
 RUN cpanm --notest Dancer2 Plack Starman Template
 
-RUN perl -Ilib bin/pax standalone-build --compact --paxfile examples/webapp/paxfile.yml > /tmp/pax-webapp-build.json
+RUN perl -I/workspace/lib /workspace/bin/pax build --compact --paxfile paxfile.yml > /tmp/pax-webapp-build.json
 
 FROM debian:trixie-slim
 
@@ -25,7 +25,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=build /workspace/.pax/standalone/pax-webapp/pax-webapp /app/pax-webapp
+COPY --from=build /workspace/examples/webapp/.pax/standalone/pax-webapp/pax-webapp /app/pax-webapp
 
 EXPOSE 5000
 

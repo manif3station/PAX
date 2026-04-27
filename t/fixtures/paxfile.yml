@@ -1,6 +1,6 @@
-name: fixture-dashboard
+name: fixture-app
 entrypoint: t/fixtures/app_entry.pl
-output: t/tmp-sow03/fixture-dashboard
+output: t/tmp-sow03/fixture-app
 libs:
   - t/fixtures/app_lib
 assets:

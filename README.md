@@ -1,226 +1,205 @@
 # PAX
 
-**PAX** is a Perl-native adaptive execution and packaging toolchain.
+**PAX** is a Perl-native adaptive compiler and standalone binary packager.
 
-It is designed to be:
-
-- **generic**: no hard-coded project/module assumptions
-- **fast**: compile and execute hot paths where feasible
-- **deployable**: build single-file artifacts or app launchers for staging into minimal containers
-- **repeatable**: manifest-driven inputs and versioned CPAN artifacts
-
-This repository uses separate validation targets and example apps only.
-
-## What changed in this iteration
-
-PAX documentation now requires parity at the top level between:
-
-- `lib/PAX.pm` main POD
-- `README.md`
-- release records (`Changes`, `cpanfile`, `dist.ini`)
-
-## Quick start
-
-Run a command:
+The public command surface is intentionally small:
 
 ```bash
 perl bin/pax help
+perl bin/pax build
+perl bin/pax run
 ```
 
-Build a standalone executable. With no positional argument, PAX reads `paxfile.yml`:
+Everything else in the repository is compiler/runtime implementation, test
+coverage, or release tooling. Users should not call internal diagnostic
+subcommands through `bin/pax`.
+
+## Goals
+
+- Build one executable from a Perl entrypoint.
+- Read repeatable build inputs from `paxfile.yml`.
+- Let CLI arguments override `paxfile.yml`.
+- Embed assets and dependency payloads into the executable.
+- Keep PAX neutral: no project-specific package names in compiler, loader, or runtime logic.
+- Preserve correctness with fallback paths while compiling supported code units and native regions.
+
+## Quick Start
+
+Build from a local `paxfile.yml`:
 
 ```bash
 perl bin/pax build
-perl bin/pax build -o ./bin/my-app
 ```
 
-Run it. `pax run` uses the same paxfile/CLI build inputs, builds the standalone binary, and then executes it:
+Build an explicit entrypoint:
+
+```bash
+perl bin/pax build bin/my-app
+```
+
+Build to a specific output path:
+
+```bash
+perl bin/pax build -o ./build/my-app bin/my-app
+perl bin/pax build --output ./build/my-app bin/my-app
+```
+
+Build and immediately run:
 
 ```bash
 perl bin/pax run -- version
-perl bin/pax run --output ./bin/my-app -- version
+perl bin/pax run bin/my-app -- version
 ```
 
-Lower-level app-server commands are still available for diagnostics and development, but the main workflow is `build` and `run`.
+`pax run` uses the same build inputs as `pax build`, writes or refreshes the
+standalone executable, and then executes that binary with arguments after `--`.
 
-Build an app image (server-style, advanced):
+## CLI Contract
 
-```bash
-perl bin/pax app-build --name dashboard "examples/webapp/bin/pax-webapp"
+```text
+usage:
+  pax build ...
+  pax run ...
 ```
 
-Start it and run one request (or script arguments):
+Public commands:
 
-```bash
-perl bin/pax app-start --name dashboard --daemonize
-perl bin/pax app-run --name dashboard -- version
-perl bin/pax app-stop --name dashboard
+- `build`: compile/package the source tree behind an entrypoint into one executable.
+- `run`: build the executable, then run it.
+
+Common options:
+
+- `--paxfile`: read defaults from a manifest path; default is `paxfile.yml`.
+- `--no-paxfile`: ignore manifest defaults.
+- `--name`: artifact name.
+- `--lib`: application library path; repeatable.
+- `--source-root`: source tree to scan/package; repeatable.
+- `--cpanfile`: dependency policy/source file; repeatable.
+- `--asset`: individual asset file to embed; repeatable.
+- `--asset-dir`: asset directory to embed recursively; repeatable.
+- `--output` / `-o`: executable output path.
+- `--runtime-mode`: runtime strategy, typically `bundled_perl` or `host_perl`.
+- `--compact`: compact JSON build output.
+
+## `paxfile.yml`
+
+With no positional entrypoint, `pax build` and `pax run` read `paxfile.yml`.
+CLI flags override file values.
+
+Example:
+
+```yaml
+name: example-app
+entrypoint: bin/example-app
+output: build/example-app
+libs:
+  - lib
+source_roots:
+  - lib
+assets:
+  - share/banner.txt
+asset_dirs:
+  - share/public
+cpanfiles:
+  - cpanfile
+runtime_mode: bundled_perl
 ```
 
-`app-start` and `app-run` are useful for app patterns where socket lifecycle and preloading are
-part of deployment.
+Output path precedence:
 
-## CLI command map
+1. CLI `--output` / `-o`
+2. `paxfile.yml` `output`
+3. fallback `.pax/standalone/<name>/<name>`
 
-Primary commands:
+## Asset Embedding
 
-- `build`
-- `run`
+Assets are copied into the executable payload and extracted into a private
+runtime directory when the binary starts. Framework code can read them through
+the embedded asset root prepared by the PAX runtime.
 
-Advanced diagnostic and compatibility commands:
-
-- `capture`
-- `inspect`
-- `hir`
-- `compile`
-- `diff`
-- `run-native`
-- `dispatch`
-- `bench`
-- `bench-matrix`
-- `profile`
-- `why-not`
-- `trace-guards`
-- `gatekeeper`
-- `corpus`
-- `core-suite`
-- `cpan-matrix`
-- `app-build`
-- `app-start`
-- `app-run`
-- `app-stop`
-- `standalone-build`
-- `standalone-run`
-- `standalone-inspect`
-- `standalone-extract`
-- `standalone-why-not`
-- `standalone-native-run`
-
-Get complete flag-level usage:
-
-```bash
-perl bin/pax help
-```
-
-Common options include:
-
-- `--name`
-- `--paxfile` (default `paxfile.yml`)
-- `--no-paxfile`
-- `--lib`
-- `--source-root`
-- `--asset`
-- `--asset-dir`
-- `--cpanfile` (standalone only)
-- `--runtime-mode` (standalone only)
-- `--output` / `-o` (build/run output path, optional: overrides `paxfile.yml` `output`)
-- `--compact`
-
-## Runtime behavior model
-
-PAX uses staged fallback:
-
-1. Native dispatch when a compiled artifact can be selected
-2. Guarded execution when assumptions are safe
-3. Source fallback when required
-
-This preserves correctness-first behavior while improving startup and hot-path execution
-for workloads with stable region behavior.
-
-## `paxfile.yml` contract
-
-`build`, `run`, `standalone-build`, `app-build`, and related commands accept `paxfile.yml` values as defaults:
-
-- `name`
-- `entrypoint`
-- `libs`
-- `source_roots`
-- `assets`
-- `asset_dirs`
-- `cpanfiles`
-- `output`
-- `runtime_mode`
-- `app_name`
-- `app_namespace`
-- `app_entrypoint_env`
-- `app_entrypoint_fallback`
-- `app_command`
-
-CLI flags always override file values. Use `--no-paxfile` to skip file reads entirely.
-
-Output resolution for `build`, `run`, and `standalone-build`:
-
-- `--output` / `-o` on CLI (highest priority)
-- `output` in `paxfile.yml` (if not overridden)
-- default path `./.pax/standalone/<name>/<name>` (final fallback)
-
-## Building with asset embedding
-
-To embed assets with a standalone artifact:
+Example:
 
 ```bash
 perl bin/pax build \
-  --name dashboard \
-  --paxfile paxfile.yml \
-  --asset-dir "examples/webapp/share" \
-  --asset "examples/webapp/share/public/favicon.ico" \
-  --source-root "examples/webapp" \
-  --cpanfile "examples/webapp/cpanfile" \
-  "examples/webapp/bin/pax-webapp" \
-  --output ./.pax/standalone/dashboard/dashboard \
-  --runtime-mode bundled_perl
+  --name webapp \
+  --lib lib \
+  --source-root lib \
+  --asset-dir share \
+  --cpanfile cpanfile \
+  --runtime-mode bundled_perl \
+  --output ./build/webapp \
+  bin/webapp
 ```
 
-This embeds:
+This pattern supports web applications that include Perl modules, templates,
+CSS, JavaScript, and other static files.
 
-- compiled code units
-- selected assets
-- runtime dispatch metadata
-- optional dependency payloads from `cpanfiles`
+## Docker Deployment
 
-Validate the artifact:
-
-```bash
-perl bin/pax standalone-inspect --name dashboard
-perl bin/pax standalone-why-not --name dashboard
-perl bin/pax run --paxfile paxfile.yml -- version
-```
-
-## 2-stage Docker pattern
-
-Use this when the final runtime image should only contain the final executable
-(no source app tree, no `cpanfile`, no framework modules).
-
-**Stage 1** (build): run PAX and produce artifact.
+Two-stage pattern for a generic project:
 
 ```dockerfile
 FROM perl:5.42 AS builder
 WORKDIR /workspace
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential cpanminus && rm -rf /var/lib/apt/lists/*
 COPY . /workspace
 RUN cpanm --installdeps .
-RUN perl bin/pax build --name dashboard --paxfile paxfile.yml --runtime-mode bundled_perl --output /out/dashboard
-```
+RUN perl bin/pax build --output /out/app
 
-**Stage 2** (runtime): ship only output binary.
-
-```dockerfile
 FROM debian:bookworm-slim
-COPY --from=builder /out/dashboard /usr/local/bin/dashboard
-CMD ["/usr/local/bin/dashboard"]
+COPY --from=builder /out/app /usr/local/bin/app
+CMD ["/usr/local/bin/app"]
 ```
 
-> This pattern is intentionally minimal and depends on project-specific
-> `paxfile.yml` content for framework/library paths.
+The final stage receives only the built executable. It does not need the source
+tree, asset tree, `cpanfile`, or web framework installation when the binary was
+built in bundled runtime mode.
 
-## CPAN release gates (must pass before release-marking)
+## Self Compile
 
-PAX enforces release alignment through scripts and Makefile targets:
+PAX can build PAX itself:
 
 ```bash
-make cpan-sync-versions
-make cpan-dist
+perl bin/pax build -o /tmp/pax bin/pax
+/tmp/pax help
+```
+
+In a directory with no `paxfile.yml`, the entrypoint and output path are enough.
+In a project directory, `paxfile.yml` is still applied unless `--no-paxfile` is
+used.
+
+## Architecture
+
+PAX packages an application through these stages:
+
+1. Entrypoint and manifest loading.
+2. Dependency and source-root discovery.
+3. Code unit compilation into PCU or hybrid PCU records where supported.
+4. Native artifact packaging for supported hot regions.
+5. Asset and runtime payload embedding.
+6. Standalone launcher generation.
+7. Runtime extraction and dispatch with fallback safety.
+
+Compilation is adaptive. If a module shape fails, the preferred fix is a reusable
+compiler, loader, dependency discovery, or runtime improvement that works for
+other projects with the same structure.
+
+## Known Limits
+
+- Perl’s dynamic loading and runtime mutation can require fallback code paths.
+- Native speedups depend on whether PAX can prove a region is safe to compile.
+- Bundled runtime artifacts are larger than source-only wrappers because they
+  include enough Perl/runtime payload to run without the source tree.
+- Docker validation requires a local Docker daemon and build access.
+
+## CPAN Release Gates
+
+Release readiness is checked by the repository gates:
+
+```bash
+make test
+make release-gate
 make cpan-build
+make cpan-gate
 ```
 
 Optional release:
@@ -229,47 +208,39 @@ Optional release:
 make cpan-release
 ```
 
-Bump version:
+Required release files:
 
-```bash
-make cpan-bump-version VERSION=0.004
-```
+- `Changes`
+- `README.md`
+- `cpanfile`
+- `dist.ini`
+- `lib/PAX.pm`
 
-Required checks for this gate:
+The CPAN gate verifies the distribution tarball and git index exclude temporary
+runtime probes, generated workspaces, coverage output, planning artifacts, and
+other non-release files.
 
-- `Changes`, `README.md`, `cpanfile`, `dist.ini`, `lib/PAX.pm` exist
-- `lib/PAX.pm` version is canonical
-- `lib/PAX/**/*.pm` version sync is complete
-- `lib/PAX.pm` POD includes current behavior and aligns with README
-- Makefile contains cpan targets and release outputs are regenerated each time
+Release flow rule:
 
-## CPAN files in this repo
+- `make cpan-dist` and `make cpan-build` bump the version by `0.001` before
+  running `dzil build`.
+- the build then runs `version-gate`, `changes-gate`, and `doc-gate`.
+- `Changes` must have the new version as the top entry.
+- `README.md` and `lib/PAX.pm` must satisfy the documentation gate before the
+  tarball is built.
 
-- `lib/PAX.pm` – canonical version, package docs, gate contract
-- `cpanfile` – dependency source of truth
-- `dist.ini` – Dist::Zilla config and `Prereqs::FromCPANfile`
-- `Changes` – release notes
+## Repository Map
 
-## Notes for contributors
+- `bin/pax`: public command entrypoint.
+- `lib/PAX/`: compiler, packager, loader, runtime, and validation modules.
+- `t/`: unit, behavior, and acceptance tests.
+- `examples/`: neutral examples used to validate packaging behavior.
+- `paxfile.yml`: neutral example build manifest.
 
-- Keep PAX project-neutral. Never hard-code project-specific package names in core modules.
-- Prefer adaptive fixes that generalize to similar module classes.
-- If logic for one app shape is added, extract generic logic and re-use it.
-- When core behavior changes, update docs and POD in touched modules immediately.
+## Contributor Rules
 
-## Documentation parity check
-
-This document and `lib/PAX.pm` are the canonical end-user and API-level entry points.
-
-- `lib/PAX.pm` focuses on module contract, architecture, and formal behavior.
-- `README.md` focuses on operator workflow, examples, and command usage.
-- Both files should stay synchronized as features evolve.
-
-## Repository quick map
-
-- `bin/pax`: command entrypoint
-- `lib/PAX/`: modules and runtime/compiler pipeline
-- `t/`: tests
-- release automation scripts: version sync and bump helpers
-- `paxfile.yml`: example default build manifest
-- `PAX-*.tar.gz`, `PAX-*`: release artifacts generated by `make cpan-build`
+- Keep PAX project-neutral.
+- Turn project-specific lessons into reusable compiler/runtime rules.
+- Keep `README.md` and `lib/PAX.pm` aligned.
+- Update POD and tests with behavior changes.
+- Run the gates before treating a release build as complete.

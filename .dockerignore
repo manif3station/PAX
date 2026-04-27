@@ -1,9 +1,17 @@
-**
-!.dockerignore
-!bin/
-!bin/**
-!lib/
-!lib/**
-!examples/
-!examples/webapp/
-!examples/webapp/**
+.git
+.pax
+**/.pax
+*.pdf
+projects
+project
+DD Source Code
+blogs
+cover_db
+support
+pax-webapp
+SOW*
+AGENTS.override.md
+PAX-*.tar.gz
+PAX-*.tgz
+pax-runtime-probe-*.pl
+t/tmp*

@@ -1,95 +1,67 @@
 PERL ?= perl
 DOCKER ?= docker
 PAX_IMAGE ?= pax-dev:perl-5.42
-DIST_VERSION ?= $(shell $(PERL) -Ilib -MPAX -e "print \$$PAX::VERSION")
-CPAN_DISTRIBUTION := PAX-$(DIST_VERSION)
-CPAN_TARBALL := $(CPAN_DISTRIBUTION).tar.gz
 
-.PHONY: test capture inspect hir compile build diff bench bench-matrix run-native corpus core-suite cpan-matrix dispatch profile run why-not trace-guards gatekeeper docker-build docker-test docker-shell docker-inspect docker-compile docker-run-native docker-corpus docker-core-suite docker-cpan-matrix docker-dispatch docker-profile docker-bench-matrix docker-run docker-why-not docker-trace-guards docker-gatekeeper cpan-clean cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-verify-paths cpan-gate git-gate
+.PHONY: test build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate doc-gate changes-gate release-gate cpan-verify-paths cpan-gate git-gate
 
 test:
 	prove -lr t
 
-capture:
-	$(PERL) bin/pax capture t/fixtures/simple.pl
-
-inspect:
-	$(PERL) bin/pax inspect t/fixtures/simple.pl
-
-hir:
-	$(PERL) bin/pax hir t/fixtures/simple.pl
-
-compile:
-	$(PERL) bin/pax compile t/fixtures/simple.pl
-
 build:
 	$(PERL) bin/pax build --paxfile t/fixtures/paxfile.yml
-
-diff:
-	$(PERL) bin/pax diff t/fixtures/simple.pl
-
-bench:
-	$(PERL) bin/pax bench --iterations 1 t/fixtures/simple.pl
-
-bench-matrix:
-	$(PERL) bin/pax bench-matrix --iterations 1 t/benchmark_matrix.json
-
-run-native:
-	$(PERL) bin/pax run-native --left 10 --right 32 t/fixtures/simple.pl
-
-corpus:
-	$(PERL) bin/pax corpus t/corpus.json
-
-core-suite:
-	$(PERL) bin/pax core-suite t/perl_core_suite.json
-
-cpan-matrix:
-	$(PERL) bin/pax cpan-matrix t/cpan_matrix.json
-
-dispatch:
-	$(PERL) bin/pax dispatch --left 10 --right 32 t/fixtures/simple.pl
-
-profile:
-	$(PERL) bin/pax profile --iterations 2 --threshold 2 --region add t/fixtures/native_leafs.pl
 
 run:
 	$(PERL) bin/pax run --paxfile t/fixtures/paxfile.yml -- status
 
-why-not:
-	$(PERL) bin/pax why-not --region add t/fixtures/native_leafs.pl
-
-trace-guards:
-	$(PERL) bin/pax trace-guards --region add t/fixtures/native_leafs.pl
-
-gatekeeper:
-	$(PERL) bin/pax gatekeeper
-
 cpan-clean:
-	rm -rf .build $(CPAN_DISTRIBUTION) $(CPAN_TARBALL) .dzil
+	rm -rf .build PAX-* PAX-*.tar.gz PAX-*.tgz .dzil
 
-cpan-dist:
+version-gate:
+	$(PERL) tools/version_gate.pl
+
+doc-gate:
+	$(PERL) tools/doc_gate.pl
+
+changes-gate:
+	$(PERL) tools/changes_gate.pl
+
+release-gate: version-gate changes-gate doc-gate
+	@echo "release-gate: version, Changes, and docs OK"
+
+cpan-auto-bump:
+	@next="$$( $(PERL) tools/next_version.pl )"; \
+	echo "cpan-auto-bump: bumping version to $$next"; \
+	$(PERL) tools/bump_version.pl "$$next"
+
+cpan-dist: cpan-auto-bump release-gate
 	command -v dzil >/dev/null 2>&1 || (echo "Dist::Zilla is required: cpanm Dist::Zilla" && exit 1)
 	$(MAKE) cpan-clean
 	dzil build
-	@tmp_dir=$$(mktemp -d); \
-	tar -xzf "$(CPAN_TARBALL)" -C "$$tmp_dir"; \
-	rm -rf "$$tmp_dir/$(CPAN_DISTRIBUTION)/t/tmp"*; \
-	tar -czf "$(CPAN_TARBALL)" -C "$$tmp_dir" "$(CPAN_DISTRIBUTION)"; \
+	@version="$$( $(PERL) -Ilib -MPAX -e 'print $$PAX::VERSION' )"; \
+	dist="PAX-$$version"; \
+	tarball="$$dist.tar.gz"; \
+	tmp_dir="$$(mktemp -d)"; \
+	tar -xzf "$$tarball" -C "$$tmp_dir"; \
+	rm -rf "$$tmp_dir/$$dist/t/tmp"*; \
+	tar -czf "$$tarball" -C "$$tmp_dir" "$$dist"; \
 	rm -rf "$$tmp_dir"
 
 cpan-build: cpan-dist
-	@echo "PAX distribution $(CPAN_TARBALL) built"
+	@version="$$( $(PERL) -Ilib -MPAX -e 'print $$PAX::VERSION' )"; \
+	echo "PAX distribution PAX-$$version.tar.gz built"
 
 cpan-gate: cpan-dist cpan-verify-paths git-gate
 	@echo "cpan-gate: CPAN and git gates OK"
 
 cpan-verify-paths:
-	@if [ ! -f "$(CPAN_TARBALL)" ]; then \
-		echo "missing tarball $(CPAN_TARBALL)"; \
+	@version="$$( $(PERL) -Ilib -MPAX -e 'print $$PAX::VERSION' )"; \
+	tarball="PAX-$$version.tar.gz"; \
+	if [ ! -f "$$tarball" ]; then \
+		echo "missing tarball $$tarball"; \
 		exit 1; \
-	fi
-		@bad=$$(tar -tf "$(CPAN_TARBALL)" | \
-		awk -v ver="$(DIST_VERSION)" '\
+	fi; \
+	bad=$$(tar -tf "$$tarball" | \
+		awk -v ver="$$version" '\
 		BEGIN { \
 			root = "PAX-" ver "/"; \
 				n = split("DD Source Code/,projects/,project/,cover_db/,support/,pax-webapp/,blogs/,AGENTS.override.md,t/tmp", forbidden, ","); \
@@ -108,7 +80,7 @@ cpan-verify-paths:
 				if (ok) { print line; } \
 		}' ); \
 	if [ -n "$$bad" ]; then \
-		echo "blocked entries in $(CPAN_TARBALL):"; \
+		echo "blocked entries in $$tarball:"; \
 		echo "$$bad"; \
 		exit 1; \
 	fi
@@ -128,13 +100,11 @@ cpan-release:
 	dzil release
 
 cpan-sync-versions:
-	$(PERL) support/sync_versions.pl
+	$(PERL) tools/sync_versions.pl
 
 cpan-bump-version:
 	@if [ -z "$(VERSION)" ]; then echo "Usage: make cpan-bump-version VERSION=0.002"; exit 1; fi
-	$(PERL) support/bump_version.pl $(VERSION)
-
-.PHONY: docker-build docker-test docker-shell docker-inspect docker-compile
+	$(PERL) tools/bump_version.pl $(VERSION)
 
 docker-build:
 	$(DOCKER) build -t $(PAX_IMAGE) .
@@ -145,41 +115,8 @@ docker-test:
 docker-shell:
 	$(DOCKER) run --rm -it -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) bash
 
-docker-inspect:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax inspect t/fixtures/simple.pl
-
-docker-compile:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax compile t/fixtures/simple.pl
-
-docker-run-native:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax run-native --left 10 --right 32 t/fixtures/simple.pl
-
-docker-corpus:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax corpus t/corpus.json
-
-docker-core-suite:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax core-suite t/perl_core_suite.json
-
-docker-cpan-matrix:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax cpan-matrix t/cpan_matrix.json
-
-docker-dispatch:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax dispatch --left 10 --right 32 t/fixtures/simple.pl
-
-docker-profile:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax profile --iterations 2 --threshold 2 --region add t/fixtures/native_leafs.pl
-
-docker-bench-matrix:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax bench-matrix --iterations 1 t/benchmark_matrix.json
+docker-build-app:
+	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax build --paxfile t/fixtures/paxfile.yml
 
 docker-run:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax run --left 10 --right 32 t/fixtures/simple.pl
-
-docker-why-not:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax why-not --region add t/fixtures/native_leafs.pl
-
-docker-trace-guards:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax trace-guards --region add t/fixtures/native_leafs.pl
-
-docker-gatekeeper:
-	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax gatekeeper
+	$(DOCKER) run --rm -v $(CURDIR):/workspace -w /workspace $(PAX_IMAGE) perl bin/pax run --paxfile t/fixtures/paxfile.yml -- status

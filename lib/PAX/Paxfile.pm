@@ -1,6 +1,6 @@
 package PAX::Paxfile;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 use strict;
 use warnings;
@@ -15,6 +15,7 @@ sub load_optional {
 sub load {
     my ($class, $path) = @_;
     open my $fh, '<', $path or die "cannot read $path: $!";
+    local $/ = "\n";
     my %data;
     my $section;
     while (defined(my $line = <$fh>)) {

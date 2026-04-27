@@ -1,6 +1,6 @@
 package PAX::CLI;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 use strict;
 use warnings;
@@ -35,89 +35,11 @@ sub run {
     my ($class, @argv) = @_;
     my $command = shift @argv // 'help';
 
-    if ($command eq 'capture') {
-        return $class->_capture(@argv);
-    }
     if ($command eq 'run') {
         return $class->_run(@argv);
     }
-    if ($command eq 'inspect') {
-        return $class->_inspect(@argv);
-    }
-    if ($command eq 'hir') {
-        return $class->_hir(@argv);
-    }
-    if ($command eq 'compile') {
-        return $class->_compile(@argv);
-    }
     if ($command eq 'build') {
         return $class->_build(@argv);
-    }
-    if ($command eq 'diff') {
-        return $class->_diff(@argv);
-    }
-    if ($command eq 'bench') {
-        return $class->_bench(@argv);
-    }
-    if ($command eq 'bench-matrix') {
-        return $class->_bench_matrix(@argv);
-    }
-    if ($command eq 'run-native') {
-        return $class->_run_native(@argv);
-    }
-    if ($command eq 'corpus') {
-        return $class->_corpus(@argv);
-    }
-    if ($command eq 'core-suite') {
-        return $class->_core_suite(@argv);
-    }
-    if ($command eq 'cpan-matrix') {
-        return $class->_cpan_matrix(@argv);
-    }
-    if ($command eq 'dispatch') {
-        return $class->_dispatch(@argv);
-    }
-    if ($command eq 'profile') {
-        return $class->_profile(@argv);
-    }
-    if ($command eq 'why-not') {
-        return $class->_why_not(@argv);
-    }
-    if ($command eq 'trace-guards') {
-        return $class->_trace_guards(@argv);
-    }
-    if ($command eq 'gatekeeper') {
-        return $class->_gatekeeper(@argv);
-    }
-    if ($command eq 'app-build') {
-        return $class->_app_build(@argv);
-    }
-    if ($command eq 'app-start') {
-        return $class->_app_start(@argv);
-    }
-    if ($command eq 'app-run') {
-        return $class->_app_run(@argv);
-    }
-    if ($command eq 'app-stop') {
-        return $class->_app_stop(@argv);
-    }
-    if ($command eq 'standalone-build') {
-        return $class->_standalone_build(@argv);
-    }
-    if ($command eq 'standalone-run') {
-        return $class->_standalone_run(@argv);
-    }
-    if ($command eq 'standalone-inspect') {
-        return $class->_standalone_inspect(@argv);
-    }
-    if ($command eq 'standalone-extract') {
-        return $class->_standalone_extract(@argv);
-    }
-    if ($command eq 'standalone-why-not') {
-        return $class->_standalone_why_not(@argv);
-    }
-    if ($command eq 'standalone-native-run') {
-        return $class->_standalone_native_run(@argv);
     }
     if ($command eq 'help' || $command eq '--help' || $command eq '-h') {
         print _usage();
@@ -1429,35 +1351,36 @@ sub _json {
 sub _usage {
     return <<'USAGE';
 usage:
-  pax build [--paxfile paxfile.yml] [--no-paxfile] [--name name] [--lib path] [--source-root path] [--cpanfile path] [--asset file] [--asset-dir path] [--output|-o path] [--runtime-mode mode] [--compact] [entrypoint.pl]
-  pax run [--paxfile paxfile.yml] [--no-paxfile] [--name name] [--lib path] [--source-root path] [--cpanfile path] [--asset file] [--asset-dir path] [--output|-o path] [--runtime-mode mode] [entrypoint.pl] [-- args...]
-  pax capture [--mode live|hermetic] [--compact] <entrypoint.pl>
-  pax inspect [--mode live|hermetic] <entrypoint.pl>
-  pax hir [--mode live|hermetic] [--compact] <entrypoint.pl>
-  pax compile [--mode live|hermetic] [--compact] <entrypoint.pl>
-  pax diff [--compact] <entrypoint.pl>
-  pax bench [--iterations n] [--compact] <entrypoint.pl>
-  pax bench-matrix [--iterations n] [--compact] <benchmark-matrix.json>
-  pax run-native [--left n] [--right n] [--compact] <entrypoint.pl>
-  pax corpus [--compact] <manifest.json>
-  pax core-suite [--compact] <perl-core-suite.json>
-  pax cpan-matrix [--compact] <cpan-matrix.json>
-  pax dispatch [--region name] [--left n] [--right n] [--compact] <entrypoint.pl>
-  pax profile [--iterations n] [--threshold n] [--region name] [--compact] <entrypoint.pl>
-  pax why-not [--region name] [--compact] <entrypoint.pl>
-  pax trace-guards [--region name] [--compact] <entrypoint.pl>
-  pax gatekeeper [--compact]
-  pax app-build [--paxfile paxfile.yml] [--no-paxfile] [--name name] [--lib path] [--asset file] [--asset-dir path] [--compact] [entrypoint.pl]
-  pax app-start --name name [--daemonize] [--compact]
-  pax app-run --name name [-- args...]
-  pax app-stop --name name
-  pax standalone-build [--paxfile paxfile.yml] [--no-paxfile] [--name name] [--app-name name] [--app-namespace namespace] [--app-entrypoint-env NAME] [--app-entrypoint-fallback VALUE] [--app-command VALUE] [--lib path] [--source-root path] [--cpanfile path] [--asset file] [--asset-dir path] [--output|-o path] [--runtime-mode mode] [--compact] [entrypoint.pl]
-  pax standalone-run --name name [-- args...]
-  pax standalone-inspect --name name [--compact]
-  pax standalone-extract --name name --output dir
-  pax standalone-why-not --name name [--compact]
-  pax standalone-native-run --name name --region region [--left n] [--right n] [--invalidate key] [--compact]
+  pax build ...
+  pax run ...
 USAGE
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+PAX::CLI - public PAX command facade
+
+=head1 DESCRIPTION
+
+C<PAX::CLI> implements the SOW-03 public command surface for C<bin/pax>. The
+only public commands are C<build>, C<run>, and help aliases. Older diagnostic
+handlers remain private implementation methods so tests and internal modules can
+reuse them without exposing them as user CLI commands.
+
+=head1 PUBLIC COMMANDS
+
+=head2 build
+
+Reads CLI options and optional C<paxfile.yml> defaults, then builds a standalone
+executable through C<PAX::StandaloneImage>.
+
+=head2 run
+
+Uses the same build configuration path as C<build>, then executes the resulting
+standalone binary with arguments after C<-->.
+
+=cut

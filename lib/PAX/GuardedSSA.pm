@@ -1,6 +1,6 @@
 package PAX::GuardedSSA;
 
-our $VERSION = '0.003';
+our $VERSION = '0.007';
 
 use strict;
 use warnings;
