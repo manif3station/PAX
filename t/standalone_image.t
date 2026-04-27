@@ -63,7 +63,8 @@ my $built = $builder->build(
 
 is($built->{status}, 'built', 'standalone image built');
 ok(@progress_events >= 6, 'standalone image build emits progress events');
-ok((grep { ($_->{task_id} // '') eq 'compile_code_units' && ($_->{status} // '') eq 'running' } @progress_events) >= 1, 'standalone image build reports code-unit compilation start');
+ok((grep { ($_->{task_id} // '') eq 'discover_code_units' && ($_->{status} // '') eq 'running' } @progress_events) >= 1, 'standalone image build reports source discovery start');
+ok((grep { ($_->{task_id} // '') eq 'compile_application_units' && ($_->{status} // '') eq 'running' } @progress_events) >= 1, 'standalone image build reports application-unit compilation progress');
 ok((grep { ($_->{task_id} // '') eq 'compile_launcher' && ($_->{status} // '') eq 'done' } @progress_events) >= 1, 'standalone image build reports launcher completion');
 ok(-f $built->{manifest_path}, 'manifest written');
 ok(-x $built->{standalone}{output_path}, 'standalone executable built');
@@ -111,6 +112,23 @@ is($fake_runtime_libs[0], $fake_libperl, 'runtime lib discovery returns exact fa
     );
     my @runtime_lib_payloads = grep { ($_->{unit_kind} // '') eq 'runtime_lib' } @{ $manifest->{payloads} // [] };
     ok((grep { ($_->{logical_path} // '') eq 'lib/libperl.so.999' } @runtime_lib_payloads), 'runtime_lib payload includes discovered libperl from runtime inc');
+}
+
+my $nested_runtime_root = File::Spec->catdir($tmp_base, 'nested-runtime-app-lib');
+my $app_module_path = File::Spec->catfile($nested_runtime_root, 'AppLocal.pm');
+my $nested_runtime_module = File::Spec->catfile($nested_runtime_root, 'lib', 'perl5', '5.42.0', 'IO', 'Socket', 'INET.pm');
+make_path(File::Spec->catdir($nested_runtime_root, 'lib', 'perl5', '5.42.0', 'IO', 'Socket'));
+open my $app_module_fh, '>', $app_module_path or die "cannot write app-local module: $!";
+print {$app_module_fh} "package AppLocal;\n1;\n";
+close $app_module_fh;
+open my $nested_runtime_fh, '>', $nested_runtime_module or die "cannot write nested runtime module: $!";
+print {$nested_runtime_fh} "package IO::Socket::INET;\n1;\n";
+close $nested_runtime_fh;
+{
+    local @INC = (File::Spec->catdir($nested_runtime_root, 'lib', 'perl5', '5.42.0'), @INC);
+    my @scanned = PAX::StandaloneImage::_perl_files([$nested_runtime_root], exclude_nested_inc => 1);
+    ok((grep { $_ eq $app_module_path } @scanned), 'application lib scan keeps project module at root');
+    ok(!(grep { $_ eq $nested_runtime_module } @scanned), 'application lib scan skips nested runtime include tree');
 }
 
 my $hybrid_fast = `env -i PATH=/nonexistent TMPDIR=/tmp $binary hybrid-fast`;

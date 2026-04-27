@@ -29,10 +29,16 @@ sub new {
 sub build_progress_tasks {
     return [
         { id => 'resolve_inputs', label => 'Resolve build inputs' },
-        { id => 'compile_code_units', label => 'Compile Perl code units' },
-        { id => 'discover_dependencies', label => 'Discover runtime dependencies' },
+        { id => 'discover_code_units', label => 'Discover Perl source units' },
+        { id => 'compile_entrypoint', label => 'Compile entrypoint unit' },
+        { id => 'compile_application_units', label => 'Compile application units' },
+        { id => 'compile_dependency_units', label => 'Compile dependency units' },
+        { id => 'infer_app_metadata', label => 'Infer application metadata' },
+        { id => 'collect_assets', label => 'Collect embedded assets' },
+        { id => 'analyze_dependencies', label => 'Analyze runtime dependencies' },
+        { id => 'analyze_native', label => 'Analyze native artifacts' },
         { id => 'package_runtime', label => 'Package runtime payloads' },
-        { id => 'package_assets', label => 'Embed asset payloads' },
+        { id => 'write_manifest', label => 'Write standalone manifest' },
         { id => 'compile_launcher', label => 'Compile standalone launcher' },
     ];
 }
@@ -55,14 +61,14 @@ sub build {
         status => 'done',
         label => sprintf('Resolve build inputs (%d lib dirs, %d source roots)', scalar(@lib_dirs), scalar(@source_roots)),
     });
-    _progress_emit($progress, { task_id => 'compile_code_units', status => 'running' });
-    my @code_units = _code_manifest($abs_entrypoint, \@lib_dirs, \@source_roots);
-    _progress_emit($progress, {
-        task_id => 'compile_code_units',
-        status => 'done',
-        label => sprintf('Compile Perl code units (%d packaged units)', scalar(@code_units)),
-    });
+    my @code_units = _code_manifest(
+        $abs_entrypoint,
+        \@lib_dirs,
+        \@source_roots,
+        sub { _progress_emit($progress, $_[0]) },
+    );
 
+    _progress_emit($progress, { task_id => 'infer_app_metadata', status => 'running' });
     my $inferred_namespace = _infer_app_namespace(
         units => \@code_units,
         scan_roots => \@scan_roots,
@@ -84,37 +90,55 @@ sub build {
         image_name => $name,
         entrypoint => $entrypoint,
     );
+    _progress_emit($progress, {
+        task_id => 'infer_app_metadata',
+        status => 'done',
+        label => sprintf(
+            'Infer application metadata (%s namespace)',
+            $app_meta->{compat}{namespace} ne '' ? $app_meta->{compat}{namespace} : 'anonymous',
+        ),
+    });
     my $runtime_mode = $args{runtime_mode} // 'bundled_perl';
     my @cpanfiles = _abs_existing($args{cpanfiles} // []);
-    _progress_emit($progress, { task_id => 'package_assets', status => 'running' });
+    _progress_emit($progress, { task_id => 'collect_assets', status => 'running' });
     my $assets = _asset_manifest($args{assets} // [], $args{asset_dirs} // []);
     _progress_emit($progress, {
-        task_id => 'package_assets',
+        task_id => 'collect_assets',
         status => 'done',
-        label => sprintf('Embed asset payloads (%d assets)', scalar(@$assets)),
+        label => sprintf('Collect embedded assets (%d assets)', scalar(@$assets)),
     });
 
     my $analysis = PAX::StandaloneAnalysis->new;
-    _progress_emit($progress, { task_id => 'discover_dependencies', status => 'running' });
+    _progress_emit($progress, { task_id => 'analyze_dependencies', status => 'running' });
     my $dependencies = $analysis->dependencies(
         entrypoint => $abs_entrypoint,
         code_units => \@code_units,
         cpanfiles => \@cpanfiles,
     );
     _progress_emit($progress, {
-        task_id => 'discover_dependencies',
+        task_id => 'analyze_dependencies',
         status => 'done',
         label => sprintf(
-            'Discover runtime dependencies (%d packaged, %d bundled XS)',
+            'Analyze runtime dependencies (%d packaged, %d bundled XS)',
             $dependencies->{summary}{packaged_app} // 0,
             $dependencies->{summary}{bundled_xs} // 0,
         ),
     });
+    _progress_emit($progress, { task_id => 'analyze_native', status => 'running' });
     my $native = $analysis->native_artifacts(
         entrypoint => $abs_entrypoint,
         code_units => \@code_units,
     );
     my $native_payloads = _native_payloads($native->{items});
+    _progress_emit($progress, {
+        task_id => 'analyze_native',
+        status => 'done',
+        label => sprintf(
+            'Analyze native artifacts (%d native-ready, %d fallback-only)',
+            $native->{summary}{native_ready} // 0,
+            $native->{summary}{fallback_only} // 0,
+        ),
+    });
     _progress_emit($progress, { task_id => 'package_runtime', status => 'running' });
     my $runtime = _runtime_manifest(
         mode => $runtime_mode,
@@ -188,7 +212,16 @@ sub build {
         },
     };
 
+    _progress_emit($progress, { task_id => 'write_manifest', status => 'running' });
     _write_json(File::Spec->catfile($standalone_dir, 'manifest.json'), $manifest);
+    _progress_emit($progress, {
+        task_id => 'write_manifest',
+        status => 'done',
+        label => sprintf(
+            'Write standalone manifest (%s)',
+            $manifest->{output_path},
+        ),
+    });
     _progress_emit($progress, { task_id => 'compile_launcher', status => 'running' });
     my $compile = _compile_launcher($manifest);
     _progress_emit($progress, {
@@ -353,12 +386,36 @@ sub _logical_root {
 }
 
 sub _code_manifest {
-    my ($entrypoint, $lib_dirs, $source_roots) = @_;
+    my ($entrypoint, $lib_dirs, $source_roots, $progress) = @_;
     my @manifest;
     my %seen;
     my %seen_modules;
     my $compiler = PAX::CodeUnitCompiler->new;
     my @preferred_roots = grep { defined && $_ ne '' } (dirname($entrypoint), @$lib_dirs, @$source_roots);
+    my @lib_files = map { _perl_files([$_], exclude_nested_inc => 1) } @$lib_dirs;
+    my @source_files = map { _perl_files([$_], exclude_nested_inc => 1) } @$source_roots;
+    my $application_total = scalar(@lib_files) + scalar(@source_files);
+
+    $progress->({
+        task_id => 'discover_code_units',
+        status => 'running',
+    }) if $progress;
+    $progress->({
+        task_id => 'discover_code_units',
+        status => 'done',
+        label => sprintf(
+            'Discover Perl source units (%d app files, %d lib roots, %d source roots)',
+            $application_total + 1,
+            scalar(@$lib_dirs),
+            scalar(@$source_roots),
+        ),
+    }) if $progress;
+
+    $progress->({
+        task_id => 'compile_entrypoint',
+        status => 'running',
+        label => sprintf('Compile entrypoint unit (%s)', _logical_name($entrypoint)),
+    }) if $progress;
 
     my $entry_unit = $compiler->compile(
         path => $entrypoint,
@@ -366,13 +423,24 @@ sub _code_manifest {
         logical_path => _safe_logical_path(File::Spec->catfile('entrypoint', _logical_name($entrypoint))),
     );
     push @manifest, $entry_unit;
+    $progress->({
+        task_id => 'compile_entrypoint',
+        status => 'done',
+        label => sprintf('Compile entrypoint unit (%s)', _logical_name($entrypoint)),
+    }) if $progress;
     $seen{$entrypoint} = 1;
     my $entry_module = _module_name_from_source_path($entrypoint);
     $seen_modules{$entry_module} = 1 if defined $entry_module;
 
+    my $compiled_app_units = 0;
+    $progress->({
+        task_id => 'compile_application_units',
+        status => 'running',
+        label => sprintf('Compile application units (0/%d)', $application_total),
+    }) if $progress;
     for my $dir (@$lib_dirs) {
         my $prefix = _logical_root('lib', $dir);
-        for my $path (_perl_files([$dir])) {
+        for my $path (_perl_files([$dir], exclude_nested_inc => 1)) {
             next if $seen{$path}++;
             my $rel = File::Spec->abs2rel($path, $dir);
             my $compiled = $compiler->compile(
@@ -381,6 +449,12 @@ sub _code_manifest {
                 logical_path => _safe_logical_path(File::Spec->catfile($prefix, $rel)),
             );
             push @manifest, $compiled;
+            $compiled_app_units++;
+            $progress->({
+                task_id => 'compile_application_units',
+                status => 'running',
+                label => sprintf('Compile application units (%d/%d)', $compiled_app_units, $application_total),
+            }) if $progress;
             my $module = _module_name_from_source_path($path);
             $seen_modules{$module} = 1 if defined $module;
         }
@@ -388,7 +462,7 @@ sub _code_manifest {
 
     for my $dir (@$source_roots) {
         my $prefix = _logical_root('src', $dir);
-        for my $path (_perl_files([$dir])) {
+        for my $path (_perl_files([$dir], exclude_nested_inc => 1)) {
             next if $seen{$path}++;
             my $rel = File::Spec->abs2rel($path, $dir);
             my $compiled = $compiler->compile(
@@ -397,18 +471,50 @@ sub _code_manifest {
                 logical_path => _safe_logical_path(File::Spec->catfile($prefix, $rel)),
             );
             push @manifest, $compiled;
+            $compiled_app_units++;
+            $progress->({
+                task_id => 'compile_application_units',
+                status => 'running',
+                label => sprintf('Compile application units (%d/%d)', $compiled_app_units, $application_total),
+            }) if $progress;
             my $module = _module_name_from_source_path($path);
             $seen_modules{$module} = 1 if defined $module;
         }
     }
+    $progress->({
+        task_id => 'compile_application_units',
+        status => 'done',
+        label => sprintf('Compile application units (%d/%d)', $compiled_app_units, $application_total),
+    }) if $progress;
 
     my @queue = @manifest;
+    my $compiled_dependency_units = 0;
+    $progress->({
+        task_id => 'compile_dependency_units',
+        status => 'running',
+        label => 'Compile dependency units (0 discovered)',
+    }) if $progress;
     while (my $unit = shift @queue) {
         next if ($unit->{unit_kind} // '') eq 'entrypoint' && ($unit->{packaging} // '') eq 'source_payload_fallback';
         my @deps = _pure_perl_dependency_units($unit, \%seen, \%seen_modules, $compiler, \@preferred_roots);
         push @manifest, @deps;
         push @queue, @deps;
+        $compiled_dependency_units += scalar(@deps);
+        $progress->({
+            task_id => 'compile_dependency_units',
+            status => 'running',
+            label => sprintf(
+                'Compile dependency units (%d discovered, %d queued)',
+                $compiled_dependency_units,
+                scalar(@queue),
+            ),
+        }) if $progress;
     }
+    $progress->({
+        task_id => 'compile_dependency_units',
+        status => 'done',
+        label => sprintf('Compile dependency units (%d discovered)', $compiled_dependency_units),
+    }) if $progress;
 
     return @manifest;
 }
@@ -557,20 +663,48 @@ sub _entrypoint_logical_path {
 }
 
 sub _perl_files {
-    my ($dirs) = @_;
+    my ($dirs, %args) = @_;
     my @files;
+    my $exclude_nested_inc = $args{exclude_nested_inc} ? 1 : 0;
     for my $dir (@$dirs) {
         next if !-d $dir;
+        my $dir_abs = abs_path($dir) || $dir;
+        my @nested_inc_dirs = $exclude_nested_inc ? _nested_runtime_inc_dirs($dir_abs) : ();
         File::Find::find({
             wanted => sub {
+                my $path = $File::Find::name;
+                if (-d $_ && @nested_inc_dirs) {
+                    for my $inc_dir (@nested_inc_dirs) {
+                        if ($path eq $inc_dir || index($path, $inc_dir . '/') == 0) {
+                            $File::Find::prune = 1;
+                            return;
+                        }
+                    }
+                }
                 return if !-f $_;
                 return if $_ !~ /\.(?:pm|pl)$/;
-                push @files, $File::Find::name;
+                push @files, $path;
             },
             no_chdir => 1,
         }, $dir);
     }
     return sort @files;
+}
+
+sub _nested_runtime_inc_dirs {
+    my ($root) = @_;
+    return () if !$root || !-d $root;
+    my %seen;
+    my @dirs;
+    for my $inc (@INC) {
+        next if ref $inc;
+        my $abs = abs_path($inc) || next;
+        next if $abs eq $root;
+        next if index($abs, $root . '/') != 0;
+        next if $seen{$abs}++;
+        push @dirs, $abs;
+    }
+    return sort @dirs;
 }
 
 sub _asset_manifest {

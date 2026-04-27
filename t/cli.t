@@ -64,19 +64,35 @@ is($override_run_output, "embedded-fixture-asset\n", 'run command executes binar
 
 my $progress_json = "$sow03_root/progress-build.json";
 my $progress_stderr = "$sow03_root/progress-build.stderr";
-system("PAX_PROGRESS=1 $^X $pax build --compact --paxfile t/fixtures/paxfile.yml >$progress_json 2>$progress_stderr");
-is($? >> 8, 0, 'pax build still succeeds when progress rundown is enabled');
+system("$^X $pax build --compact --paxfile t/fixtures/paxfile.yml >$progress_json 2>$progress_stderr");
+is($? >> 8, 0, 'pax build still succeeds when progress rundown is emitted by default');
 open my $progress_fh, '<', $progress_stderr or die "cannot read progress stderr: $!";
 my $progress_text = do { local $/; <$progress_fh> };
 close $progress_fh;
 like($progress_text, qr/pax build progress/, 'pax build progress output prints the task-board title');
 like($progress_text, qr/\[ \] Resolve build inputs/, 'pax build progress output prints the full task list before work begins');
+like($progress_text, qr/\[OK\] Discover Perl source units/, 'pax build progress output breaks out source discovery');
+like($progress_text, qr/\[OK\] Compile entrypoint unit/, 'pax build progress output breaks out entrypoint compilation');
+like($progress_text, qr/\[OK\] Compile application units/, 'pax build progress output breaks out application unit compilation');
+like($progress_text, qr/\[OK\] Compile dependency units/, 'pax build progress output breaks out dependency compilation');
+like($progress_text, qr/\[OK\] Infer application metadata/, 'pax build progress output breaks out application metadata inference');
+like($progress_text, qr/\[OK\] Analyze runtime dependencies/, 'pax build progress output breaks out runtime dependency analysis');
+like($progress_text, qr/\[OK\] Write standalone manifest/, 'pax build progress output breaks out manifest emission');
 like($progress_text, qr/\[OK\] Compile standalone launcher/, 'pax build progress output marks the launcher phase complete');
 open my $progress_json_fh, '<', $progress_json or die "cannot read progress json: $!";
 my $progress_payload = do { local $/; <$progress_json_fh> };
 close $progress_json_fh;
 my $progress_build = decode_json($progress_payload);
 is($progress_build->{status}, 'built', 'pax build keeps machine-readable payload on stdout while progress prints on stderr');
+
+my $quiet_json = "$sow03_root/quiet-build.json";
+my $quiet_stderr = "$sow03_root/quiet-build.stderr";
+system("PAX_PROGRESS=0 $^X $pax build --compact --paxfile t/fixtures/paxfile.yml >$quiet_json 2>$quiet_stderr");
+is($? >> 8, 0, 'pax build still succeeds when progress rundown is disabled');
+open my $quiet_fh, '<', $quiet_stderr or die "cannot read quiet stderr: $!";
+my $quiet_text = do { local $/; <$quiet_fh> };
+close $quiet_fh;
+is($quiet_text, '', 'PAX_PROGRESS=0 suppresses the build rundown');
 
 my $workdir = "$sow03_root/work";
 make_path($workdir);

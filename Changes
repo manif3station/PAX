@@ -15,6 +15,16 @@
     - Added a DD-style progress rundown for `pax build`, keeping structured
       JSON on stdout while phase-by-phase task updates print on stderr during
       long standalone builds.
+    - Made the build rundown the default even in non-interactive runs, with
+      `PAX_PROGRESS=0` as the explicit opt-out for quiet build automation.
+    - Broke the build rundown into smaller checkpoints after input resolution
+      so operators can see metadata inference, dependency analysis, native
+      artifact analysis, manifest writing, and launcher compilation advance
+      independently during long standalone builds.
+    - Split the code-unit compilation stage itself into source discovery,
+      entrypoint compilation, application unit compilation, and dependency
+      unit compilation so large Perl builds no longer appear stuck on a single
+      compile line.
 
 0.010  Mon Apr 27 12:57:43 2026
     - Excluded `BACKLOG.md` from the Dist::Zilla tarball.

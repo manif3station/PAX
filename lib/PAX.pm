@@ -242,10 +242,16 @@ Then build:
 
   perl bin/pax build
 
-Long builds print a DD-style task rundown on C<stderr> when stderr is an
-interactive terminal. Set C<PAX_PROGRESS=1> to force the same rundown in
-non-interactive runs while keeping the machine-readable build payload on
-C<stdout>.
+Long builds print a DD-style task rundown on C<stderr> by default. On a real
+terminal the board redraws live; in non-interactive runs it prints a static
+rundown while the machine-readable build payload stays on C<stdout>. The build
+path is broken into concrete checkpoints such as code-unit compilation,
+application metadata inference, dependency analysis, native artifact analysis,
+manifest writing, and launcher compilation. The code-unit phase is further
+split into source discovery, entrypoint compilation, application unit
+compilation, and dependency unit compilation so long builds keep moving
+visibly. Set
+C<PAX_PROGRESS=0> to suppress the rundown.
 
 And run the result directly:
 

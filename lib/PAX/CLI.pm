@@ -1135,8 +1135,9 @@ sub _standalone_build_from_config {
 
 sub _standalone_build_progress {
     my ($class) = @_;
-    my $enabled = $ENV{PAX_PROGRESS} ? 1 : 0;
-    $enabled = 1 if !$enabled && -t STDERR;
+    my $enabled = exists $ENV{PAX_PROGRESS}
+        ? ($ENV{PAX_PROGRESS} ? 1 : 0)
+        : 1;
     return if !$enabled;
     return PAX::CLI::Progress->new(
         title   => 'pax build progress',

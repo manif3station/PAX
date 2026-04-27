@@ -91,11 +91,17 @@ Build from a local `paxfile.yml`:
 perl bin/pax build
 ```
 
-Long builds print a DD-style task rundown on `stderr` when `stderr` is an
-interactive terminal. To force the same rundown in non-interactive runs:
+Long builds print a DD-style task rundown on `stderr` by default. On a real
+terminal the board redraws live; in non-interactive runs it prints a static
+rundown. The build path is broken into concrete checkpoints such as code-unit
+compilation, application metadata inference, dependency analysis, native
+artifact analysis, manifest writing, and launcher compilation. The code-unit
+phase is further split into source discovery, entrypoint compilation,
+application unit compilation, and dependency unit compilation so long builds
+keep moving visibly. To suppress it:
 
 ```bash
-PAX_PROGRESS=1 perl bin/pax build --compact
+PAX_PROGRESS=0 perl bin/pax build --compact
 ```
 
 Build an explicit entrypoint:
