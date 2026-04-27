@@ -2,7 +2,7 @@ PERL ?= perl
 DOCKER ?= docker
 PAX_IMAGE ?= pax-dev:perl-5.42
 
-.PHONY: test build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate doc-gate changes-gate release-gate cpan-verify-paths cpan-gate git-gate
+.PHONY: test build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate doc-gate changes-gate release-gate cpan-verify-paths cpan-gate git-gate
 
 test:
 	prove -lr t
@@ -14,7 +14,12 @@ run:
 	$(PERL) bin/pax run --paxfile t/fixtures/paxfile.yml -- status
 
 cpan-clean:
-	rm -rf .build PAX-* PAX-*.tar.gz PAX-*.tgz .dzil
+	rm -rf .build .dzil
+	@find . -maxdepth 1 -type d -name 'PAX-*' -exec rm -rf {} +
+
+cpan-reset:
+	rm -rf .build .dzil
+	@find . -maxdepth 1 \( -type d -o -type f \) \( -name 'PAX-*' -o -name 'PAX-*.tar.gz' -o -name 'PAX-*.tgz' \) -exec rm -rf {} +
 
 version-gate:
 	$(PERL) tools/version_gate.pl
@@ -35,7 +40,7 @@ cpan-auto-bump:
 
 cpan-dist: cpan-auto-bump release-gate
 	command -v dzil >/dev/null 2>&1 || (echo "Dist::Zilla is required: cpanm Dist::Zilla" && exit 1)
-	$(MAKE) cpan-clean
+	$(MAKE) cpan-reset
 	dzil build
 	@version="$$( $(PERL) -Ilib -MPAX -e 'print $$PAX::VERSION' )"; \
 	dist="PAX-$$version"; \
