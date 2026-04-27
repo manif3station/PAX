@@ -1,61 +1,67 @@
-# PAX Documentation Parity (DD Source Baseline)
+# PAX Documentation Parity Rule
 
-## INTRODUCTION
+## Purpose
 
-This note records the documentation comparison and the rule applied for SOW-02.
-It explicitly aligns with the DD Source documentation style: sectioned POD + operational
-manual flow + practical usage examples + explicit caveats.
+This file records the documentation rule PAX should follow after comparing the
+Developer Dashboard README and main POD against the current PAX docs.
 
-## BASELINE METRICS
+The baseline lesson is not merely "write longer docs". The baseline is:
 
-Compared artifacts:
+- describe the product in operator language
+- explain the problem the product solves before listing commands
+- provide a real manual, not just a command summary
+- explain architecture in named concepts
+- give copyable workflows
+- answer likely operator questions inside the main docs
 
-- `Developer` module in DD source application (reference style baseline)
-- `lib/PAX.pm`
-- `README.md`
+## DD-Style Documentation Rule
 
-Measured today:
+When documenting PAX, use this structure:
 
-| File | Total lines | `=head1` | `=head2` | `=pod` present |
-|---|---:|---:|---:|---:|
-| `Developer/Dashboard.pm` | 2981 | 9 | 34 | yes |
-| `lib/PAX.pm` | 231 | 12 | 4 | yes |
-| `README.md` | 264 | 0 | 0 | no (`README` is Markdown) |
+1. Start with product identity and a plain introduction.
+2. Explain the operational problem PAX solves.
+3. Explain what the user gets from the product.
+4. Name the main concepts and core modules so the architecture is navigable.
+5. Provide a manual with copyable workflows:
+   - installation
+   - first run / first build
+   - standard standalone build
+   - self-hosted build
+   - web application packaging
+   - Docker deployment
+   - testing
+   - release gates
+6. Document the public command surface clearly and keep it synchronized between
+   `README.md` and `lib/PAX.pm`.
+7. Include known limits and caveats in both places.
+8. Include FAQ-style answers for the questions an operator or contributor is
+   likely to ask.
+9. Keep the README and main POD aligned in structure and examples.
+10. For major behavior changes, update both the operator manual and the module
+    reference in the same change set.
 
-## COMPARISON RESULT
+## Section Expectations
 
-Before this update, `lib/PAX.pm` and `README.md` were too compact for SOW-02 expectations.
-After this update:
+PAX main documentation should keep these section families available over time:
 
-- `lib/PAX.pm` now documents architecture, compilation flow, CLI surface, paxfile contract, environment
-  variables, CPAN gates, and limits.
-- `README.md` now documents practical flows for app/standalone builds, asset embedding, two-stage Docker,
-  and release gates.
+- Introduction
+- What You Get
+- Main Concepts
+- Public Command Surface
+- Paxfile Contract
+- Manual
+- Architecture
+- Known Limits
+- Testing and Release Gates
+- FAQ
+- Files / Repository Map
 
-DD still has more extensive prose and more headings, but PAX now has a comparable structure
-for implementation contract + operations manual.
+## Current Line Counts
 
-## DOCUMENT STYLE RULE (APPLIED)
+- DD README: 2226
+- DD main POD module: 2981
+- PAX README before this parity pass: 246
+- PAX main POD before this parity pass: 267
 
-For all future work:
-
-1. Top-level module docs (`lib/*/..pm`) must include:
-   - design intent
-   - architecture
-   - command surface (or API surface)
-   - config/inputs
-   - known limitations
-2. `README.md` must include:
-   - quick start
-   - full command examples
-   - packaging/deployment pattern examples
-   - explicit gate/checklist and expected pass/fail outputs
-3. Docs are reviewed whenever core modules are changed.
-4. If command usage changes, both `lib/PAX.pm` and `README.md` are updated together.
-
-## COMPLETION EVIDENCE
-
-- Documentation rewritten in `lib/PAX.pm`.
-- Deployment + examples expanded in `README.md`.
-- Baseline-level documentation rule is now tracked in repository governance files.
-- Metrics recorded in this file for future regression checks.
+The target is not to match DD line-for-line. The target is to match the level
+of operator clarity, section breadth, and workflow completeness.

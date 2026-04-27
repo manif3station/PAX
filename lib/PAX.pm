@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.007';
+our $VERSION = '0.009';
 
 1;
 
@@ -35,6 +35,112 @@ where supported, asset payloads, dependency payloads, and a runtime launcher.
 The project is deliberately neutral. Core compiler, packaging, loader, runtime,
 and dispatch code must not embed assumptions about one application, company, or
 module namespace.
+
+=head1 INTRODUCTION
+
+PAX exists to change the deployment shape of a Perl application.
+
+Without PAX, a Perl application commonly depends on some mix of the original
+source tree, a host Perl installation, host CPAN modules, asset directories
+next to the app, and local bootstrap scripts or container images that carry the
+whole working tree.
+
+PAX aims to turn that into one executable that can carry compiled code units,
+runtime payloads, embedded assets, and native artifacts where a region can be
+proven safe to specialize.
+
+The goal is not to pretend every Perl feature can become a native binary with
+no trade-offs. The real goal is:
+
+=over 4
+
+=item *
+
+keep Perl correctness
+
+=item *
+
+keep fallback execution explicit
+
+=item *
+
+package applications into one binary
+
+=item *
+
+move eligible hot paths toward native speed
+
+=item *
+
+stay neutral across arbitrary Perl projects
+
+=back
+
+=head1 WHAT YOU GET
+
+=over 4
+
+=item *
+
+one public command surface with C<pax build> and C<pax run>
+
+=item *
+
+a repeatable build contract through C<paxfile.yml>
+
+=item *
+
+one standalone executable output
+
+=item *
+
+embedded asset packaging for web applications and static payloads
+
+=item *
+
+runtime payload packaging for source-tree-free execution
+
+=item *
+
+self-hosted build capability, including building C<bin/pax> itself
+
+=item *
+
+Docker-friendly multi-stage packaging
+
+=back
+
+=head1 MAIN CONCEPTS
+
+=head2 Public Facade
+
+C<PAX::CLI> owns the public operator contract behind C<pax build> and
+C<pax run>.
+
+=head2 Manifest Loading
+
+C<PAX::Paxfile> loads repeatable build inputs from C<paxfile.yml>.
+
+=head2 Standalone Image Builder
+
+C<PAX::StandaloneImage> collects dependencies, packages runtime payloads,
+embeds assets, and writes the standalone launcher.
+
+=head2 Code Unit Compilation
+
+C<PAX::CodeUnitCompiler> lowers supported Perl source shapes into PAX code unit
+records. Unsupported regions remain on explicit fallback paths instead of being
+silently miscompiled.
+
+=head2 Packaged Runtime
+
+C<PAX::StandaloneRuntime> provides the packaged helper runtime used after the
+standalone executable starts.
+
+=head2 Native Dispatch
+
+C<PAX::StandaloneDispatch> and related runtime pieces execute packaged native
+regions and deopt fallback behavior under the standalone model.
 
 =head1 SOW-03 PUBLIC COMMAND SURFACE
 
@@ -106,6 +212,56 @@ CLI flags override file values. Output path precedence is:
 
 =back
 
+=head1 MANUAL
+
+=head2 Installation
+
+For development from a repository checkout:
+
+  cpanm --installdeps .
+  perl bin/pax help
+
+For release packaging:
+
+  cpanm Dist::Zilla
+
+=head2 First Build
+
+The simplest workflow is a local C<paxfile.yml>:
+
+  name: example-app
+  entrypoint: bin/example-app
+  output: build/example-app
+  libs:
+    - lib
+  cpanfiles:
+    - cpanfile
+  runtime_mode: bundled_perl
+
+Then build:
+
+  perl bin/pax build
+
+And run the result directly:
+
+  ./build/example-app
+
+=head2 Build Without paxfile.yml
+
+When the CLI provides the required shape, C<paxfile.yml> is optional:
+
+  perl bin/pax build -o ./build/example-app bin/example-app
+
+=head2 Self Compile
+
+PAX can build itself:
+
+  perl bin/pax build -o /tmp/pax bin/pax
+  /tmp/pax help
+
+That self-built binary can then build another standalone application from its
+own C<paxfile.yml>.
+
 =head1 ARCHITECTURE
 
 =head2 Entrypoint and Build Configuration
@@ -175,6 +331,15 @@ Build PAX itself:
   perl bin/pax build -o /tmp/pax bin/pax
   /tmp/pax help
 
+=head2 Web Applications
+
+PAX supports the single-binary packaging shape for framework applications that
+combine Perl modules, PSGI or web framework code, templates, CSS, JavaScript,
+and other static assets.
+
+The validated SOW-03 proof includes a Dancer2 + Plack/Starman + Template
+Toolkit web application packaged as one executable.
+
 =head1 DOCKER DEPLOYMENT MODEL
 
 PAX supports a minimal multi-stage image pattern:
@@ -191,6 +356,28 @@ PAX supports a minimal multi-stage image pattern:
 
 The final image contains only the executable. The source tree, assets, cpanfile,
 and framework installation are builder-stage inputs.
+
+For an external application, the validated packaging pattern is:
+
+=over 4
+
+=item 1.
+
+build a standalone C<pax> binary
+
+=item 2.
+
+copy that C<pax> binary into the application build stage
+
+=item 3.
+
+compile the application into its own standalone binary
+
+=item 4.
+
+copy only that final binary into the runtime stage
+
+=back
 
 =head1 ADAPTIVE COMPILATION RULE
 
@@ -228,6 +415,14 @@ C<0.001> before running C<dzil build>. The release flow then enforces a version
 gate, a C<Changes> gate, and a documentation gate for C<README.md> plus this
 module POD before building the tarball.
 
+=head1 TESTING AND COVERAGE
+
+Primary validation from a repository checkout is:
+
+  make test
+  make release-gate
+  make cpan-gate
+
 =head1 KNOWN LIMITATIONS
 
 =over 4
@@ -242,6 +437,28 @@ runtime payloads needed to run without the source tree.
 =item * Docker validation requires local Docker access.
 
 =back
+
+=head1 FAQ
+
+=head2 Is PAX tied to one specific project?
+
+No. Example applications are validation corpora. Core compiler and runtime
+logic are expected to stay neutral and reusable.
+
+=head2 Does PAX guarantee Rust-like speed for all Perl code?
+
+No. PAX packages the whole application correctly and accelerates hot paths that
+it can safely specialize. Dynamic regions continue to use fallback execution.
+
+=head2 Does pax run require a separate app server?
+
+No. Under SOW-03, C<pax run> builds the standalone executable and then executes
+that binary directly.
+
+=head2 Can PAX package web applications with embedded static assets?
+
+Yes. The validated packaging path includes templates, CSS, JavaScript, and
+framework code embedded into one standalone executable.
 
 =head1 FILES
 
@@ -263,5 +480,8 @@ runtime payloads needed to run without the source tree.
 
 The repository C<README.md> mirrors the public command contract and operator
 workflow documented here.
+
+The internal documentation rule for DD-style parity is recorded in
+F<docs/pax-doc-parity.md>.
 
 =cut

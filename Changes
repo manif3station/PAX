@@ -1,3 +1,24 @@
+0.009  Mon Apr 27 12:35:03 2026
+    - Version bump
+    - Applied the DD-style documentation rule to PAX so the README and main POD
+      now read as an operator manual plus architecture reference instead of a
+      short command summary.
+    - Added `docs/pax-doc-parity.md` to record the documentation baseline and
+      parity rule derived from the DD Source documentation style.
+    - Excluded repository-only Docker and helper material from the Dist::Zilla
+      tarball using DD-style gather and tarball verification rules.
+    - Removed explicit tarball exclusion-list narration from public docs while
+      keeping the exclusions enforced in packaging and release gates.
+
+0.008  Mon Apr 27 12:28:33 2026
+    - Version bump
+    - Excluded repository-only Docker and packaging helper material from the
+      Dist::Zilla tarball using DD-style gather rules.
+    - Added tarball exclusions for `examples/`, `tools/`, `docs/`,
+      `Dockerfile`, `DOCKER.md`, and `docker-compose.yml`.
+    - Extended the tarball verification gate so those excluded paths are
+      checked explicitly during release validation.
+
 0.007  Mon Apr 27 12:21:21 2026
     - Version bump
 

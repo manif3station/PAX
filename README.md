@@ -2,6 +2,32 @@
 
 **PAX** is a Perl-native adaptive compiler and standalone binary packager.
 
+## Introduction
+
+PAX exists to turn a Perl application plus its repeatable build inputs into one
+standalone executable.
+
+Without that layer, a normal Perl deployment usually depends on some mix of:
+
+- the original source tree
+- the host Perl installation
+- host CPAN modules
+- asset directories beside the app
+- local bootstrap scripts
+- container images that carry the whole working tree
+
+PAX changes that deployment shape. The target artifact is one executable that
+can carry compiled code units, packaged runtime payloads, embedded assets, and
+native artifacts where PAX can prove a region is safe to specialize.
+
+The design goal is not "replace Perl with magic". The design goal is:
+
+- keep Perl correctness
+- keep fallback behavior explicit
+- package applications into one binary
+- move eligible hot paths toward native speed
+- stay neutral across arbitrary Perl projects
+
 The public command surface is intentionally small:
 
 ```bash
@@ -14,6 +40,17 @@ Everything else in the repository is compiler/runtime implementation, test
 coverage, or release tooling. Users should not call internal diagnostic
 subcommands through `bin/pax`.
 
+## What You Get
+
+- one public entrypoint with two commands: `pax build` and `pax run`
+- a repeatable build contract through `paxfile.yml`
+- one standalone executable output
+- embedded assets for web applications and static payloads
+- packaged runtime payloads for source-tree-free execution
+- adaptive compilation with explicit fallback behavior
+- self-hosted build capability, including building `bin/pax` itself
+- Docker-friendly multi-stage packaging
+
 ## Goals
 
 - Build one executable from a Perl entrypoint.
@@ -22,6 +59,29 @@ subcommands through `bin/pax`.
 - Embed assets and dependency payloads into the executable.
 - Keep PAX neutral: no project-specific package names in compiler, loader, or runtime logic.
 - Preserve correctness with fallback paths while compiling supported code units and native regions.
+
+## Main Concepts
+
+- `PAX::CLI`
+  The small public facade behind `pax build` and `pax run`.
+
+- `PAX::Paxfile`
+  Loads repeatable build inputs from `paxfile.yml`.
+
+- `PAX::StandaloneImage`
+  Builds the standalone executable image, packages runtime payloads, and writes
+  the launcher.
+
+- `PAX::CodeUnitCompiler`
+  Compiles supported Perl source shapes into PAX code unit records.
+
+- `PAX::StandaloneRuntime`
+  Provides the packaged runtime helpers used by the standalone executable after
+  launch.
+
+- `PAX::StandaloneDispatch`
+  Runs packaged native regions and deopt fallback paths under the standalone
+  model.
 
 ## Quick Start
 
@@ -111,6 +171,71 @@ Output path precedence:
 2. `paxfile.yml` `output`
 3. fallback `.pax/standalone/<name>/<name>`
 
+## Manual
+
+### Installation
+
+For local development, install the distribution prerequisites and run from the
+repository checkout:
+
+```bash
+cpanm --installdeps .
+perl bin/pax help
+```
+
+For release packaging, Dist::Zilla must also be available:
+
+```bash
+cpanm Dist::Zilla
+```
+
+### First Build
+
+The simplest workflow is a project-local `paxfile.yml`:
+
+```yaml
+name: example-app
+entrypoint: bin/example-app
+output: build/example-app
+libs:
+  - lib
+cpanfiles:
+  - cpanfile
+runtime_mode: bundled_perl
+```
+
+Then build:
+
+```bash
+perl bin/pax build
+```
+
+Run the result:
+
+```bash
+./build/example-app
+```
+
+### Build Without `paxfile.yml`
+
+PAX does not require a manifest when the CLI provides the required build shape:
+
+```bash
+perl bin/pax build -o ./build/example-app bin/example-app
+```
+
+### Self Compile
+
+PAX can build PAX itself:
+
+```bash
+perl bin/pax build -o /tmp/pax bin/pax
+/tmp/pax help
+```
+
+That same self-built binary can then build another standalone application from
+its own `paxfile.yml`.
+
 ## Asset Embedding
 
 Assets are copied into the executable payload and extracted into a private
@@ -134,6 +259,22 @@ perl bin/pax build \
 This pattern supports web applications that include Perl modules, templates,
 CSS, JavaScript, and other static files.
 
+### Web Applications
+
+PAX supports the single-binary packaging shape for framework applications that
+combine:
+
+- Perl modules
+- PSGI/web framework code
+- templates
+- CSS
+- JavaScript
+- other static assets
+
+The validated SOW-03 proof includes a Dancer2 + Plack/Starman + Template
+Toolkit web application packaged as one executable and deployed through a
+multi-stage Docker flow.
+
 ## Docker Deployment
 
 Two-stage pattern for a generic project:
@@ -154,18 +295,12 @@ The final stage receives only the built executable. It does not need the source
 tree, asset tree, `cpanfile`, or web framework installation when the binary was
 built in bundled runtime mode.
 
-## Self Compile
+For an external application, the validated deployment pattern is:
 
-PAX can build PAX itself:
-
-```bash
-perl bin/pax build -o /tmp/pax bin/pax
-/tmp/pax help
-```
-
-In a directory with no `paxfile.yml`, the entrypoint and output path are enough.
-In a project directory, `paxfile.yml` is still applied unless `--no-paxfile` is
-used.
+1. build a standalone `pax` binary
+2. copy that `pax` binary into the application build stage
+3. compile the application into its own standalone binary
+4. copy only that final application binary into the runtime stage
 
 ## Architecture
 
@@ -183,6 +318,18 @@ Compilation is adaptive. If a module shape fails, the preferred fix is a reusabl
 compiler, loader, dependency discovery, or runtime improvement that works for
 other projects with the same structure.
 
+### Why The Two-Command Surface Works
+
+PAX used to expose more internal diagnostic and build commands at the CLI
+surface. SOW-03 intentionally collapsed that down to:
+
+- `pax build`
+- `pax run`
+
+That keeps the operator workflow small while still allowing the internal Perl
+modules to carry richer build, inspection, and validation logic behind the
+public facade.
+
 ## Known Limits
 
 - Perl’s dynamic loading and runtime mutation can require fallback code paths.
@@ -190,6 +337,16 @@ other projects with the same structure.
 - Bundled runtime artifacts are larger than source-only wrappers because they
   include enough Perl/runtime payload to run without the source tree.
 - Docker validation requires a local Docker daemon and build access.
+
+## Testing And Release Gates
+
+Primary local validation:
+
+```bash
+make test
+make release-gate
+make cpan-gate
+```
 
 ## CPAN Release Gates
 
@@ -229,6 +386,29 @@ Release flow rule:
 - `README.md` and `lib/PAX.pm` must satisfy the documentation gate before the
   tarball is built.
 
+## FAQ
+
+### Is PAX only for one specific project?
+
+No. PAX uses DD and other applications as validation corpora, but core compiler
+and runtime logic are expected to stay neutral and reusable.
+
+### Does PAX guarantee Rust-like speed for all Perl code?
+
+No. The target is to package the whole application correctly and accelerate hot
+paths that PAX can prove are safe to specialize. Dynamic regions still use
+fallback execution.
+
+### Does `pax run` require a separate app server?
+
+No. Under SOW-03, `pax run` builds the standalone executable and then runs that
+binary directly.
+
+### Can PAX build web applications with embedded static assets?
+
+Yes. The validated packaging path includes templates, CSS, JavaScript, and
+framework code embedded into one standalone executable.
+
 ## Repository Map
 
 - `bin/pax`: public command entrypoint.
@@ -236,6 +416,12 @@ Release flow rule:
 - `t/`: unit, behavior, and acceptance tests.
 - `examples/`: neutral examples used to validate packaging behavior.
 - `paxfile.yml`: neutral example build manifest.
+
+## Documentation Rule
+
+PAX documentation follows the DD-style parity rule recorded in
+`docs/pax-doc-parity.md`: document the product as both an operator manual and a
+main architecture reference, not just as a command list.
 
 ## Contributor Rules
 

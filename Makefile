@@ -64,7 +64,7 @@ cpan-verify-paths:
 		awk -v ver="$$version" '\
 		BEGIN { \
 			root = "PAX-" ver "/"; \
-				n = split("DD Source Code/,projects/,project/,cover_db/,support/,pax-webapp/,blogs/,AGENTS.override.md,t/tmp", forbidden, ","); \
+				n = split("DD Source Code/,projects/,project/,cover_db/,support/,pax-webapp/,blogs/,examples/,tools/,docs/,AGENTS.override.md,t/tmp", forbidden, ","); \
 		} \
 		{ \
 			line = $$0; \
@@ -74,6 +74,7 @@ cpan-verify-paths:
 				if (index(line, root forbidden[i]) == 1) { ok = 1; break; } \
 			} \
 			if (!ok && substr(base, 1, 17) == "pax-runtime-probe-" && substr(base, length(base) - 2) == ".pl") { ok = 1; } \
+			if (!ok && (base == "Dockerfile" || base == "DOCKER.md" || base == "docker-compose.yml")) { ok = 1; } \
 				if (!ok && (line == root "SOW" || index(line, root "SOW") == 1 || index(line, "/SOW") > 0)) { ok = 1; } \
 				if (!ok && index(line, "/.pax/") > 0) { ok = 1; } \
 				if (!ok && index(line, root "t/tmp") == 1) { ok = 1; } \
