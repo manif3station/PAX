@@ -25,6 +25,9 @@
       entrypoint compilation, application unit compilation, and dependency
       unit compilation so large Perl builds no longer appear stuck on a single
       compile line.
+    - Added explicit TDD, BDD, ATDD, QA, and final all-gates targets so the
+      repository now has one mandatory completion chain instead of relying on
+      partial gate passes and operator memory.
 
 0.010  Mon Apr 27 12:57:43 2026
     - Excluded `BACKLOG.md` from the Dist::Zilla tarball.

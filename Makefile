@@ -1,11 +1,48 @@
 PERL ?= perl
 DOCKER ?= docker
 PAX_IMAGE ?= pax-dev:perl-5.42
+TDD_TESTS = \
+	t/artifact_cache.t \
+	t/capture.t \
+	t/code_unit_compiler.t \
+	t/compatibility.t \
+	t/deopt.t \
+	t/dispatcher.t \
+	t/loop_lowering.t \
+	t/native_emitters.t \
+	t/profile_store.t \
+	t/prototype_compiled_sub.t \
+	t/standalone_analysis.t \
+	t/validation.t
+BDD_TESTS = \
+	t/cli.t \
+	t/corpus.t \
+	t/runtime_acceleration.t \
+	t/runtime_payload_selection.t \
+	t/compatibility.t
+ATDD_TESTS = \
+	t/app_image.t \
+	t/standalone_image.t
 
-.PHONY: test build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate doc-gate changes-gate release-gate cpan-verify-paths cpan-gate git-gate
+.PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate doc-gate changes-gate release-gate cpan-verify-paths cpan-gate git-gate
 
 test:
 	prove -lr t
+
+tdd-gate:
+	prove -lr $(TDD_TESTS)
+
+bdd-gate:
+	prove -lr $(BDD_TESTS)
+
+atdd-gate:
+	prove -lr $(ATDD_TESTS)
+
+qa-gate: tdd-gate bdd-gate atdd-gate release-gate
+	@echo "qa-gate: TDD, BDD, ATDD, version, Changes, and docs OK"
+
+all-gates: qa-gate cpan-gate
+	@echo "all-gates: QA, CPAN, and git gates OK"
 
 build:
 	$(PERL) bin/pax build --paxfile t/fixtures/paxfile.yml

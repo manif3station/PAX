@@ -356,6 +356,10 @@ public facade.
 Primary local validation:
 
 ```bash
+make tdd-gate
+make bdd-gate
+make atdd-gate
+make qa-gate
 make test
 make release-gate
 make cpan-build
@@ -369,10 +373,12 @@ Release readiness is checked by the repository gates:
 ```bash
 make cpan-bump-version VERSION=0.011
 # update Changes with a meaningful top entry for 0.011
-make test
-make release-gate
-make cpan-build
-make cpan-gate
+make tdd-gate
+make bdd-gate
+make atdd-gate
+make qa-gate
+# commit the tracked release-preparation changes
+make all-gates
 ```
 
 Optional release:
@@ -396,6 +402,15 @@ Required release files:
 The CPAN gate verifies the distribution tarball and git index exclude temporary
 runtime probes, generated workspaces, coverage output, planning artifacts, and
 other non-release files.
+
+Completion rule:
+
+- `release-gate` alone is not enough
+- `cpan-gate` alone is not enough
+- `git-gate` alone is not enough
+- after code, doc, or metadata edits, rerun the affected gates
+- only treat the change set as complete after `make all-gates` passes on the
+  committed tree
 
 Release flow rule:
 

@@ -441,10 +441,19 @@ tracked source files during the packaging step.
 
 Primary validation from a repository checkout is:
 
+  make tdd-gate
+  make bdd-gate
+  make atdd-gate
+  make qa-gate
   make test
   make release-gate
   make cpan-build
   make cpan-gate
+
+Completion requires the full chain, not a partial subset. C<release-gate>,
+C<cpan-gate>, or C<git-gate> alone are not sufficient. After tracked changes
+are committed, run C<make all-gates> and treat the change set as complete only
+when that final aggregate gate passes.
 
 =head1 KNOWN LIMITATIONS
 

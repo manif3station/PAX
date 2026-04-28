@@ -117,6 +117,31 @@ Rules:
 This keeps the release flow reproducible and prevents the cycle where a build
 target creates new tracked changes and then fails its own git cleanliness gate.
 
+## All Gates Completion Rule
+
+PAX work is not complete just because the code change exists or one release
+gate passed.
+
+The mandatory closure rule is:
+
+1. run TDD gates for module- and unit-level behavior
+2. run BDD gates for operator-visible CLI and workflow behavior
+3. run ATDD gates for standalone/application acceptance behavior
+4. run the QA gate that aggregates TDD, BDD, ATDD, and release metadata checks
+5. commit the required tracked changes
+6. run the final all-gates verification, including CPAN and git gates, against
+   the committed tree
+
+Operational consequences:
+
+1. `release-gate` alone is not enough
+2. `cpan-gate` alone is not enough
+3. `git-gate` alone is not enough
+4. a new edit after a successful gate run invalidates that gate state and the
+   affected gates must be rerun
+5. do not say work is done until `all-gates` passes or the user explicitly
+   waives part of the gate chain
+
 ## Section Expectations
 
 PAX main documentation should keep these section families available over time:
