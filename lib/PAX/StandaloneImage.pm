@@ -11,7 +11,7 @@ use File::Find ();
 use File::Path qw(make_path);
 use File::Basename qw(dirname);
 use File::Spec;
-use File::Temp qw(tempfile);
+use File::Temp qw(tempdir tempfile);
 use JSON::PP ();
 use PAX::CodeUnitCompiler;
 use PAX::StandaloneAnalysis;
@@ -47,14 +47,20 @@ sub build {
     my ($self, %args) = @_;
     my $progress = $args{progress};
     my $entrypoint = $args{entrypoint} // die 'entrypoint required';
-    my $name = $args{name} // _default_name($entrypoint);
+    my $standalone_source = _standalone_source_plan($entrypoint);
+    my $name = $args{name} // $standalone_source->{name} // _default_name($entrypoint);
     _progress_emit($progress, { task_id => 'resolve_inputs', status => 'running' });
-    my $abs_entrypoint = abs_path($entrypoint) || die "entrypoint not found: $entrypoint";
+    my $resolved_entrypoint = $standalone_source->{entrypoint} // $entrypoint;
+    my $abs_entrypoint = abs_path($resolved_entrypoint) || die "entrypoint not found: $resolved_entrypoint";
     my @lib_dirs = _abs_existing([
         @{ $args{lib_dirs} // [] },
+        @{ $standalone_source->{lib_dirs} // [] },
         _entrypoint_declared_lib_dirs($abs_entrypoint),
     ]);
-    my @source_roots = _abs_existing($args{source_roots} // []);
+    my @source_roots = _abs_existing([
+        @{ $args{source_roots} // [] },
+        @{ $standalone_source->{source_roots} // [] },
+    ]);
     my @scan_roots = grep { defined && $_ ne '' } (_safe_dir_abs($abs_entrypoint), @lib_dirs, @source_roots);
     _progress_emit($progress, {
         task_id => 'resolve_inputs',
@@ -73,22 +79,26 @@ sub build {
         units => \@code_units,
         scan_roots => \@scan_roots,
     );
-    my $app_namespace = _normalize_namespace($args{app_namespace});
+    my $app_namespace = _normalize_namespace(
+        defined $args{app_namespace} ? $args{app_namespace} : $standalone_source->{app_namespace}
+    );
     $app_namespace = $inferred_namespace if $app_namespace eq '';
-    my $legacy_namespace = _normalize_namespace($args{app_legacy_namespace});
+    my $legacy_namespace = _normalize_namespace(
+        defined $args{app_legacy_namespace} ? $args{app_legacy_namespace} : $standalone_source->{app_legacy_namespace}
+    );
     if ($legacy_namespace eq '') {
         $legacy_namespace = $inferred_namespace;
     }
 
     my $app_meta = _app_metadata(
-        app_name => $args{app_name},
+        app_name => defined $args{app_name} ? $args{app_name} : $standalone_source->{app_name},
         app_namespace => $app_namespace,
         app_legacy_namespace => $legacy_namespace,
-        app_entrypoint_env => $args{app_entrypoint_env},
-        app_entrypoint_fallback => $args{app_entrypoint_fallback},
-        app_command => $args{app_command},
+        app_entrypoint_env => defined $args{app_entrypoint_env} ? $args{app_entrypoint_env} : $standalone_source->{app_entrypoint_env},
+        app_entrypoint_fallback => defined $args{app_entrypoint_fallback} ? $args{app_entrypoint_fallback} : $standalone_source->{app_entrypoint_fallback},
+        app_command => defined $args{app_command} ? $args{app_command} : $standalone_source->{app_command},
         image_name => $name,
-        entrypoint => $entrypoint,
+        entrypoint => $resolved_entrypoint,
     );
     _progress_emit($progress, {
         task_id => 'infer_app_metadata',
@@ -98,10 +108,22 @@ sub build {
             $app_meta->{compat}{namespace} ne '' ? $app_meta->{compat}{namespace} : 'anonymous',
         ),
     });
-    my $runtime_mode = $args{runtime_mode} // 'bundled_perl';
-    my @cpanfiles = _abs_existing($args{cpanfiles} // []);
+    my $runtime_mode = $args{runtime_mode} // $standalone_source->{runtime_mode} // 'bundled_perl';
+    my @cpanfiles = _abs_existing([
+        @{ $args{cpanfiles} // [] },
+        @{ $standalone_source->{cpanfiles} // [] },
+    ]);
     _progress_emit($progress, { task_id => 'collect_assets', status => 'running' });
-    my $assets = _asset_manifest($args{assets} // [], $args{asset_dirs} // []);
+    my $assets = _asset_manifest(
+        [
+            @{ $args{assets} // [] },
+            @{ $standalone_source->{assets} // [] },
+        ],
+        [
+            @{ $args{asset_dirs} // [] },
+            @{ $standalone_source->{asset_dirs} // [] },
+        ],
+    );
     _progress_emit($progress, {
         task_id => 'collect_assets',
         status => 'done',
@@ -172,6 +194,7 @@ sub build {
         entrypoint => {
             source_path => $abs_entrypoint,
             logical_path => _entrypoint_logical_path($abs_entrypoint, \@code_units),
+            source_bytes => _slurp_bytes($abs_entrypoint),
         },
         runtime => {
             mode => $runtime_mode,
@@ -246,6 +269,276 @@ sub _progress_emit {
     return 1 if !$progress || ref($progress) ne 'CODE';
     $progress->($event);
     return 1;
+}
+
+sub _standalone_source_plan {
+    my ($entrypoint) = @_;
+    return {} if !defined $entrypoint || !-f $entrypoint || !-x $entrypoint;
+
+    my $inspect = _standalone_inspect_json($entrypoint);
+    return {} if $inspect eq '';
+
+    my $manifest = eval { JSON::PP::decode_json($inspect) };
+    return {} if !$manifest || ref($manifest) ne 'HASH';
+
+    my $extract_root = tempdir('pax-standalone-source-XXXXXX', TMPDIR => 1, CLEANUP => 1);
+    return {} if !_standalone_extract_quietly($entrypoint, $extract_root);
+
+    my $materialized = _materialize_manifest_source_tree($extract_root, $manifest);
+    if ($materialized->{entrypoint}) {
+        return {
+            name => $manifest->{name},
+            entrypoint => $materialized->{entrypoint},
+            lib_dirs => $materialized->{lib_dirs},
+            source_roots => $materialized->{source_roots},
+            assets => [
+                map { $_->{source_path} }
+                    grep { defined($_->{source_path}) && $_->{source_path} ne '' && -f $_->{source_path} }
+                    @{ $manifest->{assets} // [] }
+            ],
+            asset_dirs => (($manifest->{asset_count} // 0) > 0 ? [ File::Spec->catdir($extract_root, 'assets') ] : []),
+            cpanfiles => [],
+            runtime_mode => $manifest->{runtime}{mode},
+            app_name => $manifest->{app}{name},
+            app_namespace => $manifest->{app}{namespace},
+            app_legacy_namespace => $manifest->{app}{compat}{legacy_namespace},
+            app_entrypoint_env => $manifest->{app}{entrypoint_env},
+            app_entrypoint_fallback => $manifest->{app}{entrypoint_fallback},
+            app_command => $manifest->{app}{command},
+        };
+    }
+
+    my $entry_source = $manifest->{entrypoint}{source_path} // '';
+    if ($entry_source eq '' || !-f $entry_source) {
+        $entry_source = _materialize_entrypoint_source($extract_root, $manifest->{entrypoint});
+    }
+    if ($entry_source eq '' || !-f $entry_source) {
+        $entry_source = _extracted_manifest_path($extract_root, 'code', $manifest->{entrypoint}{logical_path});
+    }
+    return {} if $entry_source eq '' || !-f $entry_source;
+
+    my $lib_dirs = _original_manifest_roots($manifest, 'lib_dirs', 'lib');
+    $lib_dirs = _extracted_manifest_roots($extract_root, 'code', $manifest->{lib_dirs}) if !@$lib_dirs;
+    my $source_roots = _original_manifest_roots($manifest, 'source_roots', 'source');
+    $source_roots = _extracted_manifest_roots($extract_root, 'code', $manifest->{source_roots}) if !@$source_roots;
+
+    return {
+        name => $manifest->{name},
+        entrypoint => $entry_source,
+        lib_dirs => $lib_dirs,
+        source_roots => $source_roots,
+        assets => [
+            map { $_->{source_path} }
+                grep { defined($_->{source_path}) && $_->{source_path} ne '' && -f $_->{source_path} }
+                @{ $manifest->{assets} // [] }
+        ],
+        asset_dirs => (($manifest->{asset_count} // 0) > 0 ? [ File::Spec->catdir($extract_root, 'assets') ] : []),
+        cpanfiles => [],
+        runtime_mode => $manifest->{runtime}{mode},
+        app_name => $manifest->{app}{name},
+        app_namespace => $manifest->{app}{namespace},
+        app_legacy_namespace => $manifest->{app}{compat}{legacy_namespace},
+        app_entrypoint_env => $manifest->{app}{entrypoint_env},
+        app_entrypoint_fallback => $manifest->{app}{entrypoint_fallback},
+        app_command => $manifest->{app}{command},
+    };
+}
+
+sub _standalone_inspect_json {
+    my ($entrypoint) = @_;
+    my $pid = open my $fh, '-|';
+    return '' if !defined $pid;
+    if (!$pid) {
+        open STDERR, '>', File::Spec->devnull or die "cannot open devnull: $!";
+        exec {$entrypoint} $entrypoint, '--pax-standalone-inspect';
+        exit 127;
+    }
+    local $/;
+    my $json = <$fh> // '';
+    close $fh;
+    return ($? >> 8) == 0 ? $json : '';
+}
+
+sub _standalone_extract_quietly {
+    my ($entrypoint, $extract_root) = @_;
+    my $pid = fork();
+    return 0 if !defined $pid;
+    if (!$pid) {
+        open STDOUT, '>', File::Spec->devnull or die "cannot open devnull: $!";
+        open STDERR, '>', File::Spec->devnull or die "cannot open devnull: $!";
+        exec {$entrypoint} $entrypoint, '--pax-standalone-extract', $extract_root;
+        exit 127;
+    }
+    waitpid($pid, 0);
+    return ($? >> 8) == 0 ? 1 : 0;
+}
+
+sub _extract_payload_path {
+    my ($root, $prefix, $logical_path) = @_;
+    my @parts = grep { defined && $_ ne '' } split m{/+}, ($logical_path // '');
+    return File::Spec->catfile($root, $prefix, @parts);
+}
+
+sub _extracted_manifest_path {
+    my ($root, $prefix, $logical_path) = @_;
+    my $path = _extract_payload_path($root, $prefix, $logical_path);
+    return '' if !defined $path || $path eq '' || !-f $path;
+    return $path;
+}
+
+sub _materialize_entrypoint_source {
+    my ($extract_root, $entrypoint) = @_;
+    my $bytes = $entrypoint->{source_bytes} // '';
+    return '' if $bytes eq '';
+
+    my $name = _logical_name($entrypoint->{source_path} || $entrypoint->{logical_path} || 'entrypoint.pl');
+    $name =~ s/\.(?:script|dispatch|cli-router|service)\.json\z/.pl/;
+    $name .= '.pl' if $name !~ /\.[A-Za-z0-9]+\z/;
+
+    my $dir = File::Spec->catdir($extract_root, 'source-entrypoint');
+    mkdir $dir if !-d $dir;
+    my $path = File::Spec->catfile($dir, $name);
+    open my $fh, '>:raw', $path or return '';
+    print {$fh} $bytes;
+    close $fh or return '';
+    return $path;
+}
+
+sub _materialize_manifest_source_tree {
+    my ($extract_root, $manifest) = @_;
+    my @source_items = grep {
+        my $kind = $_->{unit_kind} // '';
+        my $bytes = $_->{source_bytes} // '';
+        ($kind eq 'lib' || $kind eq 'source' || $kind eq 'entrypoint')
+            && $bytes ne ''
+            && ($_->{source_path} // '') ne '';
+    } @{ $manifest->{code_units} // [] };
+    my $entry = $manifest->{entrypoint} // {};
+    push @source_items, {
+        unit_kind => 'entrypoint',
+        source_path => $entry->{source_path},
+        source_bytes => $entry->{source_bytes},
+    } if ($entry->{source_path} // '') ne '' && ($entry->{source_bytes} // '') ne '';
+    return {} if !@source_items;
+
+    my $root = _common_source_parent(map { $_->{source_path} } @source_items);
+    return {} if $root eq '';
+
+    my $rebuild_root = File::Spec->catdir($extract_root, 'rebuild-source');
+    make_path($rebuild_root) if !-d $rebuild_root;
+
+    my %written;
+    my $materialized_entrypoint = '';
+    for my $item (@source_items) {
+        my $source_path = $item->{source_path} // next;
+        my $bytes = $item->{source_bytes} // '';
+        next if $bytes eq '';
+        my $rel = File::Spec->abs2rel($source_path, $root);
+        next if !defined $rel || $rel eq '' || $rel =~ /^\.\.(?:\/|\\|$)/;
+        my $dest = File::Spec->catfile($rebuild_root, split m{/+|\\+}, $rel);
+        next if $written{$dest}++;
+        my ($vol, $dirs) = File::Spec->splitpath($dest);
+        make_path($dirs) if $dirs ne '' && !-d $dirs;
+        open my $fh, '>:raw', $dest or return {};
+        print {$fh} $bytes;
+        close $fh or return {};
+        if (($item->{unit_kind} // '') eq 'entrypoint') {
+            $materialized_entrypoint = $dest;
+        }
+    }
+    return {} if $materialized_entrypoint eq '' || !-f $materialized_entrypoint;
+
+    return {
+        entrypoint => $materialized_entrypoint,
+        lib_dirs => _materialized_manifest_roots($manifest, 'lib_dirs', 'lib', $root, $rebuild_root),
+        source_roots => _materialized_manifest_roots($manifest, 'source_roots', 'source', $root, $rebuild_root),
+    };
+}
+
+sub _materialized_manifest_roots {
+    my ($manifest, $field, $unit_kind, $source_root, $rebuild_root) = @_;
+    my @roots;
+    my %seen;
+    for my $logical_root (@{ $manifest->{$field} // [] }) {
+        next if !defined $logical_root || $logical_root eq '';
+        my $original_root = _manifest_source_root_for_logical($manifest, $logical_root, $unit_kind);
+        next if !defined $original_root || $original_root eq '';
+        my $rel = File::Spec->abs2rel($original_root, $source_root);
+        next if !defined $rel || $rel eq '' || $rel =~ /^\.\.(?:\/|\\|$)/;
+        my $materialized = File::Spec->catdir($rebuild_root, split m{/+|\\+}, $rel);
+        next if !-d $materialized || $seen{$materialized}++;
+        push @roots, $materialized;
+    }
+    return \@roots;
+}
+
+sub _common_source_parent {
+    my @paths = grep { defined && $_ ne '' } @_;
+    return '' if !@paths;
+    my @common = File::Spec->splitdir(dirname(shift @paths));
+    for my $path (@paths) {
+        my @parts = File::Spec->splitdir(dirname($path));
+        my $limit = @common < @parts ? scalar(@common) : scalar(@parts);
+        my $i = 0;
+        $i++ while $i < $limit && $common[$i] eq $parts[$i];
+        splice @common, $i;
+        last if !@common;
+    }
+    return File::Spec->catdir(@common);
+}
+
+sub _extracted_manifest_roots {
+    my ($root, $prefix, $logical_roots) = @_;
+    my @roots;
+    my %seen;
+    for my $logical_root (@{ $logical_roots // [] }) {
+        next if !defined $logical_root || $logical_root eq '';
+        my @parts = grep { defined && $_ ne '' } split m{/+}, $logical_root;
+        my $path = File::Spec->catdir($root, $prefix, @parts);
+        next if !-d $path || $seen{$path}++;
+        push @roots, $path;
+    }
+    return \@roots;
+}
+
+sub _original_manifest_roots {
+    my ($manifest, $field, $unit_kind) = @_;
+    my @roots;
+    my %seen;
+    for my $logical_root (@{ $manifest->{$field} // [] }) {
+        next if !defined $logical_root || $logical_root eq '';
+        my $root = _original_source_root_for_logical($manifest, $logical_root, $unit_kind);
+        next if !defined $root || $root eq '' || !-d $root || $seen{$root}++;
+        push @roots, $root;
+    }
+    return \@roots;
+}
+
+sub _original_source_root_for_logical {
+    my ($manifest, $logical_root, $unit_kind) = @_;
+    my $root = _manifest_source_root_for_logical($manifest, $logical_root, $unit_kind);
+    return if !defined $root || $root eq '' || !-d $root;
+    return $root;
+}
+
+sub _manifest_source_root_for_logical {
+    my ($manifest, $logical_root, $unit_kind) = @_;
+    for my $unit (@{ $manifest->{code_units} // [] }) {
+        my $logical_path = $unit->{logical_path} // '';
+        my $source_path = $unit->{source_path} // '';
+        my $kind = $unit->{unit_kind} // '';
+        next if $logical_path eq '' || $source_path eq '';
+        next if defined $unit_kind && $unit_kind ne '' && $kind ne $unit_kind;
+        next if index($logical_path, $logical_root . '/') != 0;
+        my $rel = substr($logical_path, length($logical_root) + 1);
+        next if $rel eq '';
+        my @rel_parts = split m{/+}, $rel;
+        my @source_parts = File::Spec->splitdir(dirname($source_path));
+        splice @source_parts, -(@rel_parts - 1) if @rel_parts > 1;
+        my $root = File::Spec->catdir(@source_parts);
+        return $root if $root ne '';
+    }
+    return;
 }
 
 sub load {
@@ -351,9 +644,11 @@ sub _absolute_output {
 sub _abs_existing {
     my ($paths) = @_;
     my @abs;
+    my %seen;
     for my $path (@$paths) {
         my $abs = abs_path($path);
-        push @abs, $abs if defined $abs;
+        next if !defined $abs || $seen{$abs}++;
+        push @abs, $abs;
     }
     return @abs;
 }
@@ -392,9 +687,20 @@ sub _code_manifest {
     my %seen_modules;
     my $compiler = PAX::CodeUnitCompiler->new;
     my @preferred_roots = grep { defined && $_ ne '' } (dirname($entrypoint), @$lib_dirs, @$source_roots);
-    my @lib_files = map { _perl_files([$_], exclude_nested_inc => 1) } @$lib_dirs;
-    my @source_files = map { _perl_files([$_], exclude_nested_inc => 1) } @$source_roots;
-    my $application_total = scalar(@lib_files) + scalar(@source_files);
+    my @lib_file_sets = map {
+        +{
+            dir   => $_,
+            files => [ _perl_files([$_], exclude_nested_inc => 1) ],
+        }
+    } @$lib_dirs;
+    my @source_file_sets = map {
+        +{
+            dir   => $_,
+            files => [ _perl_files([$_], exclude_nested_inc => 1) ],
+        }
+    } @$source_roots;
+    my $application_total = 0;
+    $application_total += scalar(@{ $_->{files} }) for (@lib_file_sets, @source_file_sets);
 
     $progress->({
         task_id => 'discover_code_units',
@@ -422,6 +728,7 @@ sub _code_manifest {
         kind => 'entrypoint',
         logical_path => _safe_logical_path(File::Spec->catfile('entrypoint', _logical_name($entrypoint))),
     );
+    $entry_unit->{source_bytes} = _slurp_bytes($entrypoint);
     push @manifest, $entry_unit;
     $progress->({
         task_id => 'compile_entrypoint',
@@ -438,44 +745,78 @@ sub _code_manifest {
         status => 'running',
         label => sprintf('Compile application units (0/%d)', $application_total),
     }) if $progress;
-    for my $dir (@$lib_dirs) {
+    for my $set (@lib_file_sets) {
+        my $dir = $set->{dir};
         my $prefix = _logical_root('lib', $dir);
-        for my $path (_perl_files([$dir], exclude_nested_inc => 1)) {
+        for my $path (@{ $set->{files} }) {
             next if $seen{$path}++;
             my $rel = File::Spec->abs2rel($path, $dir);
+            $progress->({
+                task_id => 'compile_application_units',
+                status => 'running',
+                label => sprintf(
+                    'Compile application units (%d/%d: %s)',
+                    $compiled_app_units + 1,
+                    $application_total,
+                    _progress_source_label('lib', $rel),
+                ),
+            }) if $progress;
             my $compiled = $compiler->compile(
                 path => $path,
                 kind => 'lib',
                 logical_path => _safe_logical_path(File::Spec->catfile($prefix, $rel)),
             );
+            $compiled->{source_bytes} = _slurp_bytes($path);
             push @manifest, $compiled;
             $compiled_app_units++;
             $progress->({
                 task_id => 'compile_application_units',
                 status => 'running',
-                label => sprintf('Compile application units (%d/%d)', $compiled_app_units, $application_total),
+                label => sprintf(
+                    'Compile application units (%d/%d: %s)',
+                    $compiled_app_units,
+                    $application_total,
+                    _progress_source_label('lib', $rel),
+                ),
             }) if $progress;
             my $module = _module_name_from_source_path($path);
             $seen_modules{$module} = 1 if defined $module;
         }
     }
 
-    for my $dir (@$source_roots) {
+    for my $set (@source_file_sets) {
+        my $dir = $set->{dir};
         my $prefix = _logical_root('src', $dir);
-        for my $path (_perl_files([$dir], exclude_nested_inc => 1)) {
+        for my $path (@{ $set->{files} }) {
             next if $seen{$path}++;
             my $rel = File::Spec->abs2rel($path, $dir);
+            $progress->({
+                task_id => 'compile_application_units',
+                status => 'running',
+                label => sprintf(
+                    'Compile application units (%d/%d: %s)',
+                    $compiled_app_units + 1,
+                    $application_total,
+                    _progress_source_label('src', $rel),
+                ),
+            }) if $progress;
             my $compiled = $compiler->compile(
                 path => $path,
                 kind => 'source',
                 logical_path => _safe_logical_path(File::Spec->catfile($prefix, $rel)),
             );
+            $compiled->{source_bytes} = _slurp_bytes($path);
             push @manifest, $compiled;
             $compiled_app_units++;
             $progress->({
                 task_id => 'compile_application_units',
                 status => 'running',
-                label => sprintf('Compile application units (%d/%d)', $compiled_app_units, $application_total),
+                label => sprintf(
+                    'Compile application units (%d/%d: %s)',
+                    $compiled_app_units,
+                    $application_total,
+                    _progress_source_label('src', $rel),
+                ),
             }) if $progress;
             my $module = _module_name_from_source_path($path);
             $seen_modules{$module} = 1 if defined $module;
@@ -517,6 +858,13 @@ sub _code_manifest {
     }) if $progress;
 
     return @manifest;
+}
+
+sub _progress_source_label {
+    my ($kind, $rel) = @_;
+    my $label = _safe_logical_path($rel // '');
+    $label = _logical_name($label) if $label !~ m{/};
+    return sprintf('%s:%s', $kind, $label);
 }
 
 sub _pure_perl_dependency_units {

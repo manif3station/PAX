@@ -963,6 +963,8 @@ sub _standalone_build_config {
         $name, $paxfile, $no_paxfile, $pretty, $entrypoint, $output, $runtime_mode,
         $app_name, $app_namespace, $app_entrypoint_env, $app_entrypoint_fallback, $app_command
     ) = (undef, 'paxfile.yml', 0, 1, undef, undef, undef, undef, undef, undef, undef);
+    my $entrypoint_from_cli = 0;
+    my $paxfile_from_cli = 0;
     my (@libs, @assets, @asset_dirs, @source_roots, @cpanfiles, @override_fields);
     while (@argv) {
         my $arg = shift @argv;
@@ -973,6 +975,7 @@ sub _standalone_build_config {
         }
         if ($arg eq '--paxfile') {
             $paxfile = shift @argv // return _missing('--paxfile');
+            $paxfile_from_cli = 1;
             next;
         }
         if ($arg eq '--no-paxfile') {
@@ -1045,6 +1048,7 @@ sub _standalone_build_config {
         }
         if (!defined $entrypoint) {
             $entrypoint = $arg;
+            $entrypoint_from_cli = 1;
             push @override_fields, 'entrypoint';
             next;
         }
@@ -1058,19 +1062,22 @@ sub _standalone_build_config {
         print STDERR "standalone-build requires a Perl entrypoint or paxfile.yml entrypoint\n";
         return 2;
     }
-    $name //= $cfg->{name};
-    @libs = @{ $cfg->{libs} // [] } if !@libs;
-    @source_roots = @{ $cfg->{source_roots} // [] } if !@source_roots;
-    @assets = @{ $cfg->{assets} // [] } if !@assets;
-    @asset_dirs = @{ $cfg->{asset_dirs} // [] } if !@asset_dirs;
-    @cpanfiles = @{ $cfg->{cpanfiles} // [] } if !@cpanfiles;
-    $output //= $cfg->{output};
-    $runtime_mode //= $cfg->{runtime_mode};
-    $app_name //= $cfg->{app_name};
-    $app_namespace //= $cfg->{app_namespace};
-    $app_entrypoint_env //= $cfg->{app_entrypoint_env};
-    $app_entrypoint_fallback //= $cfg->{app_entrypoint_fallback};
-    $app_command //= $cfg->{app_command};
+    my $use_paxfile_defaults = $entrypoint_from_cli ? $paxfile_from_cli : 1;
+    if ($use_paxfile_defaults) {
+        $name //= $cfg->{name};
+        @libs = @{ $cfg->{libs} // [] } if !@libs;
+        @source_roots = @{ $cfg->{source_roots} // [] } if !@source_roots;
+        @assets = @{ $cfg->{assets} // [] } if !@assets;
+        @asset_dirs = @{ $cfg->{asset_dirs} // [] } if !@asset_dirs;
+        @cpanfiles = @{ $cfg->{cpanfiles} // [] } if !@cpanfiles;
+        $output //= $cfg->{output};
+        $runtime_mode //= $cfg->{runtime_mode};
+        $app_name //= $cfg->{app_name};
+        $app_namespace //= $cfg->{app_namespace};
+        $app_entrypoint_env //= $cfg->{app_entrypoint_env};
+        $app_entrypoint_fallback //= $cfg->{app_entrypoint_fallback};
+        $app_command //= $cfg->{app_command};
+    }
 
     return {
         name => $name,
@@ -1091,7 +1098,7 @@ sub _standalone_build_config {
         asset_dirs => \@asset_dirs,
         cpanfiles => \@cpanfiles,
         override_fields => [ sort @override_fields ],
-        paxfile_applied => $no_paxfile ? 0 : (-f $paxfile ? 1 : 0),
+        paxfile_applied => $no_paxfile ? 0 : (($use_paxfile_defaults && -f $paxfile) ? 1 : 0),
     };
 }
 

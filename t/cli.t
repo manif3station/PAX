@@ -74,6 +74,7 @@ like($progress_text, qr/\[ \] Resolve build inputs/, 'pax build progress output 
 like($progress_text, qr/\[OK\] Discover Perl source units/, 'pax build progress output breaks out source discovery');
 like($progress_text, qr/\[OK\] Compile entrypoint unit/, 'pax build progress output breaks out entrypoint compilation');
 like($progress_text, qr/\[OK\] Compile application units/, 'pax build progress output breaks out application unit compilation');
+like($progress_text, qr/Compile application units \(\d+\/\d+: lib:SlowLoad\.pm\)/, 'pax build progress output shows file-level application unit progress');
 like($progress_text, qr/\[OK\] Compile dependency units/, 'pax build progress output breaks out dependency compilation');
 like($progress_text, qr/\[OK\] Infer application metadata/, 'pax build progress output breaks out application metadata inference');
 like($progress_text, qr/\[OK\] Analyze runtime dependencies/, 'pax build progress output breaks out runtime dependency analysis');
@@ -136,6 +137,12 @@ is($? >> 8, 0, 'pax run bin/pax builds then runs self-built pax');
 like($self_run_output, qr/^usage:\n  pax build /, 'pax run bin/pax emits self-built help output');
 ok(-x $self_run_binary, 'pax run self-build writes requested binary');
 
+my $isolated_json = `cd $repo && $^X $pax build --compact -o $sow03_root/isolated-app t/fixtures/app_entry.pl`;
+is($? >> 8, 0, 'explicit entrypoint build ignores ambient repo paxfile defaults');
+my $isolated_build = decode_json($isolated_json);
+is($isolated_build->{standalone}{asset_count}, 0, 'explicit entrypoint build does not inherit repo paxfile assets');
+is(($isolated_build->{standalone}{build_plan}{paxfile_applied} // JSON::PP::false), JSON::PP::false, 'explicit entrypoint build records paxfile as unapplied');
+
 my $nested_workdir = "$sow03_root/self-hosted-build";
 make_path($nested_workdir);
 my $nested_binary = "$nested_workdir/nested-app";
@@ -159,5 +166,15 @@ ok(-x $nested_binary, 'self-built pax writes nested standalone binary');
 my $nested_status = `env -i PATH=/nonexistent TMPDIR=/tmp $nested_binary status`;
 is($? >> 8, 0, 'nested standalone binary built by self-built pax executes');
 is($nested_status, "slowload-ready\n", 'nested standalone built by self-built pax returns expected output');
+
+my $standalone_input_binary = "$sow03_root/pax-standalone-input";
+my $standalone_input_build_json = `cd $blank && env -i PATH=/nonexistent TMPDIR=/tmp PAX_PROGRESS=0 $self_binary build --compact -o $standalone_input_binary $self_binary`;
+is($? >> 8, 0, 'self-built pax can rebuild from a standalone pax binary input');
+my $standalone_input_build = decode_json($standalone_input_build_json);
+is($standalone_input_build->{status}, 'built', 'standalone pax input rebuild reports success');
+ok(-x $standalone_input_binary, 'standalone pax input rebuild writes an executable');
+my $standalone_input_help = `env -i PATH=/nonexistent TMPDIR=/tmp $standalone_input_binary help`;
+is($? >> 8, 0, 'rebuilt standalone pax binary from standalone input executes');
+like($standalone_input_help, qr/^usage:\n  pax build /, 'rebuilt standalone pax binary from standalone input keeps minimal CLI');
 
 done_testing;

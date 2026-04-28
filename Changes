@@ -25,6 +25,23 @@
       entrypoint compilation, application unit compilation, and dependency
       unit compilation so large Perl builds no longer appear stuck on a single
       compile line.
+    - Added file-level application unit progress so long builds show which
+      source file is currently being compiled instead of stalling on a raw
+      count.
+    - Cut one duplicate application source-tree walk out of standalone builds
+      and deduplicated resolved source roots so large projects stop rescanning
+      the same lib tree unnecessarily.
+    - Isolated explicit entrypoint builds from ambient `paxfile.yml` defaults
+      so self-hosting and one-off builds no longer inherit unrelated assets,
+      library roots, or CPAN policy files from the current repository.
+    - Stopped application source scans from treating nested bundled runtime
+      include trees as project code, which fixes second-generation self-builds
+      that previously broke on modules such as `Digest::SHA` and
+      `IO::Socket::INET`.
+    - Added a standalone-input rebuild path that carries an embedded source
+      snapshot for application entrypoints and modules, so a built `pax`
+      binary can rebuild from another standalone `pax` binary even after the
+      original source tree is gone.
     - Added explicit TDD, BDD, ATDD, QA, and final all-gates targets so the
       repository now has one mandatory completion chain instead of relying on
       partial gate passes and operator memory.

@@ -180,6 +180,64 @@ ok(-f "$extract_dir/code/lib/app_lib/HybridLoad.pcu.json", 'standalone-extract w
 ok(-f "$extract_dir/runtime/bin/perl", 'standalone-extract writes bundled perl');
 ok(-f "$extract_dir/assets/banner.txt", 'standalone-extract writes asset payload');
 
+my $source_free_root = File::Spec->catdir($tmp_base, 'source-free-roundtrip');
+my $source_free_lib = File::Spec->catdir($source_free_root, 'lib');
+make_path($source_free_lib);
+my $source_free_entry = File::Spec->catfile($source_free_root, 'roundtrip.pl');
+my $source_free_module = File::Spec->catfile($source_free_lib, 'RoundTrip.pm');
+open my $source_free_module_fh, '>', $source_free_module or die "cannot write roundtrip module: $!";
+print {$source_free_module_fh} <<'PERL';
+package RoundTrip;
+use strict;
+use warnings;
+use Digest::SHA qw(sha256_hex);
+use IO::Socket::INET;
+
+sub status {
+    return substr(sha256_hex('pax-roundtrip'), 0, 8) . ':' . IO::Socket::INET->VERSION;
+}
+
+1;
+PERL
+close $source_free_module_fh;
+open my $source_free_entry_fh, '>', $source_free_entry or die "cannot write roundtrip entrypoint: $!";
+print {$source_free_entry_fh} <<'PERL';
+use strict;
+use warnings;
+use FindBin;
+use lib "$FindBin::Bin/lib";
+use RoundTrip;
+
+my $command = shift(@ARGV) // 'status';
+if ($command eq 'status') {
+    print RoundTrip::status(), "\n";
+    exit 0;
+}
+
+die "unknown command: $command\n";
+PERL
+close $source_free_entry_fh;
+
+my $source_free_built = $builder->build(
+    name => 'fixture-source-free-a',
+    entrypoint => $source_free_entry,
+    lib_dirs => [$source_free_lib],
+);
+is($source_free_built->{status}, 'built', 'source-free seed standalone image built');
+my $source_free_binary_a = abs_path($source_free_built->{standalone}{output_path});
+remove_tree($source_free_root);
+ok(!-d $source_free_root, 'source-free seed source tree removed');
+
+my $source_free_rebuilt = $builder->build(
+    name => 'fixture-source-free-b',
+    entrypoint => $source_free_binary_a,
+);
+is($source_free_rebuilt->{status}, 'built', 'standalone image rebuilds from standalone binary without original source tree');
+my $source_free_binary_b = abs_path($source_free_rebuilt->{standalone}{output_path});
+my $source_free_status = `env -i PATH=/nonexistent TMPDIR=/tmp $source_free_binary_b status`;
+is($? >> 8, 0, 'source-free rebuilt standalone executable runs');
+like($source_free_status, qr/^[0-9a-f]{8}:\d+\.\d+\n\z/, 'source-free rebuilt standalone keeps Digest::SHA and IO::Socket::INET runtime support');
+
 my $namespace_build = $builder->build(
     name => 'fixture-namespace-runtime',
     entrypoint => "$FindBin::Bin/fixtures/app_entry.pl",

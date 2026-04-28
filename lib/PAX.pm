@@ -173,6 +173,10 @@ the test suite and release gates. They are not public C<bin/pax> subcommands.
 When no positional entrypoint is supplied, C<build> and C<run> read
 C<paxfile.yml> by default. C<--paxfile> selects a different manifest and
 C<--no-paxfile> disables manifest loading.
+When a positional entrypoint is supplied on the CLI, PAX treats that target as
+an isolated build and does not silently inherit C<libs>, C<source_roots>,
+C<assets>, C<asset_dirs>, C<cpanfiles>, or app metadata from the ambient
+C<paxfile.yml>. An explicit C<--paxfile> still applies its manifest defaults.
 
 Supported manifest keys:
 
@@ -250,7 +254,8 @@ application metadata inference, dependency analysis, native artifact analysis,
 manifest writing, and launcher compilation. The code-unit phase is further
 split into source discovery, entrypoint compilation, application unit
 compilation, and dependency unit compilation so long builds keep moving
-visibly. Set
+visibly. Application unit compilation includes the current file name, so a
+slow module no longer looks like a frozen counter. Set
 C<PAX_PROGRESS=0> to suppress the rundown.
 
 And run the result directly:
@@ -263,6 +268,10 @@ When the CLI provides the required shape, C<paxfile.yml> is optional:
 
   perl bin/pax build -o ./build/example-app bin/example-app
 
+That keeps one-off builds and self-hosting neutral even inside repositories
+that ship their own C<paxfile.yml>. Extra roots, assets, and CPAN policy files
+must be declared explicitly on the CLI in that mode.
+
 =head2 Self Compile
 
 PAX can build itself:
@@ -271,7 +280,10 @@ PAX can build itself:
   /tmp/pax help
 
 That self-built binary can then build another standalone application from its
-own C<paxfile.yml>.
+own C<paxfile.yml>. A self-built standalone C<pax> binary can also rebuild
+from another standalone C<pax> binary input after the original source tree has
+been removed, because the rebuild path carries an embedded source snapshot for
+the application units it needs to rebuild.
 
 =head1 ARCHITECTURE
 
@@ -465,6 +477,11 @@ when that final aggregate gate passes.
 
 =item * Bundled runtime executables are larger than wrappers because they carry
 runtime payloads needed to run without the source tree.
+
+=item * Bundled-perl binaries are validated for builder and runtime
+environments from the same libc family; arbitrary host-built cross-distro
+portability is not a release guarantee, so multi-stage Docker deployment
+should build inside the target container family.
 
 =item * Docker validation requires local Docker access.
 

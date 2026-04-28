@@ -98,7 +98,8 @@ compilation, application metadata inference, dependency analysis, native
 artifact analysis, manifest writing, and launcher compilation. The code-unit
 phase is further split into source discovery, entrypoint compilation,
 application unit compilation, and dependency unit compilation so long builds
-keep moving visibly. To suppress it:
+keep moving visibly. Application unit compilation includes the current file
+name, so a slow module no longer looks like a frozen counter. To suppress it:
 
 ```bash
 PAX_PROGRESS=0 perl bin/pax build --compact
@@ -157,7 +158,11 @@ Common options:
 ## `paxfile.yml`
 
 With no positional entrypoint, `pax build` and `pax run` read `paxfile.yml`.
-CLI flags override file values.
+CLI flags override file values. When a positional entrypoint is supplied on the
+CLI, PAX treats that target as an isolated build and does not silently inherit
+`libs`, `source_roots`, `assets`, `asset_dirs`, `cpanfiles`, or app metadata
+from the ambient default `paxfile.yml`. An explicit `--paxfile` still applies
+its manifest defaults.
 
 Example:
 
@@ -237,6 +242,10 @@ PAX does not require a manifest when the CLI provides the required build shape:
 perl bin/pax build -o ./build/example-app bin/example-app
 ```
 
+That keeps one-off builds and self-hosting neutral even inside repositories
+that ship their own `paxfile.yml`. Extra roots, assets, and CPAN policy files
+must be declared explicitly on the CLI in that mode.
+
 ### Self Compile
 
 PAX can build PAX itself:
@@ -246,8 +255,14 @@ perl bin/pax build -o /tmp/pax bin/pax
 /tmp/pax help
 ```
 
+When the original source paths still exist, that self-built standalone `pax`
+binary can also rebuild from another standalone `pax` binary input.
+
 That same self-built binary can then build another standalone application from
-its own `paxfile.yml`.
+its own `paxfile.yml`. It can also rebuild from another standalone `pax`
+binary when the original source checkout is no longer present, because the
+build path carries an embedded source snapshot for the application units it
+needs to rebuild.
 
 ## Asset Embedding
 
@@ -349,6 +364,10 @@ public facade.
 - Native speedups depend on whether PAX can prove a region is safe to compile.
 - Bundled runtime artifacts are larger than source-only wrappers because they
   include enough Perl/runtime payload to run without the source tree.
+- Bundled-perl binaries are validated for builder and runtime environments from
+  the same libc family; arbitrary host-built cross-distro portability is not a
+  release guarantee, so build inside the target container family for
+  multi-stage Docker deployment.
 - Docker validation requires a local Docker daemon and build access.
 
 ## Testing And Release Gates
