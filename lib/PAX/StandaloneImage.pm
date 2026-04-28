@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.011';
+our $VERSION = '0.012';
 
 use strict;
 use warnings;
@@ -1396,6 +1396,8 @@ sub _launcher_source {
     my $manifest_json = JSON::PP->new->ascii(1)->canonical(1)->encode(_manifest_without_bytes($manifest));
     my $manifest_literal = _c_string($manifest_json);
     my $entrypoint_logical = _c_string($manifest->{entrypoint}{logical_path});
+    my $source_hash = _c_string($manifest->{source_hash} // '');
+    my $fast_version = _c_string(_manifest_fast_version($manifest) // '');
     my $native_payload_count = scalar @{ $manifest->{native_payloads} // [] };
     my $runtime_mode = _c_string($manifest->{runtime}{mode} // 'host_perl');
     my $runtime_perl = _c_string($manifest->{runtime}{perl_binary_logical_path} // '');
@@ -1535,10 +1537,15 @@ static int append_path(char *buffer, size_t size, const char *path) {
     return 0;
 }
 
-static int extract_roots(const char *root, char *code_root, size_t code_size, char *runtime_root, size_t runtime_size, char *assets_root, size_t assets_size) {
+static int resolve_roots(const char *root, char *code_root, size_t code_size, char *runtime_root, size_t runtime_size, char *assets_root, size_t assets_size) {
     if (snprintf(code_root, code_size, "%s/code", root) >= (int)code_size) return 111;
     if (snprintf(runtime_root, runtime_size, "%s/runtime", root) >= (int)runtime_size) return 111;
     if (snprintf(assets_root, assets_size, "%s/assets", root) >= (int)assets_size) return 111;
+    return 0;
+}
+
+static int extract_roots(const char *root, char *code_root, size_t code_size, char *runtime_root, size_t runtime_size, char *assets_root, size_t assets_size) {
+    if (resolve_roots(root, code_root, code_size, runtime_root, runtime_size, assets_root, assets_size) != 0) return 111;
     if (write_package_root(code_root, _binary_code_pkg_start, (unsigned long)(_binary_code_pkg_end - _binary_code_pkg_start)) != 0) return 111;
     if (write_package_root(runtime_root, _binary_runtime_pkg_start, (unsigned long)(_binary_runtime_pkg_end - _binary_runtime_pkg_start)) != 0) return 111;
     if (write_package_root(assets_root, _binary_assets_pkg_start, (unsigned long)(_binary_assets_pkg_end - _binary_assets_pkg_start)) != 0) return 111;
@@ -1549,23 +1556,26 @@ static int extract_roots(const char *root, char *code_root, size_t code_size, ch
 static int extract_runtime(char *tmpdir, size_t size, char *entrypoint, size_t entry_size, char *perl_exec, size_t perl_size, char *libpath, size_t lib_size, char *asset_root, size_t asset_size) {
     const char *base = getenv("TMPDIR");
     if (!base || !*base) base = "/tmp";
-    if (snprintf(tmpdir, size, "%s/pax-standalone-XXXXXX", base) >= (int)size) return 111;
-    if (!mkdtemp(tmpdir)) return 111;
     char code_root[4096];
     char runtime_root[4096];
     char assets_root[4096];
     char runtime_lib_root[4096];
     char manifest_path[4096];
     FILE *manifest_out;
-    if (extract_roots(tmpdir, code_root, sizeof(code_root), runtime_root, sizeof(runtime_root), assets_root, sizeof(assets_root)) != 0) return 111;
+    if (snprintf(tmpdir, size, "%s/pax-standalone-cache-%s", base, $source_hash) >= (int)size) return 111;
+    if (mkdir(tmpdir, 0700) != 0 && errno != EEXIST) return 111;
+    if (resolve_roots(tmpdir, code_root, sizeof(code_root), runtime_root, sizeof(runtime_root), assets_root, sizeof(assets_root)) != 0) return 111;
     if (snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", tmpdir) >= (int)sizeof(manifest_path)) return 111;
-    manifest_out = fopen(manifest_path, "wb");
-    if (!manifest_out) return 111;
-    if (fwrite($manifest_literal, 1, strlen($manifest_literal), manifest_out) != strlen($manifest_literal)) {
+    if (access(manifest_path, F_OK) != 0 || access(code_root, F_OK) != 0 || access(runtime_root, F_OK) != 0 || access(assets_root, F_OK) != 0) {
+        if (extract_roots(tmpdir, code_root, sizeof(code_root), runtime_root, sizeof(runtime_root), assets_root, sizeof(assets_root)) != 0) return 111;
+        manifest_out = fopen(manifest_path, "wb");
+        if (!manifest_out) return 111;
+        if (fwrite($manifest_literal, 1, strlen($manifest_literal), manifest_out) != strlen($manifest_literal)) {
+            fclose(manifest_out);
+            return 111;
+        }
         fclose(manifest_out);
-        return 111;
     }
-    fclose(manifest_out);
 
     if (snprintf(entrypoint, entry_size, "%s/%s", code_root, $entrypoint_logical) >= (int)entry_size) return 111;
     if (snprintf(asset_root, asset_size, "%s", assets_root) >= (int)asset_size) return 111;
@@ -1604,6 +1614,10 @@ static int extract_runtime(char *tmpdir, size_t size, char *entrypoint, size_t e
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--pax-standalone-inspect") == 0) {
         puts($manifest_literal);
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "version") == 0 && strlen($fast_version) > 0) {
+        puts($fast_version);
         return 0;
     }
     if (argc > 2 && strcmp(argv[1], "--pax-standalone-extract") == 0) {
@@ -1655,6 +1669,20 @@ int main(int argc, char **argv) {
     return 111;
 }
 C
+}
+
+sub _manifest_fast_version {
+    my ($manifest) = @_;
+    my $entrypoint_logical = $manifest->{entrypoint}{logical_path} // '';
+    for my $unit (@{ $manifest->{code_units} // [] }) {
+        next if ref($unit) ne 'HASH';
+        next if ($unit->{logical_path} // '') ne $entrypoint_logical;
+        next if !defined($unit->{bytes}) || $unit->{bytes} eq '';
+        my $record = eval { JSON::PP::decode_json($unit->{bytes}) };
+        next if ref($record) ne 'HASH';
+        return $record->{version} if defined($record->{version}) && $record->{version} ne '';
+    }
+    return;
 }
 
 sub _manifest_without_bytes {

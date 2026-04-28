@@ -13,7 +13,7 @@ WORKDIR /pax
 ARG PAX_CONTEXT
 COPY ${PAX_CONTEXT} /pax
 RUN cpanm --notest --installdeps .
-RUN perl bin/pax build --compact --no-paxfile -o /out/pax bin/pax
+RUN perl bin/pax build -o /out/pax bin/pax
 
 FROM perl:5.42.0 AS app-build
 
@@ -32,7 +32,7 @@ RUN rm -rf /app/*
 COPY ${APP_CONTEXT} /app
 COPY --from=pax-build /out/pax /usr/local/bin/pax
 RUN if [ -f cpanfile ]; then cpanm --notest --installdeps .; fi
-RUN if [ -f paxfile.yml ]; then pax build --compact --paxfile paxfile.yml -o ${APP_OUTPUT} ${APP_ENTRYPOINT}; else pax build --compact --no-paxfile -o ${APP_OUTPUT} ${APP_ENTRYPOINT}; fi
+RUN if [ -f paxfile.yml ]; then pax build --paxfile paxfile.yml -o ${APP_OUTPUT} ${APP_ENTRYPOINT}; else pax build -o ${APP_OUTPUT} ${APP_ENTRYPOINT}; fi
 
 FROM debian:trixie-slim
 

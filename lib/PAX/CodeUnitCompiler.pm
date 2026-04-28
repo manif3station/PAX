@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.011';
+our $VERSION = '0.012';
 
 use strict;
 use warnings;
@@ -1810,6 +1810,7 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'dancerapp_build_psgi_app',
+            app_package => $package,
             backend_symbol => $package . '::BACKEND_APP',
             prototype => $prototype,
         };
@@ -12415,6 +12416,8 @@ sub _compiled_cli_router_unit {
     my $sub_pos = index($source, "\nsub _prime_command_result_env");
     return if $sub_pos < 0;
     my $bootstrap_source = substr($source, 0, $decl_start) . substr($source, $sub_pos + 1);
+    my @module_roots = _module_search_roots_from_source($source, $path);
+    my $version = _module_version_from_roots($version_module, \@module_roots);
     my @subs;
     my $dashboard_entry = _entry_command_from_entrypoint($source, $path, $logical_path);
     if (!$dashboard_entry) {
@@ -12435,6 +12438,7 @@ sub _compiled_cli_router_unit {
         source_kind => $kind,
         source_path => $path,
         bootstrap_source => $bootstrap_source,
+        version => $version,
         version_module => $version_module,
         suggest_class => $suggest_class,
         subs => \@subs,
@@ -12461,13 +12465,7 @@ sub _entry_command_from_entrypoint {
     my ($source, $entrypoint_path, $logical_path) = @_;
 
     my @imported = _used_modules_from_source($source);
-    my $bin_dir = File::Basename::dirname($entrypoint_path);
-    my @roots = (File::Spec->catdir($bin_dir, File::Spec->updir(), 'lib'));
-    for my $use_lib ( _use_lib_paths_from_source($source, $entrypoint_path) ) {
-        push @roots, $use_lib;
-    }
-    my %seen_root;
-    @roots = grep { $_ ne '' && !$seen_root{$_}++ && -d $_ } @roots;
+    my @roots = _module_search_roots_from_source($source, $entrypoint_path);
 
     for my $module (@imported) {
         next if $module =~ /^(?:strict|warnings|utf8|feature|integer|bytes|mro|open|re|vars|constant)$/;
@@ -12488,6 +12486,21 @@ sub _entry_command_from_entrypoint {
     return $entrypoint_env_assignment if $entrypoint_env_assignment;
 
     return;
+}
+
+sub _module_search_roots_from_source {
+    my ($source, $entrypoint_path) = @_;
+    my $bin_dir = File::Basename::dirname($entrypoint_path);
+    my @roots = (File::Spec->catdir($bin_dir, File::Spec->updir(), 'lib'));
+    for my $inc (@INC) {
+        next if !defined $inc || ref($inc) || $inc eq '';
+        push @roots, File::Spec->rel2abs($inc);
+    }
+    for my $use_lib (_use_lib_paths_from_source($source, $entrypoint_path)) {
+        push @roots, $use_lib;
+    }
+    my %seen_root;
+    return grep { $_ ne '' && !$seen_root{$_}++ && -d $_ } @roots;
 }
 
 sub _entry_command_from_env_assignment {
@@ -12572,6 +12585,13 @@ sub _module_source_from_roots {
         return $raw if defined $raw && $raw ne '';
     }
     return;
+}
+
+sub _module_version_from_roots {
+    my ($module, $roots) = @_;
+    my $module_source = _module_source_from_roots($module, $roots) or return;
+    return if $module_source !~ /\bour\s+\$VERSION\s*=\s*(['"])((?:\\.|(?!\1).)*)\1\s*;/s;
+    return _unescape_literal($2);
 }
 
 sub _compiled_service_dispatch_unit {

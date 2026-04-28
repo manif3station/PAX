@@ -9,7 +9,7 @@ RUN apt-get update \
 WORKDIR /pax
 COPY . /pax
 RUN if [ -f cpanfile ]; then cpanm --notest --installdeps .; fi
-RUN perl bin/pax build --compact --no-paxfile -o /out/pax bin/pax
+RUN perl bin/pax build -o /out/pax bin/pax
 
 FROM perl:5.42.0 AS web-build
 
@@ -23,7 +23,7 @@ WORKDIR /webapp
 COPY examples/webapp /webapp
 COPY --from=pax-build /out/pax /usr/local/bin/pax
 RUN cpanm --notest Dancer2 Plack Starman Template
-RUN cd /webapp && pax build --compact --paxfile paxfile.yml --output /out/pax-webapp
+RUN cd /webapp && pax build --paxfile paxfile.yml --output /out/pax-webapp
 
 FROM debian:trixie-slim
 

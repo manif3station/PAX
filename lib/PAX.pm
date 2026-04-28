@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.011';
+our $VERSION = '0.012';
 
 1;
 
@@ -426,7 +426,7 @@ Release readiness requires:
 =item * C<make release-gate>.
 
 =item * a deliberate version-bump step such as
-C<make cpan-bump-version VERSION=0.011> followed by a meaningful top entry in
+C<make cpan-bump-version VERSION=E<lt>next-versionE<gt>> followed by a meaningful top entry in
 C<Changes>.
 
 =item * C<make cpan-build> and C<make cpan-gate>.
@@ -442,7 +442,7 @@ locate the built tarball in the repository root, and upload it with
 C<cpan-upload> using the local uploader configuration.
 
 The version bump happens before C<dzil build>, for example with
-C<make cpan-bump-version VERSION=0.011> or C<make cpan-auto-bump>. After the
+C<make cpan-bump-version VERSION=E<lt>next-versionE<gt>> or C<make cpan-auto-bump>. After the
 bump, the operator must write a meaningful top C<Changes> entry for that
 version and commit the release-preparation changes. C<make cpan-dist> and
 C<make cpan-build> then enforce the version gate, the C<Changes> gate, and the

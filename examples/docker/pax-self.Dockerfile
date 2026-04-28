@@ -8,7 +8,7 @@ RUN apt-get update \
 
 WORKDIR /pax
 COPY . /pax
-RUN perl bin/pax build --compact --no-paxfile -o /out/pax bin/pax
+RUN perl bin/pax build -o /out/pax bin/pax
 
 FROM debian:trixie-slim
 

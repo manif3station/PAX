@@ -390,8 +390,8 @@ make cpan-gate
 Release readiness is checked by the repository gates:
 
 ```bash
-make cpan-bump-version VERSION=0.011
-# update Changes with a meaningful top entry for 0.011
+make cpan-bump-version VERSION=<next-version>
+# update Changes with a meaningful top entry for <next-version>
 make tdd-gate
 make bdd-gate
 make atdd-gate
@@ -434,7 +434,7 @@ Completion rule:
 Release flow rule:
 
 - bump the version before `dzil build`, for example with
-  `make cpan-bump-version VERSION=0.011` or `make cpan-auto-bump`.
+  `make cpan-bump-version VERSION=<next-version>` or `make cpan-auto-bump`.
 - after the bump, update `Changes` with a meaningful top entry for that version
   and commit the release-preparation changes.
 - `make cpan-dist` and `make cpan-build` then run `version-gate`,

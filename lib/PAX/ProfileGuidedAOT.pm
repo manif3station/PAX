@@ -1,6 +1,6 @@
 package PAX::ProfileGuidedAOT;
 
-our $VERSION = '0.011';
+our $VERSION = '0.012';
 
 use strict;
 use warnings;

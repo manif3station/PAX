@@ -1,12 +1,15 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.011';
+our $VERSION = '0.012';
 
 use strict;
 use warnings;
+use Capture::Tiny ();
+use Config ();
 use File::Basename qw(basename dirname);
 use File::Path qw(make_path);
 use File::Spec;
+use Cwd qw(abs_path);
 use JSON::PP ();
 use Socket qw(MSG_PEEK);
 
@@ -14,6 +17,8 @@ use PAX::GuardManager;
 use PAX::NativeRunner;
 
 my $STATE;
+my $RUNTIME_JSON_DECODER;
+my $RUNTIME_JSON_DECODER_KIND;
 my %RESULT_CHANNEL_FILE_HANDLE;
 my %RESULT_CHANNEL_FILE_PATH;
 my $INDICATOR_STATUS_ICONS = {
@@ -64,6 +69,23 @@ sub _trace {
     print STDERR "[pax-standalone] $message\n";
 }
 
+sub _capture_system_command {
+    my (@command) = @_;
+    my $exit_code = -1;
+    my ($stdout, $stderr) = Capture::Tiny::capture {
+        system @command;
+        $exit_code = $? == -1 ? -1 : ($? >> 8);
+    };
+    return ($stdout, $stderr, $exit_code);
+}
+
+sub _system_command_missing {
+    my ($stderr, $exit_code) = @_;
+    return 1 if !defined $exit_code || $exit_code < 0 || $exit_code == 127;
+    return 1 if defined $stderr && $stderr =~ /(?:can't exec|not found|no such file or directory)/i;
+    return 0;
+}
+
 sub run {
     my ($class, %args) = @_;
     my $entrypoint = $args{entrypoint} // shift(@ARGV);
@@ -80,10 +102,12 @@ sub run {
         die "entrypoint is not a valid executable unit: $entrypoint";
     }
     my @argv = @{ $args{argv} // \@ARGV };
+    my $self_path = _standalone_executable_path();
     _install_namespace_compat();
     _install_require_hook();
     _install_pending_wrappers();
 
+    local $0 = $self_path if defined $self_path && $self_path ne '';
     if (@argv && $argv[0] eq '--pax-standalone-helper') {
         shift @argv;
         my $helper = shift @argv // die "standalone helper name required\n";
@@ -134,7 +158,7 @@ sub _state {
     my $manifest_path = $ENV{PAX_STANDALONE_MANIFEST_PATH} or die 'PAX_STANDALONE_MANIFEST_PATH not set';
     open my $fh, '<', $manifest_path or die "cannot read $manifest_path: $!";
     local $/;
-    my $manifest = JSON::PP::decode_json(<$fh>);
+    my $manifest = _runtime_json_decode(<$fh>);
     my $root = $ENV{PAX_STANDALONE_TMPDIR} or die 'PAX_STANDALONE_TMPDIR not set';
     my $app_namespace = _normalize_namespace($manifest->{app}{namespace} // '');
     if (!$app_namespace) {
@@ -440,8 +464,26 @@ sub _load_package_by_module_name {
 
 sub _standalone_executable_path {
     my $path = $ENV{PAX_STANDALONE_EXECUTABLE} // '';
-    return $path if defined $path && $path ne '';
-    return;
+    return if !defined $path || $path eq '';
+    if (File::Spec->file_name_is_absolute($path)) {
+        my $resolved = abs_path($path);
+        return $resolved if defined $resolved && $resolved ne '';
+        return $path;
+    }
+    if ($path =~ m{/}) {
+        my $resolved = abs_path($path);
+        return $resolved if defined $resolved && $resolved ne '';
+        return File::Spec->rel2abs($path);
+    }
+    my $path_sep = $Config::Config{path_sep} || ':';
+    for my $dir (grep { defined && $_ ne '' } split /\Q$path_sep\E/, ($ENV{PATH} // '')) {
+        my $candidate = File::Spec->catfile($dir, $path);
+        next if !-f $candidate || !-x _;
+        my $resolved = abs_path($candidate);
+        return $resolved if defined $resolved && $resolved ne '';
+        return $candidate;
+    }
+    return $path;
 }
 
 sub _shell_single_quote {
@@ -547,6 +589,8 @@ sub _run_standalone_managed_helper {
     my @core_argv = @argv;
     unshift @core_argv, $helper if $helper ne '_dashboard-core';
     local @ARGV = @core_argv;
+    my $self_path = _standalone_executable_path();
+    local $ENV{DEVELOPER_DASHBOARD_ENTRYPOINT} = $self_path if defined $self_path && $self_path ne '';
     my $wrapped = "package main;\n#line 1 \"$core_path\"\n" . $core_source;
     my $rv = eval $wrapped;
     die $@ if $@;
@@ -611,7 +655,7 @@ sub _load_compiled_unit {
     my $path = File::Spec->catfile($state->{root}, 'code', split m{/}, $unit->{logical_path});
     open my $fh, '<', $path or die "cannot read compiled unit $path: $!";
     local $/;
-    my $record = JSON::PP::decode_json(<$fh>);
+    my $record = _runtime_json_decode(<$fh>);
 
     if (($record->{residual_mode} // '') eq 'module') {
         _load_residual_module($unit, $record);
@@ -692,7 +736,7 @@ sub _run_service_dispatch_unit {
     my ($entrypoint) = @_;
     open my $fh, '<', $entrypoint or die "cannot read service dispatch unit $entrypoint: $!";
     local $/;
-    my $record = JSON::PP::decode_json(<$fh>);
+    my $record = _runtime_json_decode(<$fh>);
 
     my $cmd = shift(@ARGV);
     $cmd = 'version' if !defined($cmd) || $cmd eq '';
@@ -747,7 +791,7 @@ sub _run_cli_router_unit {
     my ($entrypoint) = @_;
     open my $fh, '<', $entrypoint or die "cannot read cli router unit $entrypoint: $!";
     local $/;
-    my $record = JSON::PP::decode_json(<$fh>);
+    my $record = _runtime_json_decode(<$fh>);
     my $path = _virtual_entrypoint_path($entrypoint);
     my $bootstrap = $record->{bootstrap_source};
     if (defined $bootstrap && $bootstrap ne '') {
@@ -813,7 +857,7 @@ sub _run_dispatch_script_unit {
     my ($entrypoint) = @_;
     open my $fh, '<', $entrypoint or die "cannot read dispatch script unit $entrypoint: $!";
     local $/;
-    my $record = JSON::PP::decode_json(<$fh>);
+    my $record = _runtime_json_decode(<$fh>);
     my $path = _virtual_entrypoint_path($entrypoint);
     my $bootstrap = $record->{bootstrap_source};
     if (defined $bootstrap && $bootstrap ne '') {
@@ -882,7 +926,7 @@ sub _run_script_unit {
     my ($entrypoint) = @_;
     open my $fh, '<', $entrypoint or die "cannot read script unit $entrypoint: $!";
     local $/;
-    my $record = JSON::PP::decode_json(<$fh>);
+    my $record = _runtime_json_decode(<$fh>);
     my $source = $record->{script_source} // _script_source_from_code_units($entrypoint)
         // _source_path_to_script_source($entrypoint)
         // _script_source_from_residual_payload($entrypoint);
@@ -912,9 +956,26 @@ sub _script_source_from_code_units {
     return $unit->{script_source} if defined $unit->{script_source};
     my $bytes = $unit->{bytes};
     return if !defined $bytes;
-    my $decoded = eval { JSON::PP::decode_json($bytes) };
+    my $decoded = eval { _runtime_json_decode($bytes) };
     return $decoded->{script_source} if ref($decoded) eq 'HASH' && defined $decoded->{script_source};
     return $bytes;
+}
+
+sub _runtime_json_decoder {
+    return $RUNTIME_JSON_DECODER if $RUNTIME_JSON_DECODER;
+    if (eval { require JSON::XS; 1 }) {
+        $RUNTIME_JSON_DECODER = JSON::XS->new->utf8(1);
+        $RUNTIME_JSON_DECODER_KIND = 'JSON::XS';
+        return $RUNTIME_JSON_DECODER;
+    }
+    $RUNTIME_JSON_DECODER = JSON::PP->new->utf8(1);
+    $RUNTIME_JSON_DECODER_KIND = 'JSON::PP';
+    return $RUNTIME_JSON_DECODER;
+}
+
+sub _runtime_json_decode {
+    my ($json) = @_;
+    return _runtime_json_decoder()->decode($json);
 }
 
 sub _source_path_to_script_source {
@@ -2470,6 +2531,7 @@ sub _install_compiled_sub {
 
     if (($sub->{op} // '') eq 'dancerapp_build_psgi_app') {
         my $backend_symbol = $sub->{backend_symbol} // die 'compiled sub backend symbol missing';
+        my $app_package = $sub->{app_package} // $package;
         $impl = sub {
             my ($class, %args) = @_;
             my $app = $args{app} || die 'Missing backend web app';
@@ -2481,7 +2543,7 @@ sub _install_compiled_sub {
                     default_headers => { %{$default_headers} },
                 };
             }
-            return __PACKAGE__->to_app;
+            return $app_package->to_app;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
     }
@@ -3539,11 +3601,9 @@ OPENSSL_CONFIG
     if (($sub->{op} // '') eq 'runtime_manager_ps_processes') {
         $impl = sub {
             my ($self) = @_;
-            my ($stdout, undef, $exit_code) = Capture::Tiny::capture {
-                system 'ps', '-eo', 'pid=,uid=,args=';
-                return $? >> 8;
-            };
-            return if $exit_code != 0;
+            my ($stdout, $stderr, $exit_code) = _capture_system_command('ps', '-eo', 'pid=,uid=,args=');
+            return () if _system_command_missing($stderr, $exit_code);
+            return () if $exit_code != 0;
             my @procs;
             for my $line (split /\n/, $stdout) {
                 next if $line !~ /^\s*(\d+)\s+(\d+)\s+(.*)$/;
@@ -3612,15 +3672,9 @@ OPENSSL_CONFIG
         my $send_signal_method = $sub->{send_signal_method} // die 'compiled sub send-signal method missing';
         $impl = sub {
             my ($self, $pattern) = @_;
-            my (undef, $stderr, $exit_code) = Capture::Tiny::capture {
-                my $ok = system 'pkill', '-15', '-f', $pattern;
-                return $ok == -1 ? -1 : ($? >> 8);
-            };
+            my (undef, $stderr, $exit_code) = _capture_system_command('pkill', '-15', '-f', $pattern);
             return 1 if $exit_code == 0 || $exit_code == 1;
-            my $pkill_missing = 0;
-            $pkill_missing = 1 if $exit_code < 0 || $exit_code == 127;
-            $pkill_missing = 1 if defined $stderr && $stderr =~ /not found/i;
-            if ($pkill_missing) {
+            if (_system_command_missing($stderr, $exit_code)) {
                 for my $proc (_code_for($ps_processes_method)->($self)) {
                     next if !_code_for($proc_owned_method)->($self, $proc);
                     next if $proc->{args} !~ /$pattern/;
@@ -3648,20 +3702,15 @@ OPENSSL_CONFIG
         $impl = sub {
             my ($self, $port) = @_;
             return () if !$port;
-            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture {
-                system 'ss', '-ltnp', "( sport = :$port )";
-                return $? >> 8;
-            };
+            my ($stdout, $stderr, $exit_code) = _capture_system_command('ss', '-ltnp', "( sport = :$port )");
             my @pids;
             my $has_stdout = defined $stdout && $stdout ne '';
             if ($exit_code == 0 && $has_stdout) {
                 my %seen;
                 @pids = grep { !$seen{$_}++ } ($stdout =~ /pid=(\d+)/g);
             } else {
-                my $ss_missing = 0;
-                $ss_missing = 1 if $exit_code == 127;
-                $ss_missing = 1 if defined $stderr && $stderr =~ /not found/i;
-                @pids = _code_for($listener_pids_for_port_via_proc_method)->($self, $port) if $ss_missing;
+                @pids = _code_for($listener_pids_for_port_via_proc_method)->($self, $port)
+                    if _system_command_missing($stderr, $exit_code);
             }
             return @pids;
         };
@@ -4055,10 +4104,8 @@ OPENSSL_CONFIG
                     return $cmdline;
                 }
             }
-            my ($stdout, undef, $exit_code) = Capture::Tiny::capture {
-                system 'ps', '-o', 'args=', '-p', $pid;
-                return $? >> 8;
-            };
+            my ($stdout, $stderr, $exit_code) = _capture_system_command('ps', '-o', 'args=', '-p', $pid);
+            return if _system_command_missing($stderr, $exit_code);
             return if $exit_code != 0;
             $stdout =~ s/\s+$// if defined $stdout;
             return $stdout;
@@ -9070,10 +9117,8 @@ PERL
                 $cmdline =~ s/\s+$// if defined $cmdline;
                 return $cmdline;
             }
-            my ($title, undef, $exit_code) = Capture::Tiny::capture {
-                system 'ps', '-o', 'args=', '-p', $pid;
-                return $? >> 8;
-            };
+            my ($title, $stderr, $exit_code) = _capture_system_command('ps', '-o', 'args=', '-p', $pid);
+            return if _system_command_missing($stderr, $exit_code);
             return if defined $exit_code && $exit_code != 0;
             $title =~ s/\s+$// if defined $title;
             return $title;

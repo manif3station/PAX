@@ -1,0 +1,6 @@
+services:
+  dashboard-standalone-test:
+    build:
+      context: ../..
+      dockerfile: examples/dashboard-standalone-test/Dockerfile
+    image: pax-dashboard-standalone-test:latest

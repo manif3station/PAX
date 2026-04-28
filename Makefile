@@ -24,7 +24,7 @@ ATDD_TESTS = \
 	t/app_image.t \
 	t/standalone_image.t
 
-.PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate doc-gate changes-gate release-gate cpan-verify-paths cpan-gate git-gate
+.PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate version-history-gate doc-gate changes-gate release-gate cpan-verify-paths cpan-gate git-gate
 
 test:
 	prove -lr t
@@ -41,8 +41,8 @@ atdd-gate:
 qa-gate: tdd-gate bdd-gate atdd-gate release-gate
 	@echo "qa-gate: TDD, BDD, ATDD, version, Changes, and docs OK"
 
-all-gates: qa-gate cpan-gate
-	@echo "all-gates: QA, CPAN, and git gates OK"
+all-gates: qa-gate version-history-gate cpan-gate
+	@echo "all-gates: QA, version history, CPAN, and git gates OK"
 
 build:
 	$(PERL) bin/pax build --paxfile t/fixtures/paxfile.yml
@@ -60,6 +60,9 @@ cpan-reset:
 
 version-gate:
 	$(PERL) tools/version_gate.pl
+
+version-history-gate:
+	$(PERL) tools/version_history_gate.pl
 
 doc-gate:
 	$(PERL) tools/doc_gate.pl

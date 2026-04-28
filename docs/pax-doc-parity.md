@@ -113,9 +113,17 @@ Rules:
 5. `git-gate` must verify a clean tree after the release-preparation commit;
    it must not be paired with a target that dirties tracked files during the
    same verification pass
+6. the final gate chain must compare `HEAD` against `HEAD^` and fail if a
+   committed change touched release-facing files without advancing the PAX
+   version
+7. version examples in operator docs must use generic placeholders such as
+   `<next-version>` instead of the current live release number, so the docs do
+   not drift every time a checkpoint is cut
 
 This keeps the release flow reproducible and prevents the cycle where a build
 target creates new tracked changes and then fails its own git cleanliness gate.
+It also prevents stacks of meaningful changes from accumulating forever under
+one stale version number.
 
 ## All Gates Completion Rule
 
@@ -141,6 +149,8 @@ Operational consequences:
    affected gates must be rerun
 5. do not say work is done until `all-gates` passes or the user explicitly
    waives part of the gate chain
+6. `all-gates` must include a committed-history version check, not just a
+   working-tree version consistency check
 
 ## Section Expectations
 

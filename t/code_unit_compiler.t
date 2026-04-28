@@ -76,13 +76,44 @@ my $dashboard_entry = $compiler->compile(
 );
 is($dashboard_entry->{packaging}, 'compiled_cli_router_pcu_v1', 'dashboard entrypoint compiles to generic cli router PCU');
 my $dashboard_entry_record = JSON::PP->new->decode($dashboard_entry->{bytes});
+open my $dashboard_version_fh, '<', 'DD Source Code/developer-dashboard/lib/Developer/Dashboard.pm' or die "cannot read dashboard module version source: $!";
+my $dashboard_version_source = do { local $/; <$dashboard_version_fh> };
+close $dashboard_version_fh;
+$dashboard_version_source =~ /\bour\s+\$VERSION\s*=\s*'([^']+)'/ or die 'cannot locate dashboard module version';
+my $dashboard_module_version = $1;
 is($dashboard_entry_record->{format}, 'cli_router_pcu_v1', 'cli router record format recorded');
+is($dashboard_entry_record->{version}, $dashboard_module_version, 'cli router records literal version for launcher fast paths');
 is($dashboard_entry_record->{version_module}, 'Developer::Dashboard', 'cli router records version module');
 is($dashboard_entry_record->{suggest_class}, 'Developer::Dashboard::CLI::Suggest', 'cli router records suggestion class');
 my @dashboard_entry_ops = @{ $dashboard_entry_record->{subs} // [] };
 ok((grep { ($_->{op} // '') eq 'app_entry_command' } @dashboard_entry_ops) >= 1, 'dashboard cli router compiles neutral app entry command op');
 ok((grep { ($_->{op} // '') eq 'app_entry_command' && ($_->{entrypoint_env} // '') eq 'DEVELOPER_DASHBOARD_ENTRYPOINT' } @dashboard_entry_ops) >= 1, 'app entry command op preserves entrypoint env var metadata');
 ok((grep { ($_->{op} // '') eq 'app_entry_command' && ($_->{entrypoint_fallback} // '') eq 'dashboard' } @dashboard_entry_ops) >= 1, 'app entry command op preserves command fallback');
+
+{
+    my $installed_root = tempdir(CLEANUP => 1);
+    my $module_dir = "$installed_root/Installed";
+    mkdir $module_dir or die "cannot create installed module fixture dir: $!";
+    open my $module_fh, '>', "$module_dir/App.pm" or die "cannot write installed module fixture: $!";
+    print {$module_fh} "package Installed::App;\nour \$VERSION = '9.876';\n1;\n";
+    close $module_fh;
+    my $entrypoint_path = "$installed_root/app";
+    open my $entry_fh, '>', $entrypoint_path or die "cannot write installed entrypoint fixture: $!";
+    print {$entry_fh} <<'PERL';
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Installed::App;
+require Installed::App;
+print $Installed::App::VERSION, "\n";
+PERL
+    close $entry_fh;
+    local @INC = ($installed_root, @INC);
+    my $source = do { open my $source_fh, '<', $entrypoint_path or die "cannot read installed entrypoint fixture: $!"; local $/; <$source_fh> };
+    my @roots = PAX::CodeUnitCompiler::_module_search_roots_from_source($source, $entrypoint_path);
+    ok((grep { $_ eq $installed_root } @roots) >= 1, 'installed-layout module search includes @INC roots');
+    is(PAX::CodeUnitCompiler::_module_version_from_roots('Installed::App', \@roots), '9.876', 'installed-layout version lookup resolves module version through @INC roots');
+}
 
 my $have_web_stack = eval {
     require Dancer2;
@@ -123,6 +154,8 @@ SKIP: {
     is($dd_dancer_app->{packaging}, 'compiled_pcu_v1', 'dashboard DancerApp module now compiles to PCU');
     my $dd_dancer_app_record = JSON::PP->new->decode($dd_dancer_app->{bytes});
     ok((grep { ($_->{name} // '') eq 'build_psgi_app' && ($_->{op} // '') eq 'dancerapp_build_psgi_app' } @{ $dd_dancer_app_record->{subs} // [] }) >= 1, 'DancerApp PCU compiles PSGI app builder');
+    my ($dd_build_psgi_app) = grep { ($_->{name} // '') eq 'build_psgi_app' && ($_->{op} // '') eq 'dancerapp_build_psgi_app' } @{ $dd_dancer_app_record->{subs} // [] };
+    is($dd_build_psgi_app->{app_package}, 'Developer::Dashboard::Web::DancerApp', 'DancerApp PCU keeps the original package for to_app dispatch');
     ok((grep { ($_->{name} // '') eq '_request_args' && ($_->{op} // '') eq 'dancerapp_request_args' } @{ $dd_dancer_app_record->{subs} // [] }) >= 1, 'DancerApp PCU compiles request normalization');
     ok((grep { ($_->{name} // '') eq '_response_from_result' && ($_->{op} // '') eq 'dancerapp_response_from_result' } @{ $dd_dancer_app_record->{subs} // [] }) >= 1, 'DancerApp PCU compiles Dancer response conversion');
     ok((grep { ($_->{name} // '') eq '_run_authorized' && ($_->{op} // '') eq 'dancerapp_run_authorized' } @{ $dd_dancer_app_record->{subs} // [] }) >= 1, 'DancerApp PCU compiles authorized backend dispatcher');

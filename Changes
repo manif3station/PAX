@@ -1,3 +1,17 @@
+0.012  Tue Apr 28 11:30:00 2026
+    - Added a committed-history version gate so `all-gates` now fails when a
+      release-facing commit lands without advancing the PAX version number.
+    - Replaced hardcoded current-version release examples in the operator docs
+      with `<next-version>` placeholders so the release instructions do not
+      drift every time a checkpoint is cut.
+    - Fixed standalone runtime executable resolution for binaries invoked
+      through `PATH`, localized `$0` to the embedded executable path during
+      runtime dispatch, and extended installed-layout module version discovery
+      through `@INC` so standalone `pax` rebuilds stay self-hosting.
+    - Normalized the public Docker examples to use plain `pax build ...`
+      commands instead of redundant `--compact --no-paxfile` flags when no
+      local `paxfile.yml` is present.
+
 0.011  Mon Apr 27 13:10:42 2026
     - Separated release preparation from release verification so the CPAN gate
       no longer dirties tracked files while also requiring a clean git tree.

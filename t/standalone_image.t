@@ -69,6 +69,17 @@ ok((grep { ($_->{task_id} // '') eq 'compile_launcher' && ($_->{status} // '') e
 ok(-f $built->{manifest_path}, 'manifest written');
 ok(-x $built->{standalone}{output_path}, 'standalone executable built');
 is($built->{standalone}{runtime}{app_server_required}, JSON::PP::false, 'standalone does not require app server');
+my $cache_tmp = File::Spec->catdir($tmp_base, 'launcher-cache');
+make_path($cache_tmp);
+my $cache_env_path = $ENV{PATH} // '/usr/bin:/bin';
+my $cache_status_cmd = qq{env -i PATH="$cache_env_path" TMPDIR="$cache_tmp" "$built->{standalone}{output_path}" status};
+system($cache_status_cmd);
+is($? >> 8, 0, 'standalone executable runs with dedicated tmp cache root');
+system($cache_status_cmd);
+is($? >> 8, 0, 'standalone executable reuses cached extraction root on second run');
+my @cache_roots = grep { -d $_ } glob(File::Spec->catfile($cache_tmp, 'pax-standalone-cache-*'));
+is(scalar(@cache_roots), 1, 'standalone launcher keeps one persistent extraction cache per binary');
+ok(-f File::Spec->catfile($cache_roots[0], 'manifest.json'), 'persistent extraction cache keeps manifest') if @cache_roots;
 is($built->{standalone}{runtime}{mode}, 'bundled_perl', 'bundled runtime is the default standalone mode');
 ok(($built->{standalone}{runtime_payload_count} // 0) > 0, 'bundled runtime payloads are packaged');
 is($built->{standalone}{asset_count}, 1, 'asset metadata recorded');
