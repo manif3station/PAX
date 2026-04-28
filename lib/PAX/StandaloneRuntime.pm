@@ -84,6 +84,13 @@ sub run {
     _install_require_hook();
     _install_pending_wrappers();
 
+    if (@argv && $argv[0] eq '--pax-standalone-helper') {
+        shift @argv;
+        my $helper = shift @argv // die "standalone helper name required\n";
+        local @ARGV = @argv;
+        return _run_standalone_managed_helper($helper, @argv);
+    }
+
     local @ARGV = @argv;
     my $rv = _run_entrypoint($entrypoint);
 
@@ -429,6 +436,122 @@ sub _load_package_by_module_name {
     my $ok = eval { require $require_path; 1; };
     die $@ if !$ok && $@;
     return 1;
+}
+
+sub _standalone_executable_path {
+    my $path = $ENV{PAX_STANDALONE_EXECUTABLE} // '';
+    return $path if defined $path && $path ne '';
+    return;
+}
+
+sub _shell_single_quote {
+    my ($value) = @_;
+    $value //= '';
+    $value =~ s/'/'\"'\"'/g;
+    return "'" . $value . "'";
+}
+
+sub _standalone_internal_cli_wrapper_content {
+    my ($name) = @_;
+    my $self_path = _standalone_executable_path() or return;
+    return if !defined $name || $name eq '';
+    my $quoted_self = _shell_single_quote($self_path);
+    my $quoted_name = _shell_single_quote($name);
+    return <<"SH";
+#!/bin/sh
+exec $quoted_self --pax-standalone-helper $quoted_name "\$@"
+SH
+}
+
+sub _standalone_internal_cli_class {
+    my $state = _state();
+    my $app_namespace = $state->{app_namespace} // '';
+    if ($app_namespace) {
+        return $app_namespace . '::InternalCLI';
+    }
+    for my $unit (@{ $state->{manifest}{code_units} // [] }) {
+        next if ref($unit) ne 'HASH';
+        my $package = $unit->{package} // '';
+        next if !$package || $package eq '';
+        return $package if $package =~ /::InternalCLI\z/;
+    }
+    return;
+}
+
+sub _standalone_internal_cli_asset_path {
+    my ($name) = @_;
+    if (my $embedded = _standalone_embedded_asset_path($name)) {
+        return $embedded;
+    }
+    my $class = _standalone_internal_cli_class() or return;
+    _load_package_by_module_name($class);
+    my $full = $class . '::_helper_asset_path';
+    return if !defined &{$full};
+    no strict 'refs';
+    return &{$full}($name);
+}
+
+sub _standalone_internal_cli_asset_content {
+    my ($name) = @_;
+    if (my $path = _standalone_internal_cli_asset_path($name)) {
+        open my $fh, '<:raw', $path or die "Unable to read $path: $!";
+        local $/;
+        my $content = <$fh>;
+        close $fh or die "Unable to close $path: $!";
+        return ($content, $path);
+    }
+    my $class = _standalone_internal_cli_class() or return;
+    _load_package_by_module_name($class);
+    my $full = $class . '::helper_content';
+    return if !defined &{$full};
+    local $ENV{PAX_STANDALONE_EXECUTABLE} = '';
+    no strict 'refs';
+    my $content = &{$full}($name);
+    return if !defined $content || $content eq '';
+    return ($content, $name);
+}
+
+sub _standalone_embedded_asset_path {
+    my ($name) = @_;
+    return if !defined $name || $name eq '';
+    my $state = _state();
+    for my $asset (@{ $state->{manifest}{assets} // [] }) {
+        next if ref($asset) ne 'HASH';
+        my $logical = $asset->{logical_path} // '';
+        next if $logical eq '';
+        next if $logical ne $name && $logical !~ m{(?:^|/)\Q$name\E\z};
+        my $path = File::Spec->catfile($state->{root}, 'assets', split m{/}, $logical);
+        return $path if -f $path;
+    }
+    return;
+}
+
+sub _share_dist_private_cli_dir {
+    my ($dist_name) = @_;
+    return if !defined $dist_name || $dist_name eq '';
+    my $ok = eval {
+        require File::ShareDir;
+        1;
+    };
+    return if !$ok;
+    my $root = eval { File::ShareDir::dist_dir($dist_name) };
+    return if !$root || !-d $root;
+    my $candidate = File::Spec->catdir($root, 'private-cli');
+    return -d $candidate ? $candidate : undef;
+}
+
+sub _run_standalone_managed_helper {
+    my ($helper, @argv) = @_;
+    my ($core_source, $core_path) = _standalone_internal_cli_asset_content('_dashboard-core');
+    die "standalone managed helper core is unavailable\n" if !defined $core_source || $core_source eq '';
+    my @core_argv = @argv;
+    unshift @core_argv, $helper if $helper ne '_dashboard-core';
+    local @ARGV = @core_argv;
+    my $wrapped = "package main;\n#line 1 \"$core_path\"\n" . $core_source;
+    my $rv = eval $wrapped;
+    die $@ if $@;
+    return 0 if !defined $rv;
+    return $rv;
 }
 
 sub _install_pending_wrappers {
@@ -5421,8 +5544,11 @@ PERL
     }
 
     if (($sub->{op} // '') eq 'internal_cli_shared_private_cli_root') {
+        my $dist_name = $sub->{dist_name} // die 'compiled sub dist name missing';
         $impl = sub {
-            return File::Spec->catdir(File::ShareDir::dist_dir('Developer-Dashboard'), 'private-cli');
+            my $path = _share_dist_private_cli_dir($dist_name);
+            die "Unable to resolve private-cli share dir for distribution $dist_name" if !defined $path || $path eq '';
+            return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
     }
@@ -5459,6 +5585,9 @@ PERL
             my ($name) = @_;
             $name = $name eq '_dashboard-core' ? $name : _code_for($canonical_method)->($name);
             die "Unsupported helper command '$name'" if !defined $name || $name eq '';
+            if (my $content = _standalone_internal_cli_wrapper_content($name)) {
+                return $content;
+            }
             my $path = _code_for($asset_path_method)->($name);
             open my $fh, '<:raw', $path or die "Unable to read $path: $!";
             my $content = do { local $/; <$fh> };

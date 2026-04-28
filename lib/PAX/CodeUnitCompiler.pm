@@ -39,13 +39,15 @@ sub compile {
 
     my $source = _slurp($abs_path);
     my $package = _package_name($source) or return _fallback_unit($abs_path, $kind, $logical_path, 'missing_package_declaration');
-    my $has_sub_defs = ($source =~ /^\s*sub\s+/m) ? 1 : 0;
+    my $has_sub_defs = ($source =~ /\bsub\s+[A-Za-z_][A-Za-z0-9_]*\b/s) ? 1 : 0;
     my @declared_subs = _declared_subs($source, $package);
     my @source_compiled_subs = map { defined $_ ? ($_) : () } map { _compile_declared_sub_from_source($source, $_) } @declared_subs;
     my %source_compiled_names = map { ($_->{full_name} // '') => 1 } @source_compiled_subs;
     my @declared_unsupported_subs = grep { !$source_compiled_names{$_} } @declared_subs;
     my @initializers = _compile_initializers($source, $package);
     return _fallback_unit($abs_path, $kind, $logical_path, 'unsupported_initializer_pattern') if grep { !$_ } @initializers;
+    return _fallback_unit($abs_path, $kind, $logical_path, 'unsupported_exporter_contract')
+        if _requires_source_exporter_contract($source);
     if (!$has_sub_defs) {
         return _compiled_unit($abs_path, $kind, $logical_path, $package, \@initializers, []);
     }
@@ -53,6 +55,13 @@ sub compile {
     if ($kind eq 'dependency') {
         return _compiled_unit($abs_path, $kind, $logical_path, $package, \@initializers, \@source_compiled_subs)
             if !@declared_unsupported_subs;
+        return _fallback_unit(
+            $abs_path,
+            $kind,
+            $logical_path,
+            'hybrid_coverage_too_low',
+            _hybrid_coverage_detail(\@source_compiled_subs, \@declared_unsupported_subs),
+        ) if _prefer_source_fallback_over_hybrid($source, \@source_compiled_subs, \@declared_unsupported_subs);
         return _hybrid_compiled_unit(
             $abs_path,
             $kind,
@@ -68,6 +77,13 @@ sub compile {
     if (_prefer_lazy_hybrid($source, \@declared_subs)) {
         return _compiled_unit($abs_path, $kind, $logical_path, $package, \@initializers, \@source_compiled_subs)
             if @source_compiled_subs && !@declared_unsupported_subs;
+        return _fallback_unit(
+            $abs_path,
+            $kind,
+            $logical_path,
+            'hybrid_coverage_too_low',
+            _hybrid_coverage_detail(\@source_compiled_subs, \@declared_unsupported_subs),
+        ) if _prefer_source_fallback_over_hybrid($source, \@source_compiled_subs, \@declared_unsupported_subs);
         return _hybrid_compiled_unit(
             $abs_path,
             $kind,
@@ -84,6 +100,13 @@ sub compile {
     if (($capture->{status} // '') ne 'ok') {
         return _compiled_unit($abs_path, $kind, $logical_path, $package, \@initializers, \@source_compiled_subs)
             if @source_compiled_subs && !@declared_unsupported_subs;
+        return _fallback_unit(
+            $abs_path,
+            $kind,
+            $logical_path,
+            'hybrid_coverage_too_low',
+            _hybrid_coverage_detail(\@source_compiled_subs, \@declared_unsupported_subs),
+        ) if @declared_subs && _prefer_source_fallback_over_hybrid($source, \@source_compiled_subs, \@declared_unsupported_subs);
         return _hybrid_compiled_unit(
             $abs_path,
             $kind,
@@ -124,6 +147,13 @@ sub compile {
     push @unsupported_subs, sort keys %declared if %declared;
 
     if (!@compiled_subs && !@initializers) {
+        return _fallback_unit(
+            $abs_path,
+            $kind,
+            $logical_path,
+            'hybrid_coverage_too_low',
+            _hybrid_coverage_detail(\@compiled_subs, \@unsupported_subs),
+        ) if @unsupported_subs && _prefer_source_fallback_over_hybrid($source, \@compiled_subs, \@unsupported_subs);
         return _hybrid_compiled_unit(
             $abs_path,
             $kind,
@@ -138,6 +168,13 @@ sub compile {
     }
 
     if ($has_sub_defs && !@subs && !@compiled_subs && @declared_subs) {
+        return _fallback_unit(
+            $abs_path,
+            $kind,
+            $logical_path,
+            'hybrid_coverage_too_low',
+            _hybrid_coverage_detail(\@compiled_subs, \@declared_subs),
+        ) if _prefer_source_fallback_over_hybrid($source, \@compiled_subs, \@declared_subs);
         return _hybrid_compiled_unit(
             $abs_path,
             $kind,
@@ -149,6 +186,14 @@ sub compile {
             $source,
         );
     }
+
+    return _fallback_unit(
+        $abs_path,
+        $kind,
+        $logical_path,
+        'hybrid_coverage_too_low',
+        _hybrid_coverage_detail(\@compiled_subs, \@unsupported_subs),
+    ) if @unsupported_subs && _prefer_source_fallback_over_hybrid($source, \@compiled_subs, \@unsupported_subs);
 
     return _hybrid_compiled_unit(
         $abs_path,
@@ -2168,10 +2213,12 @@ sub _compile_simple_transform_sub_from_source {
         && $body =~ /private-cli/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
+        my ($dist_name) = $body =~ /dist_dir\s*\(\s*['"]([^'"]+)['"]\s*\)/;
         return {
             name => $short_name,
             full_name => $full_name,
             op => 'internal_cli_shared_private_cli_root',
+            dist_name => $dist_name,
             prototype => $prototype,
         };
     }
@@ -3013,7 +3060,7 @@ sub _compile_simple_transform_sub_from_source {
             full_name => $full_name,
             op => 'seeded_pages_page_from_asset',
             instruction_method => $package . '::_seeded_page_instruction',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_instruction']),
             prototype => $prototype,
         };
     }
@@ -3186,7 +3233,7 @@ sub _compile_simple_transform_sub_from_source {
             record_manifest_method => $package . '::_record_manifest_md5',
             manifest_matches_method => $package . '::_manifest_md5_matches',
             known_md5_method => $package . '::is_known_managed_page_md5',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_hash']),
             prototype => $prototype,
         };
     }
@@ -5622,7 +5669,7 @@ sub _compile_simple_transform_sub_from_source {
             full_name => $full_name,
             op => 'action_run_encoded',
             decode_method => $package . '::decode_action_payload',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_instruction']),
             run_page_action_method => $package . '::run_page_action',
             prototype => $prototype,
         };
@@ -7978,7 +8025,7 @@ sub _compile_simple_transform_sub_from_source {
             full_name => $full_name,
             op => 'skill_dispatcher_load_skill_page',
             page_location_method => $package . '::_page_location',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_instruction']),
             prototype => $prototype,
         };
     }
@@ -8446,7 +8493,7 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'page_store_load_transient_page',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_instruction']),
             prototype => $prototype,
         };
     }
@@ -8464,7 +8511,7 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'page_store_encode_page',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_hash']),
             prototype => $prototype,
         };
     }
@@ -8549,7 +8596,7 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'page_store_raw_nav_fragment_page',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['new']),
             prototype => $prototype,
         };
     }
@@ -8570,7 +8617,7 @@ sub _compile_simple_transform_sub_from_source {
             read_method => $package . '::_read_saved_instruction',
             looks_like_method => $package . '::_looks_like_raw_nav_fragment',
             raw_nav_method => $package . '::_raw_nav_fragment_page',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_instruction']),
             prototype => $prototype,
         };
     }
@@ -8625,7 +8672,7 @@ sub _compile_simple_transform_sub_from_source {
             full_name => $full_name,
             op => 'page_store_save_page',
             page_file_method => $package . '::page_file',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_hash']),
             prototype => $prototype,
         };
     }
@@ -8677,7 +8724,7 @@ sub _compile_simple_transform_sub_from_source {
             full_name => $full_name,
             op => 'page_store_migrate_legacy_json_pages',
             page_file_method => $package . '::page_file',
-            page_class => _sibling_class($package, 'PageDocument'),
+            page_class => _related_class_from_source($source, $package, $body, 'PageDocument', methods => ['from_json']),
             prototype => $prototype,
         };
     }
@@ -11893,6 +11940,48 @@ sub _sibling_class {
     return join('::', grep { defined && $_ ne '' } $root, @class_parts);
 }
 
+sub _related_class_from_source {
+    my ($source, $package, $body, $class, %args) = @_;
+    return _sibling_class($package, $class) if !defined $class || $class eq '';
+
+    my @methods = @{ $args{methods} || [] };
+    for my $scope (grep { defined && $_ ne '' } $body, $source) {
+        my $qualified = _qualified_class_in_scope($scope, $class, \@methods);
+        return $qualified if defined $qualified && $qualified ne '';
+    }
+
+    for my $scope (grep { defined && $_ ne '' } $source, $body) {
+        my $imported = _imported_class_in_scope($scope, $class);
+        return $imported if defined $imported && $imported ne '';
+    }
+
+    return _sibling_class($package, $class);
+}
+
+sub _qualified_class_in_scope {
+    my ($scope, $class, $methods) = @_;
+    return if !defined $scope || !defined $class || $class eq '';
+    my $qualified_tail = qr/(?:[A-Za-z_][A-Za-z0-9_]*::)+\Q$class\E/;
+    if ($methods && @$methods) {
+        for my $method (@$methods) {
+            next if !defined $method || $method eq '';
+            if ($scope =~ /($qualified_tail)\s*->\s*\Q$method\E\s*\(/m) {
+                return $1;
+            }
+        }
+    }
+    return $1 if $scope =~ /($qualified_tail)\b/m;
+    return;
+}
+
+sub _imported_class_in_scope {
+    my ($scope, $class) = @_;
+    return if !defined $scope || !defined $class || $class eq '';
+    return $1 if $scope =~ /^\s*use\s+((?:[A-Za-z_][A-Za-z0-9_]*::)+\Q$class\E)\b/m;
+    return $1 if $scope =~ /^\s*require\s+((?:[A-Za-z_][A-Za-z0-9_]*::)+\Q$class\E)\s*;/m;
+    return;
+}
+
 sub _extract_sub_body {
     my ($source, $sub_name) = @_;
     return if $source !~ /sub\s+\Q$sub_name\E\b[^\{]*\{/g;
@@ -11911,7 +12000,7 @@ sub _extract_sub_body {
 
 sub _extract_sub_source {
     my ($source, $sub_name) = @_;
-    return if $source !~ /(^\s*sub\s+\Q$sub_name\E\b[^\{]*\{)/gm;
+    return if $source !~ /\bsub\s+\Q$sub_name\E\b[^\{]*\{/g;
     my $start = $-[0];
     my $brace = index($source, '{', $+[0] - 1);
     return if $brace < 0;
@@ -11936,7 +12025,7 @@ sub _extract_sub_source {
 
 sub _sub_prototype_from_source {
     my ($source, $sub_name) = @_;
-    return scalar undef if $source !~ /^\s*sub\s+\Q$sub_name\E\s*(\([^\)]*\))?\s*\{/gm;
+    return scalar undef if $source !~ /\bsub\s+\Q$sub_name\E\s*(\([^\)]*\))?\s*\{/g;
     return scalar($1);
 }
 
@@ -11950,15 +12039,17 @@ sub _bootstrap_source {
 sub _compile_initializers {
     my ($source, $package) = @_;
     my @ops;
+    my %array_literal_seen;
     my $bootstrap = _strip_pod(_bootstrap_source($source));
-    while ($bootstrap =~ /^\s*require\s+([A-Za-z_][A-Za-z0-9_:]*)\b/gm) {
+    my $stripped_source = _strip_pod($source);
+    while ($bootstrap =~ /\brequire\s+([A-Za-z_][A-Za-z0-9_:]*)\b\s*;/g) {
         push @ops, {
             op => 'require_module',
             package => $package,
             module => $1,
         };
     }
-    while ($bootstrap =~ /^\s*use\s+([A-Za-z_][A-Za-z0-9_:]*)\b(.*?);\s*$/gm) {
+    while ($bootstrap =~ /\buse\s+([A-Za-z_][A-Za-z0-9_:]*)\b(.*?);/gs) {
         my ($module, $arg_source) = ($1, $2 // '');
         next if $module =~ /^(?:strict|warnings|utf8|feature|integer|bytes|mro|open|re)$/;
         my $args = _parse_use_args($arg_source);
@@ -11970,7 +12061,7 @@ sub _compile_initializers {
             args => $args,
         };
     }
-    while ($source =~ /^\s*our\s+\$([A-Za-z_]\w*)\s*=\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*;/gm) {
+    while ($stripped_source =~ /\bour\s+\$([A-Za-z_]\w*)\s*=\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*;/g) {
         my $name = $1;
         my $value = $2;
         $value =~ s/\\"/"/g;
@@ -11983,7 +12074,7 @@ sub _compile_initializers {
             value => $value,
         };
     }
-    while ($source =~ /^\s*our\s+\$([A-Za-z_]\w*)\s*=\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*;/gm) {
+    while ($stripped_source =~ /\bour\s+\$([A-Za-z_]\w*)\s*=\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*;/g) {
         my $name = $1;
         my $value = $2;
         $value =~ s/\\'/'/g;
@@ -11996,7 +12087,7 @@ sub _compile_initializers {
             value => $value,
         };
     }
-    while ($source =~ /^\s*our\s+\$([A-Za-z_]\w*)\s*=\s*(-?\d+(?:\.\d+)?)\s*;/gm) {
+    while ($stripped_source =~ /\bour\s+\$([A-Za-z_]\w*)\s*=\s*(-?\d+(?:\.\d+)?)\s*;/g) {
         my ($name, $number) = ($1, $2);
         push @ops, {
             op => 'set_scalar_literal',
@@ -12005,21 +12096,34 @@ sub _compile_initializers {
             value => 0 + $number,
         };
     }
-    while ($source =~ /^\s*our\s+\@([A-Za-z_]\w*)\s*=\s*qw\(([^)]*)\)\s*;/gm) {
+    while ($stripped_source =~ /\bour\s+\@([A-Za-z_]\w*)\s*=\s*\((.*?)\)\s*;/gs) {
+        my ($name, $expr) = ($1, $2);
+        my $values = _parse_array_literal_values($expr);
+        next if !defined $values;
+        push @ops, {
+            op => 'set_array_literal',
+            symbol => $package . '::' . $name,
+            values => $values,
+        };
+        $array_literal_seen{$name} = 1;
+    }
+    while ($stripped_source =~ /\bour\s+\@([A-Za-z_]\w*)\s*=\s*qw\(([^)]*)\)\s*;/g) {
+        next if $array_literal_seen{$1};
         push @ops, {
             op => 'set_array_literal',
             symbol => $package . '::' . $1,
             values => [ grep { length } split /\s+/, $2 ],
         };
     }
-    while ($source =~ /^\s*our\s+\@([A-Za-z_]\w*)\s*=\s*qw\/([^\/]*)\/\s*;/gm) {
+    while ($stripped_source =~ /\bour\s+\@([A-Za-z_]\w*)\s*=\s*qw\/([^\/]*)\/\s*;/g) {
+        next if $array_literal_seen{$1};
         push @ops, {
             op => 'set_array_literal',
             symbol => $package . '::' . $1,
             values => [ grep { length } split /\s+/, $2 ],
         };
     }
-    while ($source =~ /^\s*our\s+\$([A-Za-z_]\w*)\s*=\s*\(\s*\$([A-Za-z_]\w*)\s*\/\/\s*0\s*\)\s*\+\s*(\d+)\s*;/gm) {
+    while ($stripped_source =~ /\bour\s+\$([A-Za-z_]\w*)\s*=\s*\(\s*\$([A-Za-z_]\w*)\s*\/\/\s*0\s*\)\s*\+\s*(\d+)\s*;/g) {
         my ($name, $base, $by) = ($1, $2, $3);
         return (undef) if $name ne $base;
         push @ops, {
@@ -12029,6 +12133,49 @@ sub _compile_initializers {
         };
     }
     return @ops;
+}
+
+sub _parse_array_literal_values {
+    my ($expr) = @_;
+    $expr //= '';
+    my @values;
+    pos($expr) = 0;
+    while (1) {
+        $expr =~ /\G\s*/gc;
+        last if pos($expr) >= length($expr);
+        if ($expr =~ /\G,\s*/gc) {
+            next;
+        }
+        if ($expr =~ /\Gqw\(([^)]*)\)\s*/gc || $expr =~ /\Gqw\/([^\/]*)\/\s*/gc) {
+            push @values, grep { length } split /\s+/, $1;
+        }
+        elsif ($expr =~ /\Gmap\s*\{\s*sprintf\s+'([^'%]*)%d([^']*)'\s*,\s*\$_\s*\}\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*/gc) {
+            my ($prefix, $suffix, $start, $end) = ($1, $2, $3, $4);
+            my $step = $start <= $end ? 1 : -1;
+            for (my $i = $start; ; $i += $step) {
+                push @values, sprintf('%s%d%s', $prefix, $i, $suffix);
+                last if $i == $end;
+            }
+        }
+        elsif ($expr =~ /\G'([^'\\]*(?:\\.[^'\\]*)*)'\s*/gc) {
+            push @values, _unescape_literal($1);
+        }
+        elsif ($expr =~ /\G"([^"\\]*(?:\\.[^"\\]*)*)"\s*/gc) {
+            push @values, _unescape_literal($1);
+        }
+        elsif ($expr =~ /\G(-?\d+(?:\.\d+)?)\s*/gc) {
+            push @values, 0 + $1;
+        }
+        else {
+            return;
+        }
+        $expr =~ /\G\s*/gc;
+        if ($expr =~ /\G,\s*/gc) {
+            next;
+        }
+        last if pos($expr) >= length($expr);
+    }
+    return \@values;
 }
 
 sub _strip_pod {
@@ -12086,8 +12233,9 @@ sub _package_name {
 
 sub _declared_subs {
     my ($source, $package) = @_;
+    $source = _strip_pod($source);
     my @names;
-    while ($source =~ /^\s*sub\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm) {
+    while ($source =~ /\bsub\s+([A-Za-z_][A-Za-z0-9_]*)\b/g) {
         push @names, $package . '::' . $1;
     }
     my %seen;
@@ -12101,6 +12249,38 @@ sub _prefer_lazy_hybrid {
     return 1 if @$declared_subs > $max_subs;
     return 1 if length($source) > $max_bytes;
     return 0;
+}
+
+sub _prefer_source_fallback_over_hybrid {
+    my ($source, $compiled_subs, $unsupported_subs) = @_;
+    my $supported = scalar(@{$compiled_subs // []});
+    my $unsupported = scalar(@{$unsupported_subs // []});
+    return 0 if !$unsupported;
+    return 0 if $unsupported < 8;
+    return 1 if !$supported;
+
+    my $total = $supported + $unsupported;
+    my $coverage = $total ? ($supported / $total) : 0;
+    return 1 if $coverage < 0.20;
+    return 1 if length($source // '') >= 8_192 && $unsupported >= ($supported * 4);
+    return 0;
+}
+
+sub _requires_source_exporter_contract {
+    my ($source) = @_;
+    $source = _strip_pod($source);
+    return 1 if $source =~ /\buse\s+Exporter\s+['"]import['"]\s*;/;
+    return 1 if $source =~ /\bour\s+\@EXPORT(?:_OK)?\b/;
+    return 0;
+}
+
+sub _hybrid_coverage_detail {
+    my ($compiled_subs, $unsupported_subs) = @_;
+    return sprintf(
+        'supported=%d unsupported=%d',
+        scalar(@{$compiled_subs // []}),
+        scalar(@{$unsupported_subs // []}),
+    );
 }
 
 sub _require_path_for {

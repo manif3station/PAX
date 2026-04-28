@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin;
+use File::Temp qw(tempdir);
 use JSON::PP ();
 
 use lib "$FindBin::Bin/../lib";
@@ -32,6 +33,28 @@ my $slow_record = JSON::PP->new->decode($slow->{bytes});
 is($slow_record->{package}, 'SlowLoad', 'PCU record includes package');
 ok(@{ $slow_record->{initializers} // [] } >= 1, 'PCU record includes initializer ops');
 ok(@{ $slow_record->{subs} // [] } >= 1, 'PCU record includes compiled sub ops');
+
+my $inline_root = tempdir(CLEANUP => 1);
+my $inline_module = "$inline_root/InlineOneLine.pm";
+open my $inline_fh, '>', $inline_module or die "cannot write inline module fixture: $!";
+print {$inline_fh} "package InlineOneLine; use strict; use warnings; sub run { return 'ok'; } 1;\n";
+close $inline_fh;
+my $inline = $compiler->compile(
+    path => $inline_module,
+    kind => 'lib',
+    logical_path => 'lib/InlineOneLine.pm',
+);
+is($inline->{packaging}, 'hybrid_compiled_pcu_v1', 'inline one-line module falls back to hybrid instead of collapsing to an empty compiled PCU');
+my $inline_record = JSON::PP->new->decode($inline->{bytes});
+ok((grep { ($_ // '') eq 'InlineOneLine::run' } @{ $inline_record->{unsupported_subs} // [] }) >= 1, 'inline one-line module tracks unsupported sub for residual execution');
+
+my $capture_module = $compiler->compile(
+    path => "$FindBin::Bin/../lib/PAX/Capture.pm",
+    kind => 'lib',
+    logical_path => 'lib/lib/PAX/Capture.pm',
+);
+is($capture_module->{packaging}, 'source_payload_fallback', 'complex low-coverage modules fall back to source payloads instead of brittle hybrid PCUs');
+is($capture_module->{fallback_reason}, 'hybrid_coverage_too_low', 'source fallback records hybrid coverage reason');
 
 my $dd = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard.pm',
@@ -126,16 +149,8 @@ my $platform = $compiler->compile(
     kind => 'lib',
     logical_path => 'lib/developer-dashboard/Developer/Dashboard/Platform.pm',
 );
-is($platform->{packaging}, 'compiled_pcu_v1', 'dashboard platform module now compiles to PCU');
-my $platform_record = JSON::PP->new->decode($platform->{bytes});
-ok((grep { ($_->{name} // '') eq 'is_windows' } @{ $platform_record->{subs} // [] }) >= 1, 'dashboard platform hybrid PCU includes compiled helper');
-ok((grep { ($_->{name} // '') eq 'command_in_path' && ($_->{op} // '') eq 'command_in_path' } @{ $platform_record->{subs} // [] }) >= 1, 'dashboard platform PCU compiles PATH lookup helper');
-ok((grep { ($_->{name} // '') eq 'resolve_runnable_file' && ($_->{op} // '') eq 'resolve_runnable_file' } @{ $platform_record->{subs} // [] }) >= 1, 'dashboard platform PCU compiles runnable file resolver');
-ok((grep { ($_->{name} // '') eq 'command_argv_for_path' && ($_->{op} // '') eq 'command_argv_for_path' } @{ $platform_record->{subs} // [] }) >= 1, 'dashboard platform PCU compiles argv resolver');
-ok((grep { ($_->{name} // '') eq '_java_main_class' && ($_->{op} // '') eq 'java_main_class' } @{ $platform_record->{subs} // [] }) >= 1, 'dashboard platform PCU compiles Java main-class parser');
-ok((grep { ($_->{name} // '') eq '_exec_java_source' && ($_->{op} // '') eq 'exec_java_source' } @{ $platform_record->{subs} // [] }) >= 1, 'dashboard platform PCU compiles Java exec helper');
-ok((grep { ($_->{name} // '') eq '_exec_go_source' && ($_->{op} // '') eq 'exec_go_source' } @{ $platform_record->{subs} // [] }) >= 1, 'dashboard platform PCU compiles Go exec helper');
-is(scalar(@{ $platform_record->{unsupported_subs} // [] }), 0, 'dashboard platform PCU no longer needs residual fallback');
+is($platform->{packaging}, 'source_payload_fallback', 'dashboard platform module falls back to source when it exposes Exporter contract');
+is($platform->{fallback_reason}, 'unsupported_exporter_contract', 'platform source fallback records exporter-contract reason');
 
 my $env_audit = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/EnvAudit.pm',
@@ -154,22 +169,16 @@ my $dd_json = $compiler->compile(
     kind => 'lib',
     logical_path => 'lib/developer-dashboard/Developer/Dashboard/JSON.pm',
 );
-is($dd_json->{packaging}, 'compiled_pcu_v1', 'dashboard JSON module now compiles to PCU');
-my $dd_json_record = JSON::PP->new->decode($dd_json->{bytes});
-ok((grep { ($_->{name} // '') eq 'json_encode' && ($_->{op} // '') eq 'json_xs_encode_pretty' } @{ $dd_json_record->{subs} // [] }) >= 1, 'dashboard JSON PCU compiles JSON::XS pretty encoder');
-ok((grep { ($_->{name} // '') eq 'json_decode' && ($_->{op} // '') eq 'json_xs_decode' } @{ $dd_json_record->{subs} // [] }) >= 1, 'dashboard JSON PCU compiles JSON::XS decoder');
-is(scalar(@{ $dd_json_record->{unsupported_subs} // [] }), 0, 'dashboard JSON PCU no longer needs residual fallback');
+is($dd_json->{packaging}, 'source_payload_fallback', 'dashboard JSON module falls back to source when it exposes Exporter contract');
+is($dd_json->{fallback_reason}, 'unsupported_exporter_contract', 'dashboard JSON source fallback records exporter-contract reason');
 
 my $data_helper = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/DataHelper.pm',
     kind => 'lib',
     logical_path => 'lib/developer-dashboard/Developer/Dashboard/DataHelper.pm',
 );
-is($data_helper->{packaging}, 'compiled_pcu_v1', 'dashboard DataHelper module now compiles to PCU');
-my $data_helper_record = JSON::PP->new->decode($data_helper->{bytes});
-ok((grep { ($_->{name} // '') eq 'j' && ($_->{op} // '') eq 'call_named_with_first_arg' } @{ $data_helper_record->{subs} // [] }) >= 1, 'DataHelper PCU compiles direct wrapper call');
-ok((grep { ($_->{name} // '') eq 'je' && ($_->{op} // '') eq 'call_named_with_first_arg_default' } @{ $data_helper_record->{subs} // [] }) >= 1, 'DataHelper PCU compiles wrapper call with default arg');
-is(scalar(@{ $data_helper_record->{unsupported_subs} // [] }), 0, 'DataHelper PCU no longer needs residual fallback');
+is($data_helper->{packaging}, 'source_payload_fallback', 'dashboard DataHelper module falls back to source when it exposes Exporter contract');
+is($data_helper->{fallback_reason}, 'unsupported_exporter_contract', 'DataHelper source fallback records exporter-contract reason');
 
 my $seed_sync = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/SeedSync.pm',
@@ -213,11 +222,8 @@ my $codec = $compiler->compile(
     kind => 'lib',
     logical_path => 'lib/developer-dashboard/Developer/Dashboard/Codec.pm',
 );
-is($codec->{packaging}, 'compiled_pcu_v1', 'dashboard Codec module now compiles to PCU');
-my $codec_record = JSON::PP->new->decode($codec->{bytes});
-ok((grep { ($_->{name} // '') eq 'encode_payload' && ($_->{op} // '') eq 'gzip_base64_encode' } @{ $codec_record->{subs} // [] }) >= 1, 'Codec PCU compiles gzip+base64 encoder');
-ok((grep { ($_->{name} // '') eq 'decode_payload' && ($_->{op} // '') eq 'gzip_base64_decode' } @{ $codec_record->{subs} // [] }) >= 1, 'Codec PCU compiles base64+gunzip decoder');
-is(scalar(@{ $codec_record->{unsupported_subs} // [] }), 0, 'Codec PCU no longer needs residual fallback');
+is($codec->{packaging}, 'source_payload_fallback', 'dashboard Codec module falls back to source when it exposes Exporter contract');
+is($codec->{fallback_reason}, 'unsupported_exporter_contract', 'Codec source fallback records exporter-contract reason');
 
 my $daemon = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/Web/Server/Daemon.pm',
@@ -247,13 +253,8 @@ my $cli_ticket = $compiler->compile(
     kind => 'lib',
     logical_path => 'lib/developer-dashboard/Developer/Dashboard/CLI/Ticket.pm',
 );
-is($cli_ticket->{packaging}, 'compiled_pcu_v1', 'CLI ticket module now compiles to PCU');
-my $cli_ticket_record = JSON::PP->new->decode($cli_ticket->{bytes});
-ok((grep { ($_->{name} // '') eq 'resolve_ticket_request' && ($_->{op} // '') eq 'resolve_ticket_request' } @{ $cli_ticket_record->{subs} // [] }) >= 1, 'CLI ticket PCU compiles ticket request resolver');
-ok((grep { ($_->{name} // '') eq 'tmux_command' && ($_->{op} // '') eq 'captured_command_result' } @{ $cli_ticket_record->{subs} // [] }) >= 1, 'CLI ticket PCU compiles captured tmux command helper');
-ok((grep { ($_->{name} // '') eq 'build_ticket_plan' && ($_->{op} // '') eq 'build_ticket_plan' } @{ $cli_ticket_record->{subs} // [] }) >= 1, 'CLI ticket PCU compiles ticket session plan builder');
-ok((grep { ($_->{name} // '') eq 'run_ticket_command' && ($_->{op} // '') eq 'run_ticket_command_plan' } @{ $cli_ticket_record->{subs} // [] }) >= 1, 'CLI ticket PCU compiles plan execution helper');
-is(scalar(@{ $cli_ticket_record->{unsupported_subs} // [] }), 0, 'CLI ticket PCU no longer needs residual fallback');
+is($cli_ticket->{packaging}, 'source_payload_fallback', 'CLI ticket module falls back to source when it exposes Exporter contract');
+is($cli_ticket->{fallback_reason}, 'unsupported_exporter_contract', 'CLI ticket source fallback records exporter-contract reason');
 
 my $update_manager = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/UpdateManager.pm',
@@ -434,14 +435,8 @@ my $zipper = $compiler->compile(
     kind => 'lib',
     logical_path => 'lib/developer-dashboard/Developer/Dashboard/Zipper.pm',
 );
-is($zipper->{packaging}, 'compiled_pcu_v1', 'Zipper module now compiles to PCU');
-my $zipper_record = JSON::PP->new->decode($zipper->{bytes});
-ok((grep { ($_->{name} // '') eq 'zip' && ($_->{op} // '') eq 'zip_payload_url' } @{ $zipper_record->{subs} // [] }) >= 1, 'Zipper PCU compiles zip helper');
-ok((grep { ($_->{name} // '') eq 'acmdx' && ($_->{op} // '') eq 'acmdx_bundle' } @{ $zipper_record->{subs} // [] }) >= 1, 'Zipper PCU compiles ajax bundle helper');
-ok((grep { ($_->{name} // '') eq 'Ajax' && ($_->{op} // '') eq 'ajax_helper' } @{ $zipper_record->{subs} // [] }) >= 1, 'Zipper PCU compiles Ajax helper');
-ok((grep { ($_->{name} // '') eq '_saved_ajax_url_and_store' && ($_->{op} // '') eq 'saved_ajax_url_and_store' } @{ $zipper_record->{subs} // [] }) >= 1, 'Zipper PCU compiles saved ajax store helper');
-ok((grep { ($_->{name} // '') eq '__cmdx' && ($_->{op} // '') eq 'cmdx_shell_pipeline' } @{ $zipper_record->{subs} // [] }) >= 1, 'Zipper PCU compiles shell pipeline helper');
-is(scalar(@{ $zipper_record->{unsupported_subs} // [] }), 0, 'Zipper PCU no longer needs residual fallback');
+is($zipper->{packaging}, 'source_payload_fallback', 'Zipper module falls back to source when it exposes Exporter contract');
+is($zipper->{fallback_reason}, 'unsupported_exporter_contract', 'Zipper source fallback records exporter-contract reason');
 
 my $cli_suggest = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/CLI/Suggest.pm',
@@ -569,14 +564,8 @@ my $cli_query = $compiler->compile(
     kind => 'lib',
     logical_path => 'lib/developer-dashboard/Developer/Dashboard/CLI/Query.pm',
 );
-is($cli_query->{packaging}, 'compiled_pcu_v1', 'CLI Query now compiles to PCU');
-my $cli_query_record = JSON::PP->new->decode($cli_query->{bytes});
-ok((grep { ($_->{name} // '') eq 'run_query_command' && ($_->{op} // '') eq 'query_run_command' } @{ $cli_query_record->{subs} // [] }) >= 1, 'CLI Query PCU compiles query dispatcher');
-ok((grep { ($_->{name} // '') eq '_parse_query_input' && ($_->{op} // '') eq 'query_parse_input' } @{ $cli_query_record->{subs} // [] }) >= 1, 'CLI Query PCU compiles format parser dispatch');
-ok((grep { ($_->{name} // '') eq '_select_query_value' && ($_->{op} // '') eq 'query_select_value' } @{ $cli_query_record->{subs} // [] }) >= 1, 'CLI Query PCU compiles selector dispatch');
-ok((grep { ($_->{name} // '') eq '_parse_xml' && ($_->{op} // '') eq 'query_parse_xml' } @{ $cli_query_record->{subs} // [] }) >= 1, 'CLI Query PCU compiles XML parsing');
-ok((grep { ($_->{name} // '') eq '_command_exit' && ($_->{op} // '') eq 'query_command_exit' } @{ $cli_query_record->{subs} // [] }) >= 1, 'CLI Query PCU compiles exit wrapper');
-is(scalar(@{ $cli_query_record->{unsupported_subs} // [] }), 0, 'CLI Query PCU no longer needs residual fallback');
+is($cli_query->{packaging}, 'source_payload_fallback', 'CLI Query module falls back to source when it exposes Exporter contract');
+is($cli_query->{fallback_reason}, 'unsupported_exporter_contract', 'CLI Query source fallback records exporter-contract reason');
 
 my $env_loader = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/EnvLoader.pm',
@@ -669,20 +658,29 @@ ok((grep { ($_->{name} // '') eq '_parse_legacy_sections' && ($_->{op} // '') eq
 ok((grep { ($_->{name} // '') eq '_decode_stash_section' && ($_->{op} // '') eq 'page_document_decode_stash_section' } @{ $page_document_record->{subs} // [] }) >= 1, 'PageDocument PCU compiles stash decoder');
 ok((grep { ($_->{name} // '') eq '_legacy_bootstrap' && ($_->{op} // '') eq 'page_document_legacy_bootstrap' } @{ $page_document_record->{subs} // [] }) >= 1, 'PageDocument PCU compiles legacy browser bootstrap');
 is(scalar(@{ $page_document_record->{unsupported_subs} // [] }), 0, 'PageDocument PCU no longer needs residual fallback');
+ok((grep { ($_->{op} // '') eq 'set_array_literal' && ($_->{symbol} // '') eq 'Developer::Dashboard::PageDocument::LEGACY_KEYS' } @{ $page_document_record->{initializers} // [] }) >= 1, 'PageDocument PCU preserves legacy section key array initializer');
+
+my $cli_seeded_pages = $compiler->compile(
+    path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/CLI/SeededPages.pm',
+    kind => 'lib',
+    logical_path => 'lib/developer-dashboard/Developer/Dashboard/CLI/SeededPages.pm',
+);
+is($cli_seeded_pages->{packaging}, 'compiled_pcu_v1', 'CLI SeededPages now compiles to PCU');
+my $cli_seeded_pages_record = JSON::PP->new->decode($cli_seeded_pages->{bytes});
+my ($seeded_page_from_asset) = grep { ($_->{name} // '') eq '_page_from_asset' && ($_->{op} // '') eq 'seeded_pages_page_from_asset' } @{ $cli_seeded_pages_record->{subs} // [] };
+ok($seeded_page_from_asset, 'CLI SeededPages compiles page asset loader');
+is($seeded_page_from_asset->{page_class}, 'Developer::Dashboard::PageDocument', 'CLI SeededPages resolves imported app-root PageDocument class');
+my ($seeded_ensure) = grep { ($_->{name} // '') eq 'ensure_seeded_page' && ($_->{op} // '') eq 'seeded_pages_ensure_seeded_page' } @{ $cli_seeded_pages_record->{subs} // [] };
+ok($seeded_ensure, 'CLI SeededPages compiles seeded page writer');
+is($seeded_ensure->{page_class}, 'Developer::Dashboard::PageDocument', 'CLI SeededPages preserves imported PageDocument class for from_hash paths');
 
 my $open_file = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/CLI/OpenFile.pm',
     kind => 'lib',
     logical_path => 'lib/developer-dashboard/Developer/Dashboard/CLI/OpenFile.pm',
 );
-is($open_file->{packaging}, 'compiled_pcu_v1', 'CLI OpenFile now compiles to PCU');
-my $open_file_record = JSON::PP->new->decode($open_file->{bytes});
-ok((grep { ($_->{name} // '') eq 'run_open_file_command' && ($_->{op} // '') eq 'open_file_run_command' } @{ $open_file_record->{subs} // [] }) >= 1, 'CLI OpenFile PCU compiles command dispatcher');
-ok((grep { ($_->{name} // '') eq '_resolve_open_file_matches' && ($_->{op} // '') eq 'open_file_resolve_matches' } @{ $open_file_record->{subs} // [] }) >= 1, 'CLI OpenFile PCU compiles search resolver');
-ok((grep { ($_->{name} // '') eq '_java_archive_source_matches' && ($_->{op} // '') eq 'open_file_java_archive_matches' } @{ $open_file_record->{subs} // [] }) >= 1, 'CLI OpenFile PCU compiles archive source resolver');
-ok((grep { ($_->{name} // '') eq '_download_maven_source_jar' && ($_->{op} // '') eq 'open_file_download_maven_source_jar' } @{ $open_file_record->{subs} // [] }) >= 1, 'CLI OpenFile PCU compiles Maven source downloader');
-ok((grep { ($_->{name} // '') eq '_selection_matches' && ($_->{op} // '') eq 'open_file_selection_matches' } @{ $open_file_record->{subs} // [] }) >= 1, 'CLI OpenFile PCU compiles match selection parser');
-is(scalar(@{ $open_file_record->{unsupported_subs} // [] }), 0, 'CLI OpenFile PCU no longer needs residual fallback');
+is($open_file->{packaging}, 'source_payload_fallback', 'CLI OpenFile module falls back to source when it exposes Exporter contract');
+is($open_file->{fallback_reason}, 'unsupported_exporter_contract', 'CLI OpenFile source fallback records exporter-contract reason');
 
 my $collector_runner = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard/CollectorRunner.pm',

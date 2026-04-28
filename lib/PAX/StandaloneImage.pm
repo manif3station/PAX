@@ -9,7 +9,7 @@ use Config ();
 use Digest::SHA qw(sha256_hex);
 use File::Find ();
 use File::Path qw(make_path);
-use File::Basename qw(dirname);
+use File::Basename qw(dirname basename);
 use File::Spec;
 use File::Temp qw(tempdir tempfile);
 use JSON::PP ();
@@ -61,16 +61,34 @@ sub build {
         @{ $args{source_roots} // [] },
         @{ $standalone_source->{source_roots} // [] },
     ]);
-    my @scan_roots = grep { defined && $_ ne '' } (_safe_dir_abs($abs_entrypoint), @lib_dirs, @source_roots);
+    my $declared_app_file_count = _application_root_file_count(\@lib_dirs, \@source_roots);
+    my @inferred_app_file_sets = ((!@lib_dirs && !@source_roots) || (!$declared_app_file_count && !@source_roots))
+        ? _infer_entrypoint_app_file_sets($abs_entrypoint)
+        : ();
+    my @runtime_lib_dirs = _abs_existing([
+        @lib_dirs,
+        map { $_->{dir} } @inferred_app_file_sets,
+    ]);
+    my @scan_roots = grep { defined && $_ ne '' } (
+        _safe_dir_abs($abs_entrypoint),
+        @runtime_lib_dirs,
+        @source_roots,
+    );
     _progress_emit($progress, {
         task_id => 'resolve_inputs',
         status => 'done',
-        label => sprintf('Resolve build inputs (%d lib dirs, %d source roots)', scalar(@lib_dirs), scalar(@source_roots)),
+        label => sprintf(
+            'Resolve build inputs (%d lib dirs, %d source roots, %d inferred app roots)',
+            scalar(@lib_dirs),
+            scalar(@source_roots),
+            scalar(@inferred_app_file_sets),
+        ),
     });
     my @code_units = _code_manifest(
         $abs_entrypoint,
         \@lib_dirs,
         \@source_roots,
+        \@inferred_app_file_sets,
         sub { _progress_emit($progress, $_[0]) },
     );
 
@@ -113,6 +131,7 @@ sub build {
         @{ $args{cpanfiles} // [] },
         @{ $standalone_source->{cpanfiles} // [] },
     ]);
+    my @inferred_asset_dirs = _inferred_asset_dirs(\@code_units);
     _progress_emit($progress, { task_id => 'collect_assets', status => 'running' });
     my $assets = _asset_manifest(
         [
@@ -122,12 +141,17 @@ sub build {
         [
             @{ $args{asset_dirs} // [] },
             @{ $standalone_source->{asset_dirs} // [] },
+            @inferred_asset_dirs,
         ],
     );
     _progress_emit($progress, {
         task_id => 'collect_assets',
         status => 'done',
-        label => sprintf('Collect embedded assets (%d assets)', scalar(@$assets)),
+        label => sprintf(
+            'Collect embedded assets (%d assets, %d inferred dirs)',
+            scalar(@$assets),
+            scalar(@inferred_asset_dirs),
+        ),
     });
 
     my $analysis = PAX::StandaloneAnalysis->new;
@@ -165,9 +189,9 @@ sub build {
     my $runtime = _runtime_manifest(
         mode => $runtime_mode,
         dependencies => $dependencies->{items},
-        lib_dirs => \@lib_dirs,
+        lib_dirs => \@runtime_lib_dirs,
         code_units => \@code_units,
-        exclude_dirs => [ @lib_dirs, @source_roots ],
+        exclude_dirs => [ @runtime_lib_dirs, @source_roots ],
         exclude_files => [ map { $_->{source_path} } @code_units ],
         app_namespace => $app_namespace,
         app_legacy_namespace => $app_meta->{compat}{legacy_namespace},
@@ -223,7 +247,7 @@ sub build {
         assets => $assets,
         asset_count => scalar(@$assets),
         asset_bytes => _payload_bytes($assets),
-        lib_dirs => [ map { _logical_root('lib', $_) } @lib_dirs ],
+        lib_dirs => [ map { _logical_root('lib', $_) } @runtime_lib_dirs ],
         source_roots => [ map { _logical_root('src', $_) } @source_roots ],
         source_hash => _source_hash(\@code_units, $assets, $runtime->{payloads}, $native_payloads),
         build_plan => {
@@ -603,9 +627,9 @@ sub _infer_app_namespace {
     my %score;
 
     for my $unit (@$units) {
-        my $module = $unit->{module} // '';
-        next if !$module;
-        my @parts = split /::/, $module;
+        my $package = $unit->{package} // $unit->{module} // '';
+        next if !$package;
+        my @parts = split /::/, $package;
         next if @parts < 2;
         for my $i (2 .. @parts) {
             my $prefix = join('::', @parts[0 .. $i - 1]);
@@ -681,7 +705,7 @@ sub _logical_root {
 }
 
 sub _code_manifest {
-    my ($entrypoint, $lib_dirs, $source_roots, $progress) = @_;
+    my ($entrypoint, $lib_dirs, $source_roots, $app_file_sets, $progress) = @_;
     my @manifest;
     my %seen;
     my %seen_modules;
@@ -695,12 +719,26 @@ sub _code_manifest {
     } @$lib_dirs;
     my @source_file_sets = map {
         +{
+            kind  => 'source',
             dir   => $_,
+            prefix => _logical_root('src', $_),
             files => [ _perl_files([$_], exclude_nested_inc => 1) ],
         }
     } @$source_roots;
+    my @application_file_sets = (
+        map({
+            +{
+                kind   => 'lib',
+                dir    => $_->{dir},
+                prefix => _logical_root('lib', $_->{dir}),
+                files  => $_->{files},
+            }
+        } @lib_file_sets),
+        @source_file_sets,
+        @{ $app_file_sets // [] },
+    );
     my $application_total = 0;
-    $application_total += scalar(@{ $_->{files} }) for (@lib_file_sets, @source_file_sets);
+    $application_total += scalar(@{ $_->{files} }) for @application_file_sets;
 
     $progress->({
         task_id => 'discover_code_units',
@@ -745,9 +783,10 @@ sub _code_manifest {
         status => 'running',
         label => sprintf('Compile application units (0/%d)', $application_total),
     }) if $progress;
-    for my $set (@lib_file_sets) {
+    for my $set (@application_file_sets) {
         my $dir = $set->{dir};
-        my $prefix = _logical_root('lib', $dir);
+        my $prefix = $set->{prefix} // _logical_root('lib', $dir);
+        my $kind = $set->{kind} // 'lib';
         for my $path (@{ $set->{files} }) {
             next if $seen{$path}++;
             my $rel = File::Spec->abs2rel($path, $dir);
@@ -758,12 +797,12 @@ sub _code_manifest {
                     'Compile application units (%d/%d: %s)',
                     $compiled_app_units + 1,
                     $application_total,
-                    _progress_source_label('lib', $rel),
+                    _progress_source_label($kind eq 'source' ? 'src' : 'lib', $rel),
                 ),
             }) if $progress;
             my $compiled = $compiler->compile(
                 path => $path,
-                kind => 'lib',
+                kind => $kind,
                 logical_path => _safe_logical_path(File::Spec->catfile($prefix, $rel)),
             );
             $compiled->{source_bytes} = _slurp_bytes($path);
@@ -776,46 +815,7 @@ sub _code_manifest {
                     'Compile application units (%d/%d: %s)',
                     $compiled_app_units,
                     $application_total,
-                    _progress_source_label('lib', $rel),
-                ),
-            }) if $progress;
-            my $module = _module_name_from_source_path($path);
-            $seen_modules{$module} = 1 if defined $module;
-        }
-    }
-
-    for my $set (@source_file_sets) {
-        my $dir = $set->{dir};
-        my $prefix = _logical_root('src', $dir);
-        for my $path (@{ $set->{files} }) {
-            next if $seen{$path}++;
-            my $rel = File::Spec->abs2rel($path, $dir);
-            $progress->({
-                task_id => 'compile_application_units',
-                status => 'running',
-                label => sprintf(
-                    'Compile application units (%d/%d: %s)',
-                    $compiled_app_units + 1,
-                    $application_total,
-                    _progress_source_label('src', $rel),
-                ),
-            }) if $progress;
-            my $compiled = $compiler->compile(
-                path => $path,
-                kind => 'source',
-                logical_path => _safe_logical_path(File::Spec->catfile($prefix, $rel)),
-            );
-            $compiled->{source_bytes} = _slurp_bytes($path);
-            push @manifest, $compiled;
-            $compiled_app_units++;
-            $progress->({
-                task_id => 'compile_application_units',
-                status => 'running',
-                label => sprintf(
-                    'Compile application units (%d/%d: %s)',
-                    $compiled_app_units,
-                    $application_total,
-                    _progress_source_label('src', $rel),
+                    _progress_source_label($kind eq 'source' ? 'src' : 'lib', $rel),
                 ),
             }) if $progress;
             my $module = _module_name_from_source_path($path);
@@ -858,6 +858,132 @@ sub _code_manifest {
     }) if $progress;
 
     return @manifest;
+}
+
+sub _infer_entrypoint_app_file_sets {
+    my ($entrypoint) = @_;
+    my $source = _slurp_bytes($entrypoint);
+    return () if $source eq '';
+
+    my @modules = grep { !_skip_dependency_module($_) } _declared_modules($source);
+    my @prefixes = _declared_app_prefixes(@modules);
+    return () if !@prefixes;
+
+    my @file_sets;
+    my %seen_prefix;
+    for my $prefix (@prefixes) {
+        next if !$prefix || $seen_prefix{$prefix}++;
+        my @files = _namespace_tree_files($prefix, [ dirname($entrypoint) ]);
+        next if !@files;
+        my $base_dir = _module_base_dir_for_files($prefix, $files[0]);
+        next if !defined $base_dir || $base_dir eq '';
+        push @file_sets, {
+            kind   => 'lib',
+            dir    => $base_dir,
+            prefix => _logical_root('lib', $base_dir),
+            files  => \@files,
+        };
+    }
+
+    return @file_sets;
+}
+
+sub _application_root_file_count {
+    my ($lib_dirs, $source_roots) = @_;
+    my $count = 0;
+    for my $dir (@{ $lib_dirs // [] }, @{ $source_roots // [] }) {
+        my @files = _perl_files([$dir], exclude_nested_inc => 1);
+        $count += scalar(@files);
+        return $count if $count;
+    }
+    return 0;
+}
+
+sub _declared_app_prefixes {
+    my (@modules) = @_;
+    my %prefix_count;
+
+    for my $module (@modules) {
+        next if !$module || _skip_dependency_module($module);
+        my @parts = split /::/, $module;
+        next if @parts < 2;
+        for my $len (2 .. scalar(@parts)) {
+            my $prefix = join('::', @parts[0 .. $len - 1]);
+            $prefix_count{$prefix}++;
+        }
+    }
+
+    my @candidates = grep { $prefix_count{$_} >= 2 } keys %prefix_count;
+    @candidates = sort {
+        $prefix_count{$b} <=> $prefix_count{$a}
+            || scalar(split(/::/, $b)) <=> scalar(split(/::/, $a))
+            || $a cmp $b
+    } @candidates;
+
+    my @selected;
+    CANDIDATE:
+    for my $candidate (@candidates) {
+        for my $selected (@selected) {
+            next CANDIDATE if index($candidate, $selected . '::') == 0;
+        }
+        push @selected, $candidate;
+    }
+
+    return @selected if @selected;
+
+    my %seen;
+    return grep { $_ ne '' && !$seen{$_}++ } map {
+        my @parts = split /::/, $_;
+        @parts > 1 ? join('::', @parts[0 .. $#parts - 1]) : $_;
+    } grep { $_ =~ /::/ } @modules;
+}
+
+sub _namespace_tree_files {
+    my ($prefix, $preferred_roots) = @_;
+    my @files;
+    my %seen;
+    my $root_module_path = _locate_pure_perl_module($prefix, $preferred_roots);
+    if ($root_module_path && -f $root_module_path) {
+        push @files, $root_module_path;
+        $seen{$root_module_path} = 1;
+        my $subtree_dir = $root_module_path;
+        $subtree_dir =~ s/\.pm\z//;
+        if (-d $subtree_dir) {
+            for my $path (_perl_files([$subtree_dir], exclude_nested_inc => 1)) {
+                next if $seen{$path}++;
+                push @files, $path;
+            }
+        }
+        return @files;
+    }
+
+    my @parts = split /::/, $prefix;
+    return () if !@parts;
+    my $fallback_module = $prefix . '::Bootstrap';
+    my $fallback_path = _locate_pure_perl_module($fallback_module, $preferred_roots);
+    return () if !$fallback_path;
+    my $base_dir = _module_base_dir_for_files($prefix, $fallback_path);
+    return () if !$base_dir;
+    my $subtree_dir = File::Spec->catdir($base_dir, @parts);
+    return () if !-d $subtree_dir;
+    for my $path (_perl_files([$subtree_dir], exclude_nested_inc => 1)) {
+        next if $seen{$path}++;
+        push @files, $path;
+    }
+    return @files;
+}
+
+sub _module_base_dir_for_files {
+    my ($module, $path) = @_;
+    return if !$module || !$path;
+    my $rel = File::Spec->catfile(split(/::/, $module)) . '.pm';
+    my $normalized_path = $path;
+    $normalized_path =~ s{\\}{/}g;
+    (my $normalized_rel = $rel) =~ s{\\}{/}g;
+    return if $normalized_path !~ /\Q$normalized_rel\E\z/;
+    my $base = substr($normalized_path, 0, length($normalized_path) - length($normalized_rel));
+    $base =~ s{/+\z}{};
+    return $base;
 }
 
 sub _progress_source_label {
@@ -932,16 +1058,16 @@ sub _declared_modules {
     my ($source) = @_;
     $source = _strip_pod($source);
     my @modules;
-    while ($source =~ /^\s*use\s+([A-Za-z_][A-Za-z0-9_:]*)\b/gm) {
+    while ($source =~ /\buse\s+([A-Za-z_][A-Za-z0-9_:]*)\b/g) {
         push @modules, $1;
     }
-    while ($source =~ /^\s*require\s+([A-Za-z_][A-Za-z0-9_:]*)\b/gm) {
+    while ($source =~ /\brequire\s+([A-Za-z_][A-Za-z0-9_:]*)\b/g) {
         push @modules, $1;
     }
-    while ($source =~ /^\s*use\s+(?:base|parent)\s+qw\(([^)]*)\)/gm) {
+    while ($source =~ /\buse\s+(?:base|parent)\s+qw\(([^)]*)\)/g) {
         push @modules, grep { $_ ne '' } split /\s+/, $1;
     }
-    while ($source =~ /^\s*use\s+(?:base|parent)\s+['"]([A-Za-z_][A-Za-z0-9_:]*)['"]/gm) {
+    while ($source =~ /\buse\s+(?:base|parent)\s+['"]([A-Za-z_][A-Za-z0-9_:]*)['"]/g) {
         push @modules, $1;
     }
     my %seen;
@@ -1087,6 +1213,80 @@ sub _asset_manifest {
         };
     }
     return \@manifest;
+}
+
+sub _inferred_asset_dirs {
+    my ($code_units) = @_;
+    my %seen;
+    my @dirs;
+    for my $unit (@{ $code_units // [] }) {
+        next if ref($unit) ne 'HASH';
+        my $source_path = $unit->{source_path} // '';
+        my $source_bytes = $unit->{source_bytes} // '';
+        for my $sub (@{ $unit->{subs} // [] }) {
+            next if ref($sub) ne 'HASH';
+            my $op = $sub->{op} // '';
+            if ($op eq 'internal_cli_repo_private_cli_root') {
+                my $dir = _repo_private_cli_dir_from_source($source_path);
+                next if !$dir || $dir eq '';
+                next if !$dir || !-d $dir;
+                next if $seen{$dir}++;
+                push @dirs, $dir;
+                next;
+            }
+            if ($op eq 'internal_cli_shared_private_cli_root') {
+                my $dir = _shared_private_cli_dir($sub->{dist_name});
+                next if !$dir || !-d $dir;
+                next if $seen{$dir}++;
+                push @dirs, $dir;
+                next;
+            }
+        }
+        next if $source_bytes eq '';
+        next if $source_bytes !~ /private-cli/ || $source_bytes !~ /_helper_asset_path/;
+        if (my $dir = _repo_private_cli_dir_from_source($source_path)) {
+            next if $seen{$dir}++;
+            push @dirs, $dir;
+        }
+        my ($dist_name) = $source_bytes =~ /dist_dir\s*\(\s*['"]([^'"]+)['"]\s*\)/;
+        if (my $dir = _shared_private_cli_dir($dist_name)) {
+            next if $seen{$dir}++;
+            push @dirs, $dir;
+        }
+    }
+    return @dirs;
+}
+
+sub _repo_private_cli_dir_from_source {
+    my ($source_path) = @_;
+    return if !defined $source_path || $source_path eq '';
+    my $dir = dirname($source_path);
+    while ($dir && $dir ne File::Spec->rootdir()) {
+        if (basename($dir) eq 'lib') {
+            my $root = dirname($dir);
+            my $candidate = File::Spec->catdir($root, 'share', 'private-cli');
+            return $candidate if -d $candidate;
+            last;
+        }
+        my $parent = dirname($dir);
+        last if !defined $parent || $parent eq $dir;
+        $dir = $parent;
+    }
+    return;
+}
+
+sub _shared_private_cli_dir {
+    my ($dist_name) = @_;
+    return if !defined $dist_name || $dist_name eq '';
+    my $ok = eval {
+        require File::ShareDir;
+        1;
+    };
+    return if !$ok;
+    my $root = eval { File::ShareDir::dist_dir($dist_name) };
+    return if !$root || !-d $root;
+    my $candidate = File::Spec->catdir($root, 'private-cli');
+    return -d $candidate ? $candidate : undef;
 }
 
 sub _payload_bytes {
@@ -1425,6 +1625,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "failed to extract standalone payload\\n");
         return 111;
     }
+    if (argc > 0 && argv[0] && *argv[0]) {
+        setenv("PAX_STANDALONE_EXECUTABLE", argv[0], 1);
+    }
 
     if (strlen(libpath) > 0) {
         const char *old = getenv("PERL5LIB");
@@ -1610,14 +1813,21 @@ sub _runtime_manifest {
                 push @bundled_inc_roots, $prefix;
                 push @payloads, _file_list_payloads($dir, $prefix, 'runtime_inc', $files, $args{exclude_files} // [], \@force_runtime_source_files);
             }
-            for my $dir (@inc_dirs) {
+            my @family_dirs = _runtime_tree_family_dirs(\@inc_dirs);
+            for my $dir (@family_dirs) {
                 next if !_is_core_runtime_inc_dir($dir);
                 my $prefix = sprintf('inc/%03d', $index++);
                 push @bundled_inc_roots, $prefix;
                 push @payloads, _tree_payloads($dir, $prefix, 'runtime_inc', []);
             }
-            for my $dir (@inc_dirs) {
+            for my $dir (@family_dirs) {
                 next if !_is_site_runtime_inc_dir($dir);
+                my $prefix = sprintf('inc/%03d', $index++);
+                push @bundled_inc_roots, $prefix;
+                push @payloads, _tree_payloads($dir, $prefix, 'runtime_inc', []);
+            }
+            for my $dir (@family_dirs) {
+                next if !_is_vendor_runtime_inc_dir($dir);
                 my $prefix = sprintf('inc/%03d', $index++);
                 push @bundled_inc_roots, $prefix;
                 push @payloads, _tree_payloads($dir, $prefix, 'runtime_inc', []);
@@ -1771,6 +1981,32 @@ sub _is_site_runtime_inc_dir {
     my ($dir) = @_;
     return 0 if !$dir;
     return ($dir =~ m{/site_perl/\d+\.\d+\.\d+(?:/x86_64-linux-gnu)?\z}) ? 1 : 0;
+}
+
+sub _is_vendor_runtime_inc_dir {
+    my ($dir) = @_;
+    return 0 if !$dir;
+    return 1 if $dir =~ m{/vendor_perl(?:/|$)};
+    return 1 if $dir =~ m{/perl5/\d+\.\d+\.\d+(?:/x86_64-linux-gnu)?\z} && $dir =~ m{/vendor_perl/};
+    return 1 if $dir =~ m{/share/perl5\z};
+    return 0;
+}
+
+sub _runtime_tree_family_dirs {
+    my ($inc_dirs) = @_;
+    my %seen;
+    my @dirs;
+    for my $dir (@{ $inc_dirs // [] }) {
+        next if !$dir || !-d $dir;
+        next if $seen{$dir}++;
+        push @dirs, $dir;
+        next if $dir !~ m{/x86_64-linux-gnu\z};
+        (my $parent = $dir) =~ s{/x86_64-linux-gnu\z}{};
+        next if !$parent || !-d $parent;
+        next if $seen{$parent}++;
+        push @dirs, $parent;
+    }
+    return @dirs;
 }
 
 sub _runtime_selected_files {

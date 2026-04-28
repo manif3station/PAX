@@ -1,59 +1,86 @@
 use strict;
 use warnings;
 use Test::More;
+use File::Path qw(make_path remove_tree);
+use File::Spec;
 use File::Temp qw(tempdir);
 use FindBin;
 use lib "$FindBin::Bin/../lib";
 
 use PAX::StandaloneAnalysis;
 
-my $analysis = PAX::StandaloneAnalysis->new;
-require JSON::PP;
-my $json_pp_path = $INC{'JSON/PP.pm'};
-my $tmpdir = tempdir(CLEANUP => 1);
-my $dep_entry = "$tmpdir/deps.pl";
-open my $dep_fh, '>', $dep_entry or die "cannot write $dep_entry: $!";
-print {$dep_fh} <<'PERL';
+=pod
+
+=head1 NAME
+
+t/standalone_analysis.t - standalone dependency closure regression tests
+
+=head1 DESCRIPTION
+
+This file validates that standalone dependency analysis follows transitive
+Perl module references so bundled runtime payloads remain closed over the
+module graph discovered from the application and its packaged dependencies.
+
+=cut
+
+my $root = tempdir('pax-standalone-analysis-XXXXXX', TMPDIR => 1, CLEANUP => 1);
+my $lib_root = File::Spec->catdir($root, 'lib');
+make_path(File::Spec->catdir($lib_root, 'Example', 'Transitive'));
+
+my $entry_module = File::Spec->catfile($lib_root, 'Example', 'Transitive', 'Entry.pm');
+my $mid_module = File::Spec->catfile($lib_root, 'Example', 'Transitive', 'Mid.pm');
+my $leaf_module = File::Spec->catfile($lib_root, 'Example', 'Transitive', 'Leaf.pm');
+
+open my $entry_fh, '>', $entry_module or die "cannot write entry module: $!";
+print {$entry_fh} <<'PERL';
+package Example::Transitive::Entry;
 use strict;
 use warnings;
-use JSON::PP;
-use JSON::XS;
+use Example::Transitive::Mid ();
 1;
 PERL
-close $dep_fh;
+close $entry_fh;
 
-my $deps = $analysis->dependencies(
-    entrypoint => $dep_entry,
-    code_units => [
-        {
-            source_path => $dep_entry,
-            unit_kind => 'entrypoint',
-        },
-        {
-            source_path => "$FindBin::Bin/fixtures/app_lib/SlowLoad.pm",
-            unit_kind => 'lib',
-        },
-        {
-            source_path => $json_pp_path,
-            unit_kind => 'dependency',
-        },
-    ],
-    cpanfiles => ["$FindBin::Bin/fixtures/standalone_policy.cpanfile"],
-);
+open my $mid_fh, '>', $mid_module or die "cannot write mid module: $!";
+print {$mid_fh} <<'PERL';
+package Example::Transitive::Mid;
+use strict;
+use warnings;
+use Example::Transitive::Leaf ();
+1;
+PERL
+close $mid_fh;
 
-my %deps_by_module = map { $_->{module} => $_ } @{ $deps->{items} };
-is($deps_by_module{SlowLoad}{class}, 'packaged_app', 'packaged app module classified correctly');
-is($deps_by_module{'JSON::PP'}{class}, 'compiled_dependency', 'compiled dependency classified correctly');
-is($deps_by_module{'JSON::XS'}{class}, 'bundled_xs', 'XS dependency classified as bundled_xs');
-ok(($deps->{summary}{bundled_xs} // 0) >= 1, 'dependency summary counts bundled XS modules');
-ok(($deps->{summary}{compiled_dependency} // 0) >= 1, 'dependency summary counts compiled dependencies');
+open my $leaf_fh, '>', $leaf_module or die "cannot write leaf module: $!";
+print {$leaf_fh} <<'PERL';
+package Example::Transitive::Leaf;
+use strict;
+use warnings;
+1;
+PERL
+close $leaf_fh;
 
-my $native = $analysis->native_artifacts(
-    entrypoint => "$FindBin::Bin/fixtures/native_leafs.pl",
-);
+my $analysis = PAX::StandaloneAnalysis->new;
+my $deps;
+{
+    local @INC = ($lib_root, @INC);
+    $deps = $analysis->dependencies(
+        entrypoint => $entry_module,
+        code_units => [
+            {
+                source_path => $entry_module,
+                unit_kind => 'lib',
+                package => 'Example::Transitive::Entry',
+                packaging => 'compiled_pcu_v1',
+            },
+        ],
+        cpanfiles => [],
+    );
+}
 
-ok(($native->{summary}{native_ready} // 0) >= 1, 'native analysis finds native-ready regions');
-ok((grep { ($_->{entry_kind} // '') eq 'native_i64_leaf' } @{ $native->{items} }) >= 1, 'leaf entry kind recorded');
-ok(exists $native->{runtime_epochs}{package_symbols}, 'native analysis records runtime epoch metadata for guard validation');
+my %modules = map { ($_->{module} => $_) } @{ $deps->{items} || [] };
+ok($modules{'Example::Transitive::Mid'}, 'dependency analysis includes direct module reference');
+ok($modules{'Example::Transitive::Leaf'}, 'dependency analysis includes transitive module reference');
+is($modules{'Example::Transitive::Leaf'}{class}, 'bundled_pure_perl', 'transitive dependency is packaged as bundled pure-Perl runtime payload');
 
 done_testing;

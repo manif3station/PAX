@@ -114,6 +114,62 @@ is($fake_runtime_libs[0], $fake_libperl, 'runtime lib discovery returns exact fa
     ok((grep { ($_->{logical_path} // '') eq 'lib/libperl.so.999' } @runtime_lib_payloads), 'runtime_lib payload includes discovered libperl from runtime inc');
 }
 
+my $fake_vendor_root = File::Spec->catdir($tmp_base, 'fake-vendor-perl', 'share', 'perl5');
+make_path(File::Spec->catdir($fake_vendor_root, 'Types'));
+my $fake_vendor_module = File::Spec->catfile($fake_vendor_root, 'Types', 'Serialiser.pm');
+open my $vendorfh, '>', $fake_vendor_module or die "cannot create fake vendor module: $!";
+print {$vendorfh} "package Types::Serialiser;\n1;\n";
+close $vendorfh;
+{
+    local @INC = ($fake_vendor_root, @INC);
+    my $manifest = PAX::StandaloneImage::_runtime_manifest(
+        mode => 'bundled_perl',
+        dependencies => [],
+        lib_dirs => [],
+        code_units => [],
+        exclude_dirs => [],
+        app_namespace => '',
+        app_legacy_namespace => '',
+    );
+    my @vendor_payloads = grep { ($_->{logical_path} // '') =~ m{/Types/Serialiser\.pm\z} } @{ $manifest->{payloads} // [] };
+    ok(@vendor_payloads >= 1, 'runtime payload includes vendor-style Perl tree entries');
+}
+
+my $fake_site_root = File::Spec->catdir($tmp_base, 'fake-site-perl', 'site_perl', '5.42.0');
+my $fake_site_arch_root = File::Spec->catdir($fake_site_root, 'x86_64-linux-gnu');
+make_path(File::Spec->catdir($fake_site_root, 'Types'));
+make_path(File::Spec->catdir($fake_site_arch_root, 'JSON'));
+my $fake_site_types = File::Spec->catfile($fake_site_root, 'Types', 'Serialiser.pm');
+my $fake_site_json = File::Spec->catfile($fake_site_arch_root, 'JSON', 'XS.pm');
+open my $site_types_fh, '>', $fake_site_types or die "cannot create fake site Types module: $!";
+print {$site_types_fh} "package Types::Serialiser;\n1;\n";
+close $site_types_fh;
+open my $site_json_fh, '>', $fake_site_json or die "cannot create fake site JSON module: $!";
+print {$site_json_fh} "package JSON::XS;\nuse Types::Serialiser ();\n1;\n";
+close $site_json_fh;
+{
+    local @INC = ($fake_site_arch_root, $fake_site_root, @INC);
+    my $manifest = PAX::StandaloneImage::_runtime_manifest(
+        mode => 'bundled_perl',
+        dependencies => [
+            {
+                module => 'JSON::XS',
+                class => 'bundled_xs',
+                source_path => $fake_site_json,
+            },
+        ],
+        lib_dirs => [],
+        code_units => [],
+        exclude_dirs => [],
+        app_namespace => '',
+        app_legacy_namespace => '',
+    );
+    my @site_family_payloads = grep {
+        (($_->{source_path} // '') eq $fake_site_types)
+    } @{ $manifest->{payloads} // [] };
+    ok(@site_family_payloads >= 1, 'runtime payload includes sibling plain site_perl tree for arch-specific runtime roots');
+}
+
 my $nested_runtime_root = File::Spec->catdir($tmp_base, 'nested-runtime-app-lib');
 my $app_module_path = File::Spec->catfile($nested_runtime_root, 'AppLocal.pm');
 my $nested_runtime_module = File::Spec->catfile($nested_runtime_root, 'lib', 'perl5', '5.42.0', 'IO', 'Socket', 'INET.pm');
@@ -265,6 +321,184 @@ if (@namespace_runtime_files) {
 
 my $paxfile = PAX::Paxfile->load("$FindBin::Bin/fixtures/paxfile.yml");
 is($paxfile->{name}, 'fixture-app', 'existing paxfile fixture still parses');
+
+my $installed_root = File::Spec->catdir($tmp_base, 'installed-layout');
+my $installed_bin_dir = File::Spec->catdir($installed_root, 'bin');
+my $installed_lib_root = File::Spec->catdir($installed_root, 'site', 'lib', 'perl5');
+my $installed_module_root = File::Spec->catdir($installed_lib_root, 'InstalledApp');
+make_path($installed_bin_dir, $installed_module_root);
+
+my $installed_entry = File::Spec->catfile($installed_bin_dir, 'installed-app');
+open my $installed_entry_fh, '>', $installed_entry or die "cannot write installed entrypoint: $!";
+print {$installed_entry_fh} <<'PERL';
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use InstalledApp::CLI ();
+
+my $command = shift(@ARGV) // 'version';
+exit InstalledApp::CLI::run($command, @ARGV);
+PERL
+close $installed_entry_fh;
+chmod 0755, $installed_entry;
+
+open my $installed_cli_fh, '>', File::Spec->catfile($installed_module_root, 'CLI.pm') or die "cannot write installed CLI module: $!";
+print {$installed_cli_fh} <<'PERL';
+package InstalledApp::CLI;
+use strict;
+use warnings;
+use InstalledApp::InternalCLI ();
+use InstalledApp::CLI::SeededPages ();
+
+our $VERSION = '1.23';
+
+sub run {
+    my ($command, @argv) = @_;
+    if (($command // '') eq 'init') {
+        print InstalledApp::InternalCLI::init_text(), "\n";
+        return 0;
+    }
+    if (($command // '') eq 'seeded') {
+        print InstalledApp::CLI::SeededPages::seeded_text(), "\n";
+        return 0;
+    }
+    if (($command // '') eq 'version') {
+        print $VERSION, "\n";
+        return 0;
+    }
+    die "unknown command: $command\n";
+}
+
+1;
+PERL
+close $installed_cli_fh;
+
+open my $installed_internal_fh, '>', File::Spec->catfile($installed_module_root, 'InternalCLI.pm') or die "cannot write installed InternalCLI module: $!";
+print {$installed_internal_fh} <<'PERL';
+package InstalledApp::InternalCLI;
+use strict;
+use warnings;
+use InstalledApp::SeedSync ();
+
+sub init_text {
+    return InstalledApp::SeedSync::same_content_md5('alpha', 'alpha') ? 'installed-init-ok' : 'installed-init-failed';
+}
+
+1;
+PERL
+close $installed_internal_fh;
+
+open my $installed_page_document_fh, '>', File::Spec->catfile($installed_module_root, 'PageDocument.pm') or die "cannot write installed PageDocument module: $!";
+print {$installed_page_document_fh} <<'PERL';
+package InstalledApp::PageDocument;
+use strict;
+use warnings;
+
+sub new {
+    my ($class, %args) = @_;
+    return bless \%args, $class;
+}
+
+sub from_instruction {
+    my ($class, $instruction) = @_;
+    return $class->new(instruction => $instruction);
+}
+
+sub instruction {
+    my ($self) = @_;
+    return $self->{instruction};
+}
+
+1;
+PERL
+close $installed_page_document_fh;
+
+my $installed_cli_subdir = File::Spec->catdir($installed_module_root, 'CLI');
+make_path($installed_cli_subdir);
+open my $installed_seeded_pages_fh, '>', File::Spec->catfile($installed_cli_subdir, 'SeededPages.pm') or die "cannot write installed SeededPages module: $!";
+print {$installed_seeded_pages_fh} <<'PERL';
+package InstalledApp::CLI::SeededPages;
+use strict;
+use warnings;
+use InstalledApp::PageDocument;
+
+sub seeded_text {
+    my $page = _page_from_asset('seeded-source');
+    return $page->instruction;
+}
+
+sub _page_from_asset {
+    my ($filename) = @_;
+    die "Missing seeded page filename\n" if !defined $filename || $filename eq '';
+    my $instruction = _seeded_page_instruction($filename);
+    return InstalledApp::PageDocument->from_instruction($instruction);
+}
+
+sub _seeded_page_instruction {
+    my ($filename) = @_;
+    return "installed-seeded:$filename";
+}
+
+1;
+PERL
+close $installed_seeded_pages_fh;
+
+open my $installed_seedsync_fh, '>', File::Spec->catfile($installed_module_root, 'SeedSync.pm') or die "cannot write installed SeedSync module: $!";
+print {$installed_seedsync_fh} <<'PERL';
+package InstalledApp::SeedSync;
+use strict;
+use warnings;
+use Digest::MD5 qw(md5_hex);
+use Encode qw(encode_utf8);
+
+sub _content_bytes {
+    my ($content) = @_;
+    return encode_utf8($content) if utf8::is_utf8($content);
+    return $content;
+}
+
+sub content_md5 {
+    my ($content) = @_;
+    $content = '' if !defined $content;
+    return md5_hex(_content_bytes($content));
+}
+
+sub same_content_md5 {
+    my ($left, $right) = @_;
+    return content_md5($left) eq content_md5($right);
+}
+
+1;
+PERL
+close $installed_seedsync_fh;
+
+my $installed_build;
+{
+    local @INC = ($installed_lib_root, @INC);
+    $installed_build = $builder->build(
+        name => 'fixture-installed-layout',
+        entrypoint => $installed_entry,
+    );
+}
+
+is($installed_build->{status}, 'built', 'installed-layout standalone image built without explicit lib roots');
+my %installed_packaged_modules = map { (($_->{package} // $_->{module} // '') => 1) }
+    (
+        @{ $installed_build->{standalone}{code_units} // [] },
+        @{ $installed_build->{standalone}{dependencies} // [] },
+    );
+ok($installed_packaged_modules{'InstalledApp::SeedSync'}, 'installed-layout build packages namespace helper module');
+ok($installed_packaged_modules{'InstalledApp::InternalCLI'}, 'installed-layout build packages internal command module');
+my $installed_binary = abs_path($installed_build->{standalone}{output_path});
+my $installed_version = `env -i PATH=/nonexistent TMPDIR=/tmp $installed_binary version`;
+is($? >> 8, 0, 'installed-layout standalone executable runs version command');
+is($installed_version, "1.23\n", 'installed-layout standalone executable keeps version output');
+my $installed_init = `env -i PATH=/nonexistent TMPDIR=/tmp $installed_binary init`;
+is($? >> 8, 0, 'installed-layout standalone executable runs init command');
+is($installed_init, "installed-init-ok\n", 'installed-layout standalone executable resolves cross-module same_content_md5 helper');
+my $installed_seeded = `env -i PATH=/nonexistent TMPDIR=/tmp $installed_binary seeded`;
+is($? >> 8, 0, 'installed-layout standalone executable runs nested seeded page command');
+is($installed_seeded, "installed-seeded:seeded-source\n", 'installed-layout standalone executable preserves imported app-root PageDocument class under nested CLI package');
 
 remove_tree($root) if -d $root;
 my $paxfile_output = `cd $FindBin::Bin/.. && PAX_STANDALONE_ROOT=$root $^X bin/pax build --compact --paxfile t/fixtures/paxfile.yml`;

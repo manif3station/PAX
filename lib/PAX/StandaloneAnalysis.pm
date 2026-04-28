@@ -26,17 +26,12 @@ sub dependencies {
     my $cpanfiles = $args{cpanfiles} // [];
 
     my %modules;
+    my @seed_modules;
     for my $unit (@$code_units) {
         my $source = _analysis_source(_slurp($unit->{source_path}));
-        while ($source =~ /^\s*use\s+([A-Z][A-Za-z0-9_:]*)\b/gm) {
-            my $module = $1;
-            next if length($module) < 2;
-            next if $module =~ /^(?:strict|warnings|utf8|lib|parent|base|constant|feature)$/;
+        for my $module (_source_module_refs($source)) {
             $modules{$module}{used_in_code} = 1;
-        }
-        while ($source =~ /^\s*require\s+([A-Z][A-Za-z0-9_:]*)\b/gm) {
-            next if length($1) < 2;
-            $modules{$1}{used_in_code} = 1;
+            push @seed_modules, $module;
         }
     }
 
@@ -55,6 +50,7 @@ sub dependencies {
         my $name = _module_name_from_path($_->{source_path});
         defined $name ? ($name => $_) : ()
     } grep { ($_->{unit_kind} // '') eq 'lib' || ($_->{unit_kind} // '') eq 'dependency' } @$code_units;
+    _expand_dependency_closure(\%modules, \@seed_modules, \%packaged);
     my @items;
     my %summary = (
         packaged_app => 0,
@@ -115,6 +111,50 @@ sub _analysis_source {
     return $source;
 }
 
+sub _source_module_refs {
+    my ($source) = @_;
+    my @modules;
+    while ($source =~ /^\s*use\s+([A-Z][A-Za-z0-9_:]*)\b/gm) {
+        my $module = $1;
+        next if !_is_dependency_candidate($module);
+        push @modules, $module;
+    }
+    while ($source =~ /^\s*require\s+([A-Z][A-Za-z0-9_:]*)\b/gm) {
+        my $module = $1;
+        next if !_is_dependency_candidate($module);
+        push @modules, $module;
+    }
+    my %seen;
+    return grep { !$seen{$_}++ } @modules;
+}
+
+sub _is_dependency_candidate {
+    my ($module) = @_;
+    return 0 if !defined $module || length($module) < 2;
+    return 0 if $module =~ /^(?:strict|warnings|utf8|lib|parent|base|constant|feature)$/;
+    return 1;
+}
+
+sub _expand_dependency_closure {
+    my ($modules, $seed_modules, $packaged) = @_;
+    my @queue = grep { defined && $_ ne '' } @$seed_modules;
+    my %seen_module;
+    my %scanned_path;
+
+    while (@queue) {
+        my $module = shift @queue;
+        next if $seen_module{$module}++;
+        my $path = $packaged->{$module} ? $packaged->{$module}{source_path} : _locate_module($module);
+        next if !$path || $scanned_path{$path}++;
+        my $source = _analysis_source(_slurp($path));
+        for my $child (_source_module_refs($source)) {
+            $modules->{$child}{used_in_code} = 1 if !exists $modules->{$child}{used_in_code};
+            next if $seen_module{$child};
+            push @queue, $child;
+        }
+    }
+}
+
 sub native_artifacts {
     my ($self, %args) = @_;
     my $entrypoint = $args{entrypoint} // die 'entrypoint required';
@@ -122,14 +162,37 @@ sub native_artifacts {
     my @probe_paths = _native_probe_paths($entrypoint, $code_units);
     return { items => [], summary => { native_ready => 0, fallback_only => 0, total => 0 }, runtime_epochs => undef }
         if !_native_probe_worthwhile(\@probe_paths);
-    my $capture = PAX::Capture->new(mode => 'live')->capture($entrypoint);
+    my $capture = eval { PAX::Capture->new(mode => 'live')->capture($entrypoint) };
+    return {
+        items => [],
+        summary => { native_ready => 0, fallback_only => 0, total => 0 },
+        diagnostics => [{
+            level => 'warning',
+            code => 'native_capture_failed',
+            message => "$@",
+        }],
+        runtime_epochs => undef,
+    } if !$capture || $@;
     return { items => [], summary => { native_ready => 0, fallback_only => 0, total => 0 } }
         if ($capture->{status} ne 'ok');
 
-    my $manifest = PAX::Manifest->new(capture => $capture)->to_hash;
-    my $regions = PAX::RegionSelector->new(manifest => $manifest)->select;
-    my $hir = PAX::HIR->new(manifest => $manifest, regions => $regions->{selected})->lower_all;
-    my $ssa = PAX::GuardedSSA->new(hir_units => $hir)->build_all;
+    my ($manifest, $regions, $hir, $ssa) = eval {
+        my $manifest = PAX::Manifest->new(capture => $capture)->to_hash;
+        my $regions = PAX::RegionSelector->new(manifest => $manifest)->select;
+        my $hir = PAX::HIR->new(manifest => $manifest, regions => $regions->{selected})->lower_all;
+        my $ssa = PAX::GuardedSSA->new(hir_units => $hir)->build_all;
+        ($manifest, $regions, $hir, $ssa);
+    };
+    return {
+        items => [],
+        summary => { native_ready => 0, fallback_only => 0, total => 0 },
+        diagnostics => [{
+            level => 'warning',
+            code => 'native_analysis_failed',
+            message => "$@",
+        }],
+        runtime_epochs => undef,
+    } if $@;
 
     my @items;
     my %summary = (
