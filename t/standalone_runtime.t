@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Test::More;
 use Capture::Tiny qw(capture);
+use JSON::PP qw(encode_json);
 
 use lib 'lib';
 use PAX::StandaloneRuntime ();
@@ -119,6 +120,75 @@ ok(PAX::StandaloneRuntime::_system_command_missing($missing_stderr, $missing_exi
     is($stderr, '', 'delegating standalone helper execution keeps stderr empty');
     like($stdout, qr{\Acore\|shell\|bash\n\z}, 'delegating standalone helper execution routes through dashboard core with helper name');
     is_deeply(\@asset_requests, ['shell', '_dashboard-core'], 'delegating standalone helper execution loads helper asset and dashboard core');
+}
+
+{
+    no warnings 'redefine';
+    my $entrypoint = 't/tmp-standalone-runtime-cli-router.json';
+    open my $fh, '>', $entrypoint or die "cannot write cli router fixture: $!";
+    print {$fh} encode_json({
+        version_module => 'Example::App',
+        suggest_class => 'Example::Suggest',
+    });
+    close $fh;
+
+    my @helper_calls;
+    my $switchboard_calls = 0;
+    local *PAX::StandaloneRuntime::_run_standalone_managed_helper = sub {
+        my ($name, @argv) = @_;
+        push @helper_calls, [$name, @argv];
+        return 'direct-helper';
+    };
+    local *PAX::StandaloneRuntime::_virtual_entrypoint_path = sub {
+        my ($path) = @_;
+        return $path;
+    };
+    local *PAX::StandaloneRuntime::_code_for = sub {
+        my ($name) = @_;
+        return sub { return 1 } if $name eq 'main::_load_runtime_env';
+        return sub { return 1 } if $name eq 'main::_prime_command_result_env';
+        return sub {
+            my ($cmd) = @_;
+            return '/tmp/runtime-helpers/ps1' if $cmd eq 'ps1';
+            return '/tmp/runtime-helpers/skills' if $cmd eq 'skills';
+            return '';
+        } if $name eq 'main::_builtin_helper_path';
+        return sub { return '' } if $name eq 'main::_custom_command_path';
+        return sub {
+            my ($cmd) = @_;
+            return ('sample-skill', 'run-test') if $cmd eq 'sample-skill.run-test';
+            return;
+        } if $name eq 'main::_skill_dotted_command_parts';
+        return sub {
+            $switchboard_calls++;
+            die 'switchboard path should not run';
+        } if $name eq 'main::_exec_switchboard_command';
+        return;
+    };
+
+    {
+        local @ARGV = ('ps1', '--jobs', '1');
+        my $rv = PAX::StandaloneRuntime::_run_cli_router_unit($entrypoint);
+        is($rv, 'direct-helper', 'cli router routes built-in helper commands through the standalone helper fast path');
+    }
+
+    {
+        local @ARGV = ('sample-skill.run-test', '--verbose');
+        my $rv = PAX::StandaloneRuntime::_run_cli_router_unit($entrypoint);
+        is($rv, 'direct-helper', 'cli router routes dotted skill commands through the standalone helper fast path');
+    }
+
+    is_deeply(
+        \@helper_calls,
+        [
+            ['ps1', '--jobs', '1'],
+            ['skills', '_exec', 'sample-skill', 'run-test', '--verbose'],
+        ],
+        'cli router fast path preserves helper name and argv for built-in and skill helper dispatch',
+    );
+    is($switchboard_calls, 0, 'cli router helper fast path skips switchboard execution');
+
+    unlink $entrypoint or die "cannot remove cli router fixture $entrypoint: $!";
 }
 
 done_testing;

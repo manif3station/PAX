@@ -1,3 +1,8 @@
+0.016  Wed Apr 29 10:15:00 2026
+    - Routed built-in standalone helper commands through the direct managed-helper runtime path instead of the switchboard wrapper path, which reduces per-command process overhead for the packaged helper surface.
+    - Applied the same direct helper fast path to dotted skill command dispatch so packaged helper invocations reuse the in-process runtime path instead of spawning wrapper hops.
+    - Added standalone runtime regression coverage for direct helper routing from the compiled CLI router.
+
 0.015  Wed Apr 29 01:30:00 2026
     - Fixed generic imported-class resolution in compiled code-unit rewrites so
       generated standalone runtime ops now honor classes brought in through

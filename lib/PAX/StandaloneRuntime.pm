@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.015';
+our $VERSION = '0.016';
 
 use strict;
 use warnings;
@@ -611,6 +611,14 @@ sub _run_standalone_managed_helper {
     return $rv;
 }
 
+sub _direct_standalone_helper_name_from_path {
+    my ($path) = @_;
+    return if !defined $path || $path eq '';
+    my $name = basename($path);
+    return if !defined $name || $name eq '';
+    return $name;
+}
+
 sub _standalone_helper_delegates_to_dashboard_core {
     my ($source) = @_;
     return 0 if !defined $source || $source eq '';
@@ -850,6 +858,9 @@ sub _run_cli_router_unit {
     }
 
     if (my $helper_path = _code_for('main::_builtin_helper_path')->($cmd)) {
+        if (my $helper_name = _direct_standalone_helper_name_from_path($helper_path)) {
+            return _run_standalone_managed_helper($helper_name, @ARGV);
+        }
         return _code_for('main::_exec_switchboard_command')->($helper_path, @ARGV);
     }
 
@@ -860,6 +871,9 @@ sub _run_cli_router_unit {
     if (my @parts = _code_for('main::_skill_dotted_command_parts')->($cmd)) {
         my ($skill_name, $skill_command) = @parts;
         my $helper_path = _code_for('main::_builtin_helper_path')->('skills');
+        if (my $helper_name = _direct_standalone_helper_name_from_path($helper_path)) {
+            return _run_standalone_managed_helper($helper_name, '_exec', $skill_name, $skill_command, @ARGV);
+        }
         return _code_for('main::_exec_switchboard_command')->($helper_path, '_exec', $skill_name, $skill_command, @ARGV);
     }
 
