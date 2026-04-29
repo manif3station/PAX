@@ -48,11 +48,25 @@ done_testing;
 
 =head1 NAME
 
-t/artifact_cache.t - cover the artifact cache behavior exercised by the PAX test suite.
+t/artifact_cache.t - regression coverage for artifact cache metadata reads, writes, and validation decisions
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to cover the artifact cache behavior exercised by the PAX test suite.
+This test exercises artifact cache metadata reads, writes, and validation decisions. It exists so PAX changes can be checked against a
+repeatable behavioral contract instead of informal manual runs.
+
+=head1 TEST PLAN
+
+The assertions in this file cover the specific success, failure, and edge-case
+paths needed for artifact cache metadata reads, writes, and validation decisions. Extend this file when behavior changes in that area.
+
+=head1 HOW TO RUN
+
+  prove -lv t/artifact_cache.t
+
+=head1 WHY IT EXISTS
+
+PAX uses this test to keep artifact cache metadata reads, writes, and validation decisions from regressing while the compiler,
+standalone runtime, and packaging logic continue to evolve.
 
 =cut
-

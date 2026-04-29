@@ -1,6 +1,6 @@
 package PAX::HotRegionJIT;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -62,11 +62,64 @@ sub retirement {
 
 =head1 NAME
 
-PAX::HotRegionJIT - document the HotRegionJIT component within the PAX compiler, packaging, or runtime stack.
+PAX::HotRegionJIT - hot-region promotion planner
+
+=head1 SYNOPSIS
+
+  use PAX::HotRegionJIT;
+
+  my $obj = PAX::HotRegionJIT->new(...);
+  my $result = $obj->decision(...);
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to document the HotRegionJIT component within the PAX compiler, packaging, or runtime stack.
+Decides when a profiled region is hot enough to justify promotion into a native or JIT-oriented execution path.
+
+=head1 METHODS
+
+=head2 new, decision, retirement
+
+These are the public entrypoints exposed by this module's current interface.
+
+=head1 PURPOSE
+
+This module exists to keep the hot-region promotion planner logic in one place so the CLI, build
+pipeline, and runtime can reuse the same behavior instead of duplicating it.
+
+=head1 WHY IT EXISTS
+
+PAX uses this module when it needs hot-region promotion planner. Keeping that behavior isolated here
+makes the surrounding compiler and packaging stages easier to reason about and
+safer to evolve.
+
+=head1 WHEN TO USE
+
+Edit this file when a change affects hot-region promotion planner, the data contract this module
+returns, or the conditions under which callers choose this path.
+
+=head1 HOW TO USE
+
+Load the module through the normal PAX call path, pass explicit arguments rather
+than ambient global state, and keep project-specific behavior out of this file
+so the implementation stays neutral across arbitrary Perl applications.
+
+=head1 WHAT USES IT
+
+This module is used by the PAX CLI, the build pipeline, standalone packaging,
+and the test suite paths that cover hot-region promotion planner.
+
+=head1 EXAMPLES
+
+Example 1:
+
+  perl -Ilib -MPAX::HotRegionJIT -e 1
+
+Confirm that the module loads from a source checkout.
+
+Example 2:
+
+  prove -lr t
+
+Run the repository test suite after changing the behavior this module owns.
 
 =cut
-

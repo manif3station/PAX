@@ -44,11 +44,25 @@ done_testing;
 
 =head1 NAME
 
-t/deopt.t - cover the deopt behavior exercised by the PAX test suite.
+t/deopt.t - regression coverage for deoptimization planning and invalidation behavior
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to cover the deopt behavior exercised by the PAX test suite.
+This test exercises deoptimization planning and invalidation behavior. It exists so PAX changes can be checked against a
+repeatable behavioral contract instead of informal manual runs.
+
+=head1 TEST PLAN
+
+The assertions in this file cover the specific success, failure, and edge-case
+paths needed for deoptimization planning and invalidation behavior. Extend this file when behavior changes in that area.
+
+=head1 HOW TO RUN
+
+  prove -lv t/deopt.t
+
+=head1 WHY IT EXISTS
+
+PAX uses this test to keep deoptimization planning and invalidation behavior from regressing while the compiler,
+standalone runtime, and packaging logic continue to evolve.
 
 =cut
-

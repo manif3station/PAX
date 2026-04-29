@@ -779,3 +779,12 @@ remove_tree($extract_dir) if -d $extract_dir;
 remove_tree($tmp_base) if -d $tmp_base;
 unlink $native_hit_log if -f $native_hit_log;
 done_testing;
+
+=head1 TEST PLAN
+
+This test covers standalone manifest writing, payload selection, launcher
+generation, native payload handling, and the web-application acceptance path.
+
+=head1 HOW TO RUN
+
+  prove -lv t/standalone_image.t

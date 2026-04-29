@@ -65,11 +65,34 @@ sub _git_lines {
 
 =head1 NAME
 
-version_history_gate.pl - implement the version history gate release or maintenance utility used by the PAX project.
+version_history_gate.pl - version-history gate
+
+=head1 SYNOPSIS
+
+  perl tools/version_history_gate.pl
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to implement the version history gate release or maintenance utility used by the PAX project.
+Fails when release-facing code changed across commits without a corresponding version advance.
+
+=head1 PURPOSE
+
+This tool exists to keep one release or validation responsibility scripted and
+repeatable instead of relying on manual edits during the PAX gate flow.
+
+=head1 WHEN TO USE
+
+Run it when working on the release process, distribution metadata, or the gate
+that this tool enforces.
+
+=head1 HOW TO USE
+
+Invoke it from the repository root so it sees the expected files and git state.
+Keep its checks deterministic and tied to project rules rather than local shell
+assumptions.
+
+=head1 WHAT USES IT
+
+The Makefile gate targets and release workflow call this script directly.
 
 =cut
-

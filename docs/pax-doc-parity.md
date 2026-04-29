@@ -57,14 +57,22 @@ Enforcement rules:
    what the file is for in its current shape
 2. module POD must stay unique to the module and must not collapse into generic
    boilerplate that could describe any file
-3. changed public or operationally meaningful subroutines must carry preceding
+3. module POD must look like a real module manual, not a token placeholder:
+   `NAME`, `SYNOPSIS`, `DESCRIPTION`, `METHODS` or `FUNCTIONS`, and enough
+   purpose-oriented sections to explain why the module exists and how it is
+   used
+4. changed public or operationally meaningful subroutines must carry preceding
    comments that explain intent or behavior impact in concrete language
-4. subroutine comments must not use boilerplate filler such as `helper`,
-   `utility`, `method`, or similar low-information labels
-5. tests must explain the behavior contract they validate
-6. scripts must explain their public role and invocation shape
-7. doc updates are part of the same change set as behavior updates; they are
+5. placeholder phrases such as "This file is part of the maintained PAX Perl
+   surface" do not count as documentation and must fail the gate
+6. tests must explain the behavior contract they validate
+7. scripts must explain their public role and invocation shape
+8. doc updates are part of the same change set as behavior updates; they are
    not deferred cleanup
+9. Developer Dashboard module style is the baseline for section density and
+   subroutine intent comments: concise, specific, and operational
+10. subroutine comments must not use boilerplate filler such as `helper`,
+   `utility`, `method`, or similar low-information labels
 
 Reference style:
 

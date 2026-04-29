@@ -53,4 +53,15 @@ When the executable is used as a shebang target, C<PAX::CLI> also accepts a
 plain Perl script path and runs that file directly as interpreter-mode
 execution.
 
+=head1 HOW TO USE
+
+Use this script as the public C<pax> executable. For normal operation call
+C<pax build> or C<pax run>. For interpreter mode, point a Perl shebang at the
+installed binary or invoke it directly with a script path.
+
+=head1 WHAT USES IT
+
+Operators invoke this file directly, standalone self-hosting tests compile it,
+and shebang-driven scripts can use it as a Perl-compatible front door.
+
 =cut

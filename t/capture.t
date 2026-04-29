@@ -75,11 +75,25 @@ done_testing;
 
 =head1 NAME
 
-t/capture.t - cover the capture behavior exercised by the PAX test suite.
+t/capture.t - regression coverage for capture engine behavior across supported execution modes
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to cover the capture behavior exercised by the PAX test suite.
+This test exercises capture engine behavior across supported execution modes. It exists so PAX changes can be checked against a
+repeatable behavioral contract instead of informal manual runs.
+
+=head1 TEST PLAN
+
+The assertions in this file cover the specific success, failure, and edge-case
+paths needed for capture engine behavior across supported execution modes. Extend this file when behavior changes in that area.
+
+=head1 HOW TO RUN
+
+  prove -lv t/capture.t
+
+=head1 WHY IT EXISTS
+
+PAX uses this test to keep capture engine behavior across supported execution modes from regressing while the compiler,
+standalone runtime, and packaging logic continue to evolve.
 
 =cut
-

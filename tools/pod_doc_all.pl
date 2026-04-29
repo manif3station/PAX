@@ -13,19 +13,39 @@ my @errors;
 
 for my $path (@perl_files) {
     my $content = _slurp($path);
+    my $pod = _pod_text($content);
     push @errors, "$path missing =head1 NAME"
         if $content !~ /^=head1 NAME\b/m;
+    push @errors, "$path uses placeholder documentation language"
+        if $pod =~ /This file is part of the maintained PAX Perl surface/
+        || $pod =~ /\bdocument the .* component within the PAX compiler, packaging, or runtime stack\b/
+        || $pod =~ /\bimplement the .* utility used by the PAX project\b/
+        || $pod =~ /\bcover the .* behavior exercised by the PAX test suite\b/
+        || $pod =~ /\bprovide the .* fixture used by the PAX test suite\b/;
     if (_is_module($path)) {
-        push @errors, "$path missing descriptive POD section"
-            if $content !~ /^=head1 (?:DESCRIPTION|INTRODUCTION|SYNOPSIS|PURPOSE)\b/m;
+        push @errors, "$path missing =head1 DESCRIPTION"
+            if $content !~ /^=head1 DESCRIPTION\b/m;
+        push @errors, "$path missing interface or manual section"
+            if $content !~ /^=head1 (?:SYNOPSIS|METHODS|FUNCTIONS|PUBLIC COMMANDS|MANUAL|ARCHITECTURE)\b/m;
+        push @errors, "$path missing enough substantive documentation sections"
+            if _head1_count($content, qw(
+                SYNOPSIS DESCRIPTION INTRODUCTION WHAT YOU GET MAIN CONCEPTS
+                METHODS FUNCTIONS PUBLIC COMMANDS MANUAL ARCHITECTURE PURPOSE
+                WHY IT EXISTS WHEN TO USE HOW TO USE WHAT USES IT EXAMPLES FAQ
+                KNOWN LIMITATIONS RELEASE GATES FILES
+            )) < 3;
     }
     elsif (_is_test($path)) {
         push @errors, "$path missing =head1 DESCRIPTION"
             if $content !~ /^=head1 DESCRIPTION\b/m;
+        push @errors, "$path missing test intent section"
+            if $content !~ /^=head1 (?:TEST PLAN|HOW TO RUN|WHY IT EXISTS)\b/m;
     }
     else {
         push @errors, "$path missing synopsis or description POD"
             if $content !~ /^=head1 (?:SYNOPSIS|DESCRIPTION|PURPOSE)\b/m;
+        push @errors, "$path missing purpose or usage documentation"
+            if $content !~ /^=head1 (?:PURPOSE|WHEN TO USE|HOW TO USE|WHAT USES IT)\b/m;
     }
 
     my @subs = _changed_named_subs($path, \%changed);
@@ -188,6 +208,25 @@ sub _is_module { $_[0] =~ /\.pm\z/ }
 # Classify a path as a Perl test file.
 sub _is_test   { $_[0] =~ m{\At/.*\.t\z} }
 
+# Return just the POD tail of a Perl file so content checks do not match code or
+# regex literals that happen to mention banned placeholder phrases.
+sub _pod_text {
+    my ($content) = @_;
+    return $1 if $content =~ /(\n(?:=pod|=head1)\b.*)\z/s;
+    return '';
+}
+
+# Count how many named =head1 sections appear in a POD block so the doc gate can
+# distinguish a real operator manual from a thin placeholder.
+sub _head1_count {
+    my ($content, @names) = @_;
+    my $count = 0;
+    for my $name (@names) {
+        $count++ if $content =~ /^\Q=head1 $name\E\b/m;
+    }
+    return $count;
+}
+
 # Read a full file into memory for lightweight structural checks.
 sub _slurp {
     my ($path) = @_;
@@ -253,3 +292,16 @@ The file-level coverage check spans the full maintained Perl surface. The
 subroutine-comment check intentionally ignores pure version-line churn and
 focuses on semantic changes in the current tree or the most recent committed
 diff.
+
+=head1 PURPOSE
+
+This tool exists to reject placeholder documentation and keep DD-style POD
+density enforceable as part of the normal gate chain.
+
+=head1 HOW TO USE
+
+Run it from the repository root, usually via C<make doc-gate>, after changing
+Perl modules, scripts, tests, or tooling. Treat failures as required work for
+the same change set, not as optional cleanup.
+
+=cut

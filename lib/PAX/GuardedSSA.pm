@@ -1,6 +1,6 @@
 package PAX::GuardedSSA;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -75,11 +75,64 @@ sub build_unit {
 
 =head1 NAME
 
-PAX::GuardedSSA - document the GuardedSSA component within the PAX compiler, packaging, or runtime stack.
+PAX::GuardedSSA - guard-aware SSA lowerer
+
+=head1 SYNOPSIS
+
+  use PAX::GuardedSSA;
+
+  my $obj = PAX::GuardedSSA->new(...);
+  my $result = $obj->build_all(...);
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to document the GuardedSSA component within the PAX compiler, packaging, or runtime stack.
+Transforms captured regions into a guarded SSA form that later native-planning stages can analyze.
+
+=head1 METHODS
+
+=head2 new, build_all, build_unit
+
+These are the public entrypoints exposed by this module's current interface.
+
+=head1 PURPOSE
+
+This module exists to keep the guard-aware SSA lowerer logic in one place so the CLI, build
+pipeline, and runtime can reuse the same behavior instead of duplicating it.
+
+=head1 WHY IT EXISTS
+
+PAX uses this module when it needs guard-aware SSA lowerer. Keeping that behavior isolated here
+makes the surrounding compiler and packaging stages easier to reason about and
+safer to evolve.
+
+=head1 WHEN TO USE
+
+Edit this file when a change affects guard-aware SSA lowerer, the data contract this module
+returns, or the conditions under which callers choose this path.
+
+=head1 HOW TO USE
+
+Load the module through the normal PAX call path, pass explicit arguments rather
+than ambient global state, and keep project-specific behavior out of this file
+so the implementation stays neutral across arbitrary Perl applications.
+
+=head1 WHAT USES IT
+
+This module is used by the PAX CLI, the build pipeline, standalone packaging,
+and the test suite paths that cover guard-aware SSA lowerer.
+
+=head1 EXAMPLES
+
+Example 1:
+
+  perl -Ilib -MPAX::GuardedSSA -e 1
+
+Confirm that the module loads from a source checkout.
+
+Example 2:
+
+  prove -lr t
+
+Run the repository test suite after changing the behavior this module owns.
 
 =cut
-

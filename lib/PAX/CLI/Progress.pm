@@ -1,6 +1,6 @@
 package PAX::CLI::Progress;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -146,3 +146,16 @@ Construct and drive one task board.
 
 Use this module when a public PAX CLI command takes long enough that operators
 need visible phase progress without losing machine-readable command output.
+
+=head1 PURPOSE
+
+This module keeps build-progress rendering separate from command parsing and
+build planning so long-running CLI work can report useful progress without
+tangling presentation logic into the compiler and packaging code.
+
+=head1 WHAT USES IT
+
+The public C<pax build> flow uses this module for the DD-style progress rundown
+shown on C<stderr>.
+
+=cut

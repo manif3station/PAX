@@ -29,11 +29,18 @@ die "bad tie" unless $value == 15;
 
 =head1 NAME
 
-t/fixtures/nasty_tie.pl - provide the nasty_tie fixture used by the PAX test suite.
+t/fixtures/nasty_tie.pl - fixture for fixture that stresses tied-variable edge cases
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to provide the nasty_tie fixture used by the PAX test suite.
+This fixture exists to provide fixture that stresses tied-variable edge cases. Tests load or execute it to reproduce a
+specific code shape that the PAX compiler, capture engine, or runtime must
+handle correctly.
+
+=head1 HOW TO USE
+
+Keep the fixture small and focused on the behavior named above. When a new test
+needs a different shape, add or change fixtures deliberately instead of turning
+this file into a grab bag.
 
 =cut
-

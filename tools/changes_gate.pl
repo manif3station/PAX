@@ -41,11 +41,34 @@ print "changes-gate: top Changes entry matches version $version\n";
 
 =head1 NAME
 
-changes_gate.pl - implement the changes gate release or maintenance utility used by the PAX project.
+changes_gate.pl - changelog gate
+
+=head1 SYNOPSIS
+
+  perl tools/changes_gate.pl
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to implement the changes gate release or maintenance utility used by the PAX project.
+Checks that the top Changes entry describes a real release checkpoint instead of placeholder churn.
+
+=head1 PURPOSE
+
+This tool exists to keep one release or validation responsibility scripted and
+repeatable instead of relying on manual edits during the PAX gate flow.
+
+=head1 WHEN TO USE
+
+Run it when working on the release process, distribution metadata, or the gate
+that this tool enforces.
+
+=head1 HOW TO USE
+
+Invoke it from the repository root so it sees the expected files and git state.
+Keep its checks deterministic and tied to project rules rather than local shell
+assumptions.
+
+=head1 WHAT USES IT
+
+The Makefile gate targets and release workflow call this script directly.
 
 =cut
-

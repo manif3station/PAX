@@ -71,3 +71,16 @@ It verifies that C<README.md> stays product-focused and that C<lib/PAX.pm>
 contains the required distribution-level POD sections. It then runs
 C<POD-DOC-ALL> so file-level POD is enforced across the full maintained Perl
 surface and changed-subroutine comments stay current where behavior changed.
+
+=head1 PURPOSE
+
+This tool keeps the top-level documentation contract executable. It is the gate
+that stops product docs and module docs from drifting separately.
+
+=head1 HOW TO USE
+
+Run it from the repository root, normally through C<make doc-gate>, after any
+change that affects operator workflows, module interfaces, or documentation
+structure.
+
+=cut

@@ -1,6 +1,6 @@
 package PAX::Differential;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -66,6 +66,11 @@ __END__
 
 PAX::Differential - compare stock Perl execution with PAX capture behavior
 
+=head1 SYNOPSIS
+
+  my $diff = PAX::Differential->new;
+  my $report = $diff->compare_capture('script.pl');
+
 =head1 DESCRIPTION
 
 C<PAX::Differential> is an internal validation helper. It keeps differential
@@ -83,5 +88,11 @@ for compatibility with older tests but no longer drives capture through the CLI.
 
 Runs the entrypoint with stock Perl, captures it through C<PAX::Capture>, and
 returns comparable exit/status metadata.
+
+=head1 PURPOSE
+
+This module exists to make stock-Perl versus PAX capture differences explicit
+when a behavior mismatch appears, instead of forcing contributors to debug the
+two paths manually from scratch.
 
 =cut

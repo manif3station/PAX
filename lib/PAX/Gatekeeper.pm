@@ -1,6 +1,6 @@
 package PAX::Gatekeeper;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -413,6 +413,11 @@ __END__
 
 PAX::Gatekeeper - release and SOW validation checks for PAX
 
+=head1 SYNOPSIS
+
+  my $gatekeeper = PAX::Gatekeeper->new(root => '.');
+  my $report = $gatekeeper->sow01_report;
+
 =head1 DESCRIPTION
 
 C<PAX::Gatekeeper> provides internal validation checks used by development and
@@ -430,5 +435,11 @@ Creates a gatekeeper rooted at a repository path.
 Returns the historical SOW validation report. The CLI-surface check now verifies
 that the public command runner exposes only C<build> and C<run>, with lower-level
 diagnostics retained as internal Perl APIs.
+
+=head1 PURPOSE
+
+This module keeps historical SOW and release-policy checks callable from Perl
+so validation can be reused by gates and tests without reopening the public CLI
+surface.
 
 =cut

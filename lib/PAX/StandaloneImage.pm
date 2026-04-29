@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -2662,6 +2662,15 @@ __END__
 
 PAX::StandaloneImage - build standalone PAX executable images
 
+=head1 SYNOPSIS
+
+  my $image = PAX::StandaloneImage->new;
+  my $result = $image->build(
+      entrypoint => 'bin/app.pl',
+      lib_dirs   => ['lib'],
+      output     => '/tmp/app',
+  );
+
 =head1 DESCRIPTION
 
 This module packages an entrypoint, compiled code units, runtime helpers,
@@ -2684,5 +2693,17 @@ cpanfile inputs, assets, output path, and runtime mode.
 =head2 load
 
 Loads a previously written standalone image manifest by name.
+
+=head1 PURPOSE
+
+This module owns the single-binary packaging path. It is where source planning,
+runtime payload selection, launcher generation, and manifest writing come
+together.
+
+=head1 HOW TO USE
+
+Build through this module when a workflow needs one standalone executable. Keep
+project-neutral packaging rules here rather than scattering them through the
+CLI or application-specific fixtures.
 
 =cut

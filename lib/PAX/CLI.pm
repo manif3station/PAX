@@ -1,6 +1,6 @@
 package PAX::CLI;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -1522,6 +1522,12 @@ __END__
 
 PAX::CLI - public PAX command facade
 
+=head1 SYNOPSIS
+
+  use PAX::CLI;
+
+  exit PAX::CLI->run(@ARGV);
+
 =head1 DESCRIPTION
 
 C<PAX::CLI> implements the SOW-03 public command surface for C<bin/pax>. The
@@ -1540,5 +1546,16 @@ executable through C<PAX::StandaloneImage>.
 
 Uses the same build configuration path as C<build>, then executes the resulting
 standalone binary with arguments after C<-->.
+
+=head1 PURPOSE
+
+This module keeps the public command contract, option parsing, interpreter
+mode, and user-facing error handling in one place so C<bin/pax> can stay thin.
+
+=head1 HOW TO USE
+
+Route all public CLI execution through C<run>. Keep internal diagnostics and
+legacy helpers private to the module layer instead of reopening the public
+command surface.
 
 =cut

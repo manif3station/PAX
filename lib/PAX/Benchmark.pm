@@ -1,6 +1,6 @@
 package PAX::Benchmark;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -171,6 +171,11 @@ __END__
 
 PAX::Benchmark - internal benchmark helpers for PAX validation
 
+=head1 SYNOPSIS
+
+  my $bench = PAX::Benchmark->new(iterations => 5);
+  my $result = $bench->run_runtime_benchmark(entrypoint => 'bin/app.pl');
+
 =head1 DESCRIPTION
 
 This module measures capture, reference runtime, and native-runtime behavior for
@@ -191,5 +196,11 @@ Runs C<PAX::Capture> directly and records timing plus process memory fields.
 
 Compares stock Perl timing, capture timing, and native execution timing where a
 native region can be emitted.
+
+=head1 PURPOSE
+
+This module exists to keep performance comparisons scripted and reproducible so
+PAX can measure where a build is faster, slower, or functionally different from
+stock Perl.
 
 =cut

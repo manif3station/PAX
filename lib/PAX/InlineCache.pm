@@ -1,6 +1,6 @@
 package PAX::InlineCache;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -101,11 +101,64 @@ sub report {
 
 =head1 NAME
 
-PAX::InlineCache - document the InlineCache component within the PAX compiler, packaging, or runtime stack.
+PAX::InlineCache - inline-cache state tracker
+
+=head1 SYNOPSIS
+
+  use PAX::InlineCache;
+
+  my $obj = PAX::InlineCache->new(...);
+  my $result = $obj->lookup(...);
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to document the InlineCache component within the PAX compiler, packaging, or runtime stack.
+Tracks polymorphic call-site cache state so repeated dispatch patterns can stay cheap until they become too wide.
+
+=head1 METHODS
+
+=head2 new, lookup, update, report
+
+These are the public entrypoints exposed by this module's current interface.
+
+=head1 PURPOSE
+
+This module exists to keep the inline-cache state tracker logic in one place so the CLI, build
+pipeline, and runtime can reuse the same behavior instead of duplicating it.
+
+=head1 WHY IT EXISTS
+
+PAX uses this module when it needs inline-cache state tracker. Keeping that behavior isolated here
+makes the surrounding compiler and packaging stages easier to reason about and
+safer to evolve.
+
+=head1 WHEN TO USE
+
+Edit this file when a change affects inline-cache state tracker, the data contract this module
+returns, or the conditions under which callers choose this path.
+
+=head1 HOW TO USE
+
+Load the module through the normal PAX call path, pass explicit arguments rather
+than ambient global state, and keep project-specific behavior out of this file
+so the implementation stays neutral across arbitrary Perl applications.
+
+=head1 WHAT USES IT
+
+This module is used by the PAX CLI, the build pipeline, standalone packaging,
+and the test suite paths that cover inline-cache state tracker.
+
+=head1 EXAMPLES
+
+Example 1:
+
+  perl -Ilib -MPAX::InlineCache -e 1
+
+Confirm that the module loads from a source checkout.
+
+Example 2:
+
+  prove -lr t
+
+Run the repository test suite after changing the behavior this module owns.
 
 =cut
-

@@ -100,3 +100,12 @@ is($override_build->{image}{entrypoint}, "$FindBin::Bin/fixtures/app_entry.pl", 
 
 remove_tree($root) if -d $root;
 done_testing;
+
+=head1 TEST PLAN
+
+This test covers named app-image metadata, launcher fallback behavior, embedded
+asset extraction, and module-driven app-image builds.
+
+=head1 HOW TO RUN
+
+  prove -lv t/app_image.t

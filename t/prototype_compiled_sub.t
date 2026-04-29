@@ -48,11 +48,25 @@ done_testing;
 
 =head1 NAME
 
-t/prototype_compiled_sub.t - cover the prototype compiled sub behavior exercised by the PAX test suite.
+t/prototype_compiled_sub.t - regression coverage for prototype-aware compiled subroutine handling
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to cover the prototype compiled sub behavior exercised by the PAX test suite.
+This test exercises prototype-aware compiled subroutine handling. It exists so PAX changes can be checked against a
+repeatable behavioral contract instead of informal manual runs.
+
+=head1 TEST PLAN
+
+The assertions in this file cover the specific success, failure, and edge-case
+paths needed for prototype-aware compiled subroutine handling. Extend this file when behavior changes in that area.
+
+=head1 HOW TO RUN
+
+  prove -lv t/prototype_compiled_sub.t
+
+=head1 WHY IT EXISTS
+
+PAX uses this test to keep prototype-aware compiled subroutine handling from regressing while the compiler,
+standalone runtime, and packaging logic continue to evolve.
 
 =cut
-

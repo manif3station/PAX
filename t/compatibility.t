@@ -27,11 +27,25 @@ done_testing;
 
 =head1 NAME
 
-t/compatibility.t - cover the compatibility behavior exercised by the PAX test suite.
+t/compatibility.t - regression coverage for compatibility comparison reporting and mismatch explanation
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to cover the compatibility behavior exercised by the PAX test suite.
+This test exercises compatibility comparison reporting and mismatch explanation. It exists so PAX changes can be checked against a
+repeatable behavioral contract instead of informal manual runs.
+
+=head1 TEST PLAN
+
+The assertions in this file cover the specific success, failure, and edge-case
+paths needed for compatibility comparison reporting and mismatch explanation. Extend this file when behavior changes in that area.
+
+=head1 HOW TO RUN
+
+  prove -lv t/compatibility.t
+
+=head1 WHY IT EXISTS
+
+PAX uses this test to keep compatibility comparison reporting and mismatch explanation from regressing while the compiler,
+standalone runtime, and packaging logic continue to evolve.
 
 =cut
-

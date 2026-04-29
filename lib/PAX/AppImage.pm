@@ -1,6 +1,6 @@
 package PAX::AppImage;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -11,6 +11,11 @@ use File::Path qw(make_path);
 use File::Spec;
 use JSON::PP qw(decode_json);
 
+# new(%args)
+# Constructs the app-image manager rooted at the directory where named app
+# images should be written and reloaded later.
+# Input: optional root path.
+# Output: PAX::AppImage object.
 sub new {
     my ($class, %args) = @_;
     return bless {
@@ -18,6 +23,11 @@ sub new {
     }, $class;
 }
 
+# build(%args)
+# Builds one persistent app-image directory, discovers preload modules and
+# assets, writes image metadata, and attempts to compile the C launcher.
+# Input: entrypoint, optional name, lib dirs, assets, and asset dirs.
+# Output: hash reference describing the built image and config path.
 sub build {
     my ($self, %args) = @_;
     my $entrypoint = $args{entrypoint} // die 'entrypoint required';
@@ -59,6 +69,10 @@ sub build {
     };
 }
 
+# load(%args)
+# Loads the saved image metadata for one previously built app image.
+# Input: image name.
+# Output: decoded image configuration hash reference.
 sub load {
     my ($self, %args) = @_;
     my $name = $args{name} // die 'name required';
@@ -68,11 +82,21 @@ sub load {
     return decode_json(<$fh>);
 }
 
+# path_for($name)
+# Returns the metadata file path for a named app image under the configured
+# app-image root.
+# Input: app image name.
+# Output: image.json path string.
 sub path_for {
     my ($self, $name) = @_;
     return File::Spec->catfile($self->{root}, $name, 'image.json');
 }
 
+# _default_name($entrypoint)
+# Derives a launcher-safe default image name from the entrypoint filename when
+# the caller does not provide an explicit application name.
+# Input: entrypoint path.
+# Output: sanitized image name.
 sub _default_name {
     my ($entrypoint) = @_;
     my ($vol, $dir, $file) = File::Spec->splitpath($entrypoint);
@@ -80,6 +104,11 @@ sub _default_name {
     return $file || 'pax-app';
 }
 
+# _discover_preload_modules($entrypoint, $lib_dirs)
+# Scans the entrypoint and declared library roots for static use/require
+# statements so the app server can preload stable dependencies.
+# Input: entrypoint path and library roots.
+# Output: array reference of module names.
 sub _discover_preload_modules {
     my ($entrypoint, $lib_dirs) = @_;
     my %seen;
@@ -96,6 +125,11 @@ sub _discover_preload_modules {
     return [sort keys %seen];
 }
 
+# _perl_files($lib_dirs)
+# Enumerates Perl source files beneath the declared library roots so preload
+# discovery and source hashing see the same file set.
+# Input: library-root array reference.
+# Output: list of Perl file paths.
 sub _perl_files {
     my ($lib_dirs) = @_;
     my @files;
@@ -113,6 +147,11 @@ sub _perl_files {
     return @files;
 }
 
+# _source_hash($entrypoint, $lib_dirs, $assets)
+# Computes the invalidation hash for the app image from source files and
+# embedded asset digests.
+# Input: entrypoint path, library roots, and asset manifest entries.
+# Output: SHA-256 digest string.
 sub _source_hash {
     my ($entrypoint, $lib_dirs, $assets) = @_;
     my $sha = Digest::SHA->new(256);
@@ -128,6 +167,11 @@ sub _source_hash {
     return $sha->hexdigest;
 }
 
+# _compile_launcher($image)
+# Writes and compiles the small C launcher that fronts an app image and falls
+# back to perl execution when the launcher cannot be built.
+# Input: image metadata hash reference.
+# Output: hash reference with build status and optional reason.
 sub _compile_launcher {
     my ($image) = @_;
     my $source_path = "$image->{launcher_path}.c";
@@ -142,6 +186,11 @@ sub _compile_launcher {
         : { status => 'not_built', reason => 'C launcher compile failed' };
 }
 
+# _launcher_source($image)
+# Renders the C source for the app-image launcher, including embedded asset
+# extraction and Unix-socket request forwarding.
+# Input: image metadata hash reference.
+# Output: C source string.
 sub _launcher_source {
     my ($image) = @_;
     my $socket = _c_string($image->{socket_path});
@@ -258,6 +307,11 @@ int main(int argc, char **argv) {
 C
 }
 
+# _asset_manifest($assets, $asset_dirs)
+# Normalizes explicit asset files and asset directories into one manifest with
+# logical paths, digests, and inline payload bytes.
+# Input: asset-file list and asset-directory list.
+# Output: array reference of asset manifest entries.
 sub _asset_manifest {
     my ($assets, $asset_dirs) = @_;
     my @paths = map { [$_, _logical_name($_)] } @$assets;
@@ -292,6 +346,10 @@ sub _asset_manifest {
     return \@manifest;
 }
 
+# _asset_bytes($assets)
+# Sums embedded asset payload sizes for reporting in the image manifest.
+# Input: asset manifest array reference.
+# Output: total byte count.
 sub _asset_bytes {
     my ($assets) = @_;
     my $total = 0;
@@ -299,6 +357,11 @@ sub _asset_bytes {
     return $total;
 }
 
+# _asset_table_c($assets)
+# Emits the C data table that embeds asset payload bytes into the launcher
+# source file.
+# Input: asset manifest array reference.
+# Output: C source fragment string.
 sub _asset_table_c {
     my ($assets) = @_;
     return "static const unsigned long pax_asset_count = 0;\nstatic const struct pax_asset pax_assets[] = { {0, 0, 0} };\n" if !@$assets;
@@ -318,18 +381,32 @@ sub _asset_table_c {
     return join '', @chunks;
 }
 
+# _logical_name($path)
+# Returns the trailing filename component used as the logical name for a direct
+# asset path.
+# Input: file path.
+# Output: filename string.
 sub _logical_name {
     my ($path) = @_;
     my ($vol, $dir, $file) = File::Spec->splitpath($path);
     return $file;
 }
 
+# _safe_logical_path($path)
+# Strips unsafe path segments from an asset logical path so embedded assets
+# cannot escape the extraction root.
+# Input: logical asset path.
+# Output: normalized forward-slash path.
 sub _safe_logical_path {
     my ($path) = @_;
     my @parts = grep { length && $_ ne '.' && $_ ne '..' } File::Spec->splitdir($path);
     return join '/', @parts;
 }
 
+# _c_string($value)
+# Escapes a string for emission into generated C source.
+# Input: Perl string.
+# Output: quoted C string literal.
 sub _c_string {
     my ($value) = @_;
     $value =~ s/\\/\\\\/g;
@@ -337,6 +414,10 @@ sub _c_string {
     return '"' . $value . '"';
 }
 
+# _write_json($path, $data)
+# Writes canonical JSON metadata for one image manifest.
+# Input: output path and Perl data structure.
+# Output: none.
 sub _write_json {
     my ($path, $data) = @_;
     open my $fh, '>', $path or die "cannot write $path: $!";
@@ -344,6 +425,11 @@ sub _write_json {
     close $fh;
 }
 
+# _slurp($path)
+# Reads a text file completely when source scanning needs the original Perl
+# text.
+# Input: file path.
+# Output: text string, or an empty string when the file cannot be read.
 sub _slurp {
     my ($path) = @_;
     open my $fh, '<', $path or return '';
@@ -351,6 +437,10 @@ sub _slurp {
     return <$fh> // '';
 }
 
+# _slurp_bytes($path)
+# Reads a binary file completely when embedding launcher asset payloads.
+# Input: file path.
+# Output: byte string, or an empty string when the file cannot be read.
 sub _slurp_bytes {
     my ($path) = @_;
     open my $fh, '<:raw', $path or return '';
@@ -358,6 +448,11 @@ sub _slurp_bytes {
     return <$fh> // '';
 }
 
+# _which($cmd)
+# Resolves an executable name through PATH for the launcher compile toolchain
+# lookup.
+# Input: command name.
+# Output: executable path or undef.
 sub _which {
     my ($cmd) = @_;
     for my $dir (split /:/, $ENV{PATH} // '') {
@@ -373,11 +468,84 @@ sub _which {
 
 =head1 NAME
 
-PAX::AppImage - document the AppImage component within the PAX compiler, packaging, or runtime stack.
+PAX::AppImage - application image builder and launcher packager
+
+=head1 SYNOPSIS
+
+  use PAX::AppImage;
+
+  my $images = PAX::AppImage->new(root => '.pax/apps');
+  my $built = $images->build(
+      entrypoint => 'bin/app.pl',
+      name       => 'my-app',
+      lib_dirs   => ['lib'],
+      asset_dirs => ['share'],
+  );
+
+  my $image = $images->load(name => 'my-app');
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to document the AppImage component within the PAX compiler, packaging, or runtime stack.
+This module builds the persistent app-image layout that PAX uses for packaged
+applications which keep a named runtime directory instead of collapsing into a
+single standalone binary.
+
+An app image contains the normalized image metadata, a compiled launcher, the
+Unix-socket location used by the app server, preload-module hints, and the
+embedded asset payload list. The launcher it generates can either talk to the
+running app server or fall back to launching the Perl entrypoint directly when
+the server socket is not available.
+
+=head1 METHODS
+
+=head2 new, build, load, path_for
+
+Use C<new> to choose the root that stores named app images, C<build> to write
+or refresh one image, C<load> to inspect saved metadata, and C<path_for> to
+locate the image manifest on disk.
+
+=head1 PURPOSE
+
+This module keeps the app-image model in one place so the CLI, packaging code,
+and runtime server agree on how named packaged applications are laid out.
+
+=head1 WHY IT EXISTS
+
+PAX supports both single-binary standalone packaging and named application
+images. The application-image path needs launcher generation, embedded asset
+tracking, and preload discovery that do not belong in the generic CLI layer.
+
+=head1 WHEN TO USE
+
+Edit this file when a change affects named app-image layout, launcher source
+generation, preload discovery, embedded asset packaging, or the metadata
+contract written to C<image.json>.
+
+=head1 HOW TO USE
+
+Call C<build> with an entrypoint, optional application name, and any library or
+asset roots that should travel with the packaged application. The resulting
+metadata can then be loaded again by name through C<load> or served through the
+app-server runtime.
+
+=head1 WHAT USES IT
+
+This module is used by the app-image build commands, the packaged app server,
+and the acceptance tests that cover named packaged applications with embedded
+assets.
+
+=head1 EXAMPLES
+
+Example 1:
+
+  perl -Ilib -MPAX::AppImage -e 'PAX::AppImage->new(root => q(.pax/apps))'
+
+Load the module and construct an image manager from a source checkout.
+
+Example 2:
+
+  prove -lv t/app_image.t
+
+Run the focused regression coverage for named app-image packaging.
 
 =cut
-

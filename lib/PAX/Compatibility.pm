@@ -1,6 +1,6 @@
 package PAX::Compatibility;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -80,11 +80,64 @@ sub _feature_policy {
 
 =head1 NAME
 
-PAX::Compatibility - document the Compatibility component within the PAX compiler, packaging, or runtime stack.
+PAX::Compatibility - compatibility comparator for native-versus-Perl behavior
+
+=head1 SYNOPSIS
+
+  use PAX::Compatibility;
+
+  my $obj = PAX::Compatibility->new(...);
+  my $result = $obj->report(...);
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to document the Compatibility component within the PAX compiler, packaging, or runtime stack.
+Runs side-by-side comparisons between stock Perl execution and PAX-managed execution so command-level regressions can be explained instead of guessed at.
+
+=head1 METHODS
+
+=head2 new, report
+
+These are the public entrypoints exposed by this module's current interface.
+
+=head1 PURPOSE
+
+This module exists to keep the compatibility comparator for native-versus-Perl behavior logic in one place so the CLI, build
+pipeline, and runtime can reuse the same behavior instead of duplicating it.
+
+=head1 WHY IT EXISTS
+
+PAX uses this module when it needs compatibility comparator for native-versus-Perl behavior. Keeping that behavior isolated here
+makes the surrounding compiler and packaging stages easier to reason about and
+safer to evolve.
+
+=head1 WHEN TO USE
+
+Edit this file when a change affects compatibility comparator for native-versus-Perl behavior, the data contract this module
+returns, or the conditions under which callers choose this path.
+
+=head1 HOW TO USE
+
+Load the module through the normal PAX call path, pass explicit arguments rather
+than ambient global state, and keep project-specific behavior out of this file
+so the implementation stays neutral across arbitrary Perl applications.
+
+=head1 WHAT USES IT
+
+This module is used by the PAX CLI, the build pipeline, standalone packaging,
+and the test suite paths that cover compatibility comparator for native-versus-Perl behavior.
+
+=head1 EXAMPLES
+
+Example 1:
+
+  perl -Ilib -MPAX::Compatibility -e 1
+
+Confirm that the module loads from a source checkout.
+
+Example 2:
+
+  prove -lr t
+
+Run the repository test suite after changing the behavior this module owns.
 
 =cut
-

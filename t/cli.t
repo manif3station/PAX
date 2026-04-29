@@ -258,3 +258,12 @@ like($shebang_output, qr/^\Qscript=$shebang_script\E$/m, 'shebang execution sets
 like($shebang_output, qr/^args=alpha\|beta$/m, 'shebang execution preserves @ARGV for the script');
 
 done_testing;
+
+=head1 TEST PLAN
+
+This test covers the public C<build> and C<run> command surface, self-hosting,
+interpreter mode, inline Perl execution flags, and progress-rundown behavior.
+
+=head1 HOW TO RUN
+
+  prove -lv t/cli.t

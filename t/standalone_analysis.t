@@ -84,3 +84,12 @@ ok($modules{'Example::Transitive::Leaf'}, 'dependency analysis includes transiti
 is($modules{'Example::Transitive::Leaf'}{class}, 'bundled_pure_perl', 'transitive dependency is packaged as bundled pure-Perl runtime payload');
 
 done_testing;
+
+=head1 TEST PLAN
+
+This test checks how standalone analysis walks direct and transitive module
+dependencies and how it classifies bundled pure-Perl runtime payloads.
+
+=head1 HOW TO RUN
+
+  prove -lv t/standalone_analysis.t

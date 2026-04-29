@@ -50,11 +50,25 @@ done_testing;
 
 =head1 NAME
 
-t/dispatcher.t - cover the dispatcher behavior exercised by the PAX test suite.
+t/dispatcher.t - regression coverage for runtime dispatch behavior between native and fallback paths
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to cover the dispatcher behavior exercised by the PAX test suite.
+This test exercises runtime dispatch behavior between native and fallback paths. It exists so PAX changes can be checked against a
+repeatable behavioral contract instead of informal manual runs.
+
+=head1 TEST PLAN
+
+The assertions in this file cover the specific success, failure, and edge-case
+paths needed for runtime dispatch behavior between native and fallback paths. Extend this file when behavior changes in that area.
+
+=head1 HOW TO RUN
+
+  prove -lv t/dispatcher.t
+
+=head1 WHY IT EXISTS
+
+PAX uses this test to keep runtime dispatch behavior between native and fallback paths from regressing while the compiler,
+standalone runtime, and packaging logic continue to evolve.
 
 =cut
-

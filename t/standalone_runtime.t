@@ -197,11 +197,25 @@ done_testing;
 
 =head1 NAME
 
-t/standalone_runtime.t - cover the standalone runtime behavior exercised by the PAX test suite.
+t/standalone_runtime.t - regression coverage for standalone runtime dispatch, helper routing, and bootstrap behavior
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to cover the standalone runtime behavior exercised by the PAX test suite.
+This test exercises standalone runtime dispatch, helper routing, and bootstrap behavior. It exists so PAX changes can be checked against a
+repeatable behavioral contract instead of informal manual runs.
+
+=head1 TEST PLAN
+
+The assertions in this file cover the specific success, failure, and edge-case
+paths needed for standalone runtime dispatch, helper routing, and bootstrap behavior. Extend this file when behavior changes in that area.
+
+=head1 HOW TO RUN
+
+  prove -lv t/standalone_runtime.t
+
+=head1 WHY IT EXISTS
+
+PAX uses this test to keep standalone runtime dispatch, helper routing, and bootstrap behavior from regressing while the compiler,
+standalone runtime, and packaging logic continue to evolve.
 
 =cut
-

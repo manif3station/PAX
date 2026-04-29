@@ -1,6 +1,6 @@
 package PAX::StandaloneDispatch;
 
-our $VERSION = '0.024';
+our $VERSION = '0.025';
 
 use strict;
 use warnings;
@@ -209,11 +209,64 @@ print defined $value ? $value : q{};
 
 =head1 NAME
 
-PAX::StandaloneDispatch - document the StandaloneDispatch component within the PAX compiler, packaging, or runtime stack.
+PAX::StandaloneDispatch - standalone command and region dispatch helper
+
+=head1 SYNOPSIS
+
+  use PAX::StandaloneDispatch;
+
+  my $obj = PAX::StandaloneDispatch->new(...);
+  my $result = $obj->run_i64(...);
 
 =head1 DESCRIPTION
 
-This file is part of the maintained PAX Perl surface and exists to document the StandaloneDispatch component within the PAX compiler, packaging, or runtime stack.
+Holds the dispatch information that standalone binaries use to route built-in commands, helpers, and native regions.
+
+=head1 METHODS
+
+=head2 new, run_i64
+
+These are the public entrypoints exposed by this module's current interface.
+
+=head1 PURPOSE
+
+This module exists to keep the standalone command and region dispatch helper logic in one place so the CLI, build
+pipeline, and runtime can reuse the same behavior instead of duplicating it.
+
+=head1 WHY IT EXISTS
+
+PAX uses this module when it needs standalone command and region dispatch helper. Keeping that behavior isolated here
+makes the surrounding compiler and packaging stages easier to reason about and
+safer to evolve.
+
+=head1 WHEN TO USE
+
+Edit this file when a change affects standalone command and region dispatch helper, the data contract this module
+returns, or the conditions under which callers choose this path.
+
+=head1 HOW TO USE
+
+Load the module through the normal PAX call path, pass explicit arguments rather
+than ambient global state, and keep project-specific behavior out of this file
+so the implementation stays neutral across arbitrary Perl applications.
+
+=head1 WHAT USES IT
+
+This module is used by the PAX CLI, the build pipeline, standalone packaging,
+and the test suite paths that cover standalone command and region dispatch helper.
+
+=head1 EXAMPLES
+
+Example 1:
+
+  perl -Ilib -MPAX::StandaloneDispatch -e 1
+
+Confirm that the module loads from a source checkout.
+
+Example 2:
+
+  prove -lr t
+
+Run the repository test suite after changing the behavior this module owns.
 
 =cut
-
