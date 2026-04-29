@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.016';
+our $VERSION = '0.018';
 
 1;
 
@@ -175,6 +175,28 @@ The canonical usage is:
   pax build ...
   pax run ...
 
+Common CLI switches include:
+
+=over 4
+
+=item * C<--paxfile>, C<--no-paxfile>
+
+=item * C<-I>, to prepend Perl library directories for inline builds/runs
+
+=item * C<-M>, to load and import Perl modules for inline builds/runs
+
+=item * C<-e>, to synthesize an entrypoint from inline Perl code
+
+=item * C<--lib>, C<--source-root>, C<--cpanfile>, C<--asset>, C<--asset-dir>
+
+=item * C<--output> / C<-o>
+
+=item * C<--runtime-mode>
+
+=item * C<--compact>
+
+=back
+
 Internal diagnostics and validation modules remain available as Perl APIs for
 the test suite and release gates. They are not public C<bin/pax> subcommands.
 
@@ -281,6 +303,22 @@ When the CLI provides the required shape, C<paxfile.yml> is optional:
 That keeps one-off builds and self-hosting neutral even inside repositories
 that ship their own C<paxfile.yml>. Extra roots, assets, and CPAN policy files
 must be declared explicitly on the CLI in that mode.
+
+Inline entrypoints use the same public surface. C<-I> adds Perl library roots,
+C<-M> loads/imports modules before execution, and C<-e> supplies the
+entrypoint code directly:
+
+  perl bin/pax build \
+    -I lib \
+    -MDateTime \
+    -e 'print DateTime->now'
+
+C<pax run> accepts the same switches:
+
+  perl bin/pax run \
+    -I lib \
+    -MDateTime \
+    -e 'print DateTime->now'
 
 =head2 Self Compile
 

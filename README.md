@@ -151,6 +151,9 @@ Common options:
 
 - `--paxfile`: read defaults from a manifest path; default is `paxfile.yml`.
 - `--no-paxfile`: ignore manifest defaults.
+- `-I`: prepend a Perl library directory for inline builds/runs; repeatable.
+- `-M`: load and import a Perl module for inline builds/runs; repeatable.
+- `-e`: synthesize the entrypoint from inline Perl code.
 - `--name`: artifact name.
 - `--lib`: application library path; repeatable.
 - `--source-root`: source tree to scan/package; repeatable.
@@ -251,6 +254,26 @@ perl bin/pax build -o ./build/example-app bin/example-app
 That keeps one-off builds and self-hosting neutral even inside repositories
 that ship their own `paxfile.yml`. Extra roots, assets, and CPAN policy files
 must be declared explicitly on the CLI in that mode.
+
+Inline entrypoints use the same public surface. `-I` adds Perl library roots,
+`-M` loads and imports modules before execution, and `-e` supplies the
+entrypoint code directly:
+
+```bash
+perl bin/pax build \
+  -I lib \
+  -MDateTime \
+  -e 'print DateTime->now'
+```
+
+`pax run` accepts the same switches:
+
+```bash
+perl bin/pax run \
+  -I lib \
+  -MDateTime \
+  -e 'print DateTime->now'
+```
 
 ### Self Compile
 

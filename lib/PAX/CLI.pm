@@ -1,10 +1,11 @@
 package PAX::CLI;
 
-our $VERSION = '0.016';
+our $VERSION = '0.018';
 
 use strict;
 use warnings;
 use JSON::PP qw(encode_json);
+use File::Temp ();
 use PAX::Capture;
 use PAX::CLI::Progress;
 use PAX::Manifest;
@@ -964,10 +965,37 @@ sub _standalone_build_config {
         $app_name, $app_namespace, $app_entrypoint_env, $app_entrypoint_fallback, $app_command
     ) = (undef, 'paxfile.yml', 0, 1, undef, undef, undef, undef, undef, undef, undef);
     my $entrypoint_from_cli = 0;
+    my $inline_eval_from_cli = 0;
     my $paxfile_from_cli = 0;
-    my (@libs, @assets, @asset_dirs, @source_roots, @cpanfiles, @override_fields);
+    my (@libs, @assets, @asset_dirs, @source_roots, @cpanfiles, @override_fields, @perl_libs, @perl_modules, @inline_eval_parts);
     while (@argv) {
         my $arg = shift @argv;
+        if ($arg eq '-I') {
+            push @perl_libs, shift @argv // return _missing('-I');
+            push @override_fields, 'perl_libs';
+            next;
+        }
+        if ($arg =~ /\A-I(.+)\z/) {
+            push @perl_libs, $1;
+            push @override_fields, 'perl_libs';
+            next;
+        }
+        if ($arg eq '-M') {
+            push @perl_modules, shift @argv // return _missing('-M');
+            push @override_fields, 'perl_modules';
+            next;
+        }
+        if ($arg =~ /\A-M(.+)\z/) {
+            push @perl_modules, $1;
+            push @override_fields, 'perl_modules';
+            next;
+        }
+        if ($arg eq '-e') {
+            push @inline_eval_parts, shift @argv // return _missing('-e');
+            $inline_eval_from_cli = 1;
+            push @override_fields, 'inline_eval';
+            next;
+        }
         if ($arg eq '--name') {
             $name = shift @argv // return _missing('--name');
             push @override_fields, 'name';
@@ -1057,12 +1085,16 @@ sub _standalone_build_config {
     }
 
     my $cfg = $no_paxfile ? {} : PAX::Paxfile->load_optional($paxfile);
-    $entrypoint //= $cfg->{entrypoint};
-    if (!defined $entrypoint) {
+    if (defined $entrypoint && @inline_eval_parts) {
+        print STDERR "standalone-build cannot accept both an entrypoint and -e\n";
+        return 2;
+    }
+    $entrypoint //= $cfg->{entrypoint} if !@inline_eval_parts;
+    if (!defined $entrypoint && !@inline_eval_parts) {
         print STDERR "standalone-build requires a Perl entrypoint or paxfile.yml entrypoint\n";
         return 2;
     }
-    my $use_paxfile_defaults = $entrypoint_from_cli ? $paxfile_from_cli : 1;
+    my $use_paxfile_defaults = ($entrypoint_from_cli || $inline_eval_from_cli) ? $paxfile_from_cli : 1;
     if ($use_paxfile_defaults) {
         $name //= $cfg->{name};
         @libs = @{ $cfg->{libs} // [] } if !@libs;
@@ -1085,6 +1117,7 @@ sub _standalone_build_config {
         no_paxfile => $no_paxfile,
         pretty => $pretty,
         entrypoint => $entrypoint,
+        inline_eval => @inline_eval_parts ? join("\n", @inline_eval_parts) : undef,
         output => $output,
         runtime_mode => $runtime_mode,
         app_name => $app_name,
@@ -1097,6 +1130,8 @@ sub _standalone_build_config {
         assets => \@assets,
         asset_dirs => \@asset_dirs,
         cpanfiles => \@cpanfiles,
+        perl_libs => \@perl_libs,
+        perl_modules => \@perl_modules,
         override_fields => [ sort @override_fields ],
         paxfile_applied => $no_paxfile ? 0 : (($use_paxfile_defaults && -f $paxfile) ? 1 : 0),
     };
@@ -1114,30 +1149,84 @@ sub _build_standalone {
 sub _standalone_build_from_config {
     my ($class, $cfg) = @_;
     my $progress = $class->_standalone_build_progress;
-    my $result = PAX::StandaloneImage->new->build(
-        name => $cfg->{name},
-        entrypoint => $cfg->{entrypoint},
-        lib_dirs => $cfg->{libs},
-        source_roots => $cfg->{source_roots},
-        assets => $cfg->{assets},
-        asset_dirs => $cfg->{asset_dirs},
-        cpanfiles => $cfg->{cpanfiles},
-        output_path => $cfg->{output},
-        runtime_mode => $cfg->{runtime_mode},
-        app_name => $cfg->{app_name},
-        app_namespace => $cfg->{app_namespace},
-        app_entrypoint_env => $cfg->{app_entrypoint_env},
-        app_entrypoint_fallback => $cfg->{app_entrypoint_fallback},
-        app_command => $cfg->{app_command},
-        paxfile_applied => $cfg->{paxfile_applied},
-        override_fields => $cfg->{override_fields},
-        progress => $progress ? $progress->callback : undef,
-    );
+    my ($entrypoint, $cleanup_path) = $class->_standalone_materialize_entrypoint($cfg);
+    my @lib_dirs = (@{ $cfg->{perl_libs} // [] }, @{ $cfg->{libs} // [] });
+    my $result = eval {
+        PAX::StandaloneImage->new->build(
+            name => $cfg->{name},
+            entrypoint => $entrypoint,
+            lib_dirs => \@lib_dirs,
+            source_roots => $cfg->{source_roots},
+            assets => $cfg->{assets},
+            asset_dirs => $cfg->{asset_dirs},
+            cpanfiles => $cfg->{cpanfiles},
+            output_path => $cfg->{output},
+            runtime_mode => $cfg->{runtime_mode},
+            app_name => $cfg->{app_name},
+            app_namespace => $cfg->{app_namespace},
+            app_entrypoint_env => $cfg->{app_entrypoint_env},
+            app_entrypoint_fallback => $cfg->{app_entrypoint_fallback},
+            app_command => $cfg->{app_command},
+            paxfile_applied => $cfg->{paxfile_applied},
+            override_fields => $cfg->{override_fields},
+            progress => $progress ? $progress->callback : undef,
+        );
+    };
+    my $error = $@;
+    unlink $cleanup_path if defined $cleanup_path && -f $cleanup_path;
     $progress->finish if $progress;
+    die $error if $error;
     return {
         result => $result,
         pretty => $cfg->{pretty},
     };
+}
+
+sub _standalone_materialize_entrypoint {
+    my ($class, $cfg) = @_;
+    return ($cfg->{entrypoint}, undef) if !defined $cfg->{inline_eval};
+    my ($fh, $path) = File::Temp::tempfile('pax-inline-entrypoint-XXXXXX', TMPDIR => 1, SUFFIX => '.pl', UNLINK => 0);
+    print {$fh} $class->_standalone_inline_entrypoint_source($cfg);
+    close $fh or die "unable to close inline entrypoint $path: $!";
+    return ($path, $path);
+}
+
+sub _standalone_inline_entrypoint_source {
+    my ($class, $cfg) = @_;
+    my @lines = (
+        "#!/usr/bin/env perl",
+        "use strict;",
+        "use warnings;",
+    );
+    for my $lib (@{ $cfg->{perl_libs} // [] }) {
+        push @lines, 'use lib ' . _perl_single_quote($lib) . ';';
+    }
+    for my $spec (@{ $cfg->{perl_modules} // [] }) {
+        my ($module, @imports) = _parse_perl_module_switch($spec);
+        my $import_args = join(', ', map { _perl_single_quote($_) } @imports);
+        my $call = @imports ? "$module->import($import_args);" : "$module->import();";
+        push @lines, "BEGIN { require $module; $call }";
+    }
+    push @lines, $cfg->{inline_eval};
+    push @lines, '';
+    return join("\n", @lines);
+}
+
+sub _parse_perl_module_switch {
+    my ($spec) = @_;
+    my ($module, $imports) = split /=/, $spec, 2;
+    my @imports = defined $imports && length $imports
+        ? split /,/, $imports
+        : ();
+    return ($module, @imports);
+}
+
+sub _perl_single_quote {
+    my ($value) = @_;
+    $value //= '';
+    $value =~ s/\\/\\\\/g;
+    $value =~ s/'/\\'/g;
+    return "'$value'";
 }
 
 sub _standalone_build_progress {

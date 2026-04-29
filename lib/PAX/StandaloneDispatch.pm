@@ -1,6 +1,6 @@
 package PAX::StandaloneDispatch;
 
-our $VERSION = '0.016';
+our $VERSION = '0.018';
 
 use strict;
 use warnings;

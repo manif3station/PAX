@@ -1,3 +1,20 @@
+0.018  Wed Apr 29 12:55:00 2026
+    - Added Perl-style `-I`, `-M`, and `-e` support to the public `pax build`
+      and `pax run` workflow so operators can compile or execute inline Perl
+      entrypoints without first writing a source file or manifest.
+    - Treated inline CLI entrypoints as isolated builds, carried their
+      synthesized entrypoint through the standalone pipeline, and documented the
+      new public surface in the README and main POD.
+    - Hardened code-unit live-capture timeouts so builds fall back to direct
+      capture when `ALRM` signal setup is unavailable instead of crashing on
+      platforms such as Alpine.
+    - Normalized default standalone output paths to absolute locations before
+      launcher compilation so `pax run -e ...` works with the fallback
+      `.pax/standalone/<name>/<name>` path instead of failing on relative
+      launcher source emission.
+    - Added CLI and compiler regression coverage for the inline public command
+      surface and the no-usable-`ALRM` timeout fallback path.
+
 0.016  Wed Apr 29 10:15:00 2026
     - Routed built-in standalone helper commands through the direct managed-helper runtime path instead of the switchboard wrapper path, which reduces per-command process overhead for the packaged helper surface.
     - Applied the same direct helper fast path to dotted skill command dispatch so packaged helper invocations reuse the in-process runtime path instead of spawning wrapper hops.

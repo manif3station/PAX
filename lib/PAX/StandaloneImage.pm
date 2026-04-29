@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.016';
+our $VERSION = '0.018';
 
 use strict;
 use warnings;
@@ -201,12 +201,14 @@ sub build {
         status => 'done',
         label => sprintf('Package runtime payloads (%d payloads)', scalar(@{ $runtime->{payloads} // [] })),
     });
-    my $standalone_dir = File::Spec->catdir($self->{root}, $name);
+    my $standalone_dir = _absolute_output(File::Spec->catdir($self->{root}, $name));
     make_path($standalone_dir);
 
-    my $output_path = $args{output_path}
-        ? _absolute_output($args{output_path})
-        : File::Spec->catfile($standalone_dir, $name);
+    my $output_path = _absolute_output(
+        $args{output_path}
+            ? $args{output_path}
+            : File::Spec->catfile($standalone_dir, $name)
+    );
     my $manifest = {
         name => $name,
         app => $app_meta,

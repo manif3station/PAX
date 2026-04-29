@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.016';
+our $VERSION = '0.018';
 
 use strict;
 use warnings;
@@ -279,12 +279,14 @@ sub _capture_with_timeout {
     if (!defined $timeout || $timeout eq '') {
         $timeout = ($kind // '') eq 'dependency' ? 1 : 5;
     }
+    return _capture_live_unit($abs_path) if !$timeout || $timeout <= 0;
     my $capture;
     my $error;
-    local $SIG{ALRM} = sub { die "capture timeout\n" };
+    return _capture_live_unit($abs_path) if !_capture_timeout_supported();
     eval {
+        local $SIG{ALRM} = sub { die "capture timeout\n" };
         alarm($timeout);
-        $capture = PAX::Capture->new(mode => 'live')->capture($abs_path);
+        $capture = _capture_live_unit($abs_path);
         alarm(0);
         1;
     } or do {
@@ -298,6 +300,20 @@ sub _capture_with_timeout {
         };
     }
     return $capture;
+}
+
+sub _capture_timeout_supported {
+    return 0 if !exists $SIG{ALRM};
+    my $ok = eval {
+        local $SIG{ALRM} = sub { die "capture timeout\n" };
+        1;
+    };
+    return $ok ? 1 : 0;
+}
+
+sub _capture_live_unit {
+    my ($abs_path) = @_;
+    return PAX::Capture->new(mode => 'live')->capture($abs_path);
 }
 
 sub _custom_sub_from_source {

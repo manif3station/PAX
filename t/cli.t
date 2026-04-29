@@ -17,7 +17,8 @@ t/cli.t - SOW-03 public CLI contract tests
 
 This test file verifies that C<bin/pax> exposes only C<build> and C<run> to
 users. Older diagnostics remain implementation internals and must not be
-reachable as public subcommands.
+reachable as public subcommands. It also verifies Perl-style inline entrypoint
+support via C<-I>, C<-M>, and C<-e> for the public build/run surface.
 
 =cut
 
@@ -142,6 +143,45 @@ is($? >> 8, 0, 'explicit entrypoint build ignores ambient repo paxfile defaults'
 my $isolated_build = decode_json($isolated_json);
 is($isolated_build->{standalone}{asset_count}, 0, 'explicit entrypoint build does not inherit repo paxfile assets');
 is(($isolated_build->{standalone}{build_plan}{paxfile_applied} // JSON::PP::false), JSON::PP::false, 'explicit entrypoint build records paxfile as unapplied');
+
+my $inline_lib_root = "$sow03_root/inline-lib";
+my $inline_module_dir = "$inline_lib_root/Local";
+make_path($inline_module_dir);
+open my $inline_module_fh, '>', "$inline_module_dir/InlineDemo.pm" or die "cannot write inline fixture module: $!";
+print {$inline_module_fh} <<'END_INLINE_MODULE';
+package Local::InlineDemo;
+
+use strict;
+use warnings;
+
+sub import {
+    my ($class, @args) = @_;
+    $ENV{PAX_INLINE_DEMO} = join('|', @args);
+}
+
+sub render {
+    my ($class) = @_;
+    return 'inline:' . ($ENV{PAX_INLINE_DEMO} // 'unset');
+}
+
+1;
+END_INLINE_MODULE
+close $inline_module_fh or die "cannot close inline fixture module: $!";
+
+my $inline_binary = "$sow03_root/inline-app";
+my $inline_build_json = `cd $repo && $^X $pax build --compact -o $inline_binary -I $inline_lib_root -MLocal::InlineDemo=alpha,beta -e 'print Local::InlineDemo->render'`;
+is($? >> 8, 0, 'pax build accepts -I, -M, and -e without an entrypoint file');
+my $inline_build = decode_json($inline_build_json);
+is($inline_build->{status}, 'built', 'inline build reports success');
+ok(-x $inline_binary, 'inline build writes an executable binary');
+is(($inline_build->{standalone}{build_plan}{paxfile_applied} // JSON::PP::false), JSON::PP::false, 'inline build does not inherit ambient repo paxfile defaults');
+my $inline_output = `env -i PATH=/nonexistent TMPDIR=/tmp $inline_binary`;
+is($? >> 8, 0, 'inline standalone binary executes successfully');
+is($inline_output, 'inline:alpha|beta', 'inline standalone binary honors imported module arguments');
+
+my $inline_run_output = `cd $blank && $^X $pax run -I$inline_lib_root -MLocal::InlineDemo=gamma,delta -e 'print Local::InlineDemo->render'`;
+is($? >> 8, 0, 'pax run accepts compact -I and -M forms with -e');
+is($inline_run_output, 'inline:gamma|delta', 'inline pax run executes synthesized entrypoint');
 
 my $nested_workdir = "$sow03_root/self-hosted-build";
 make_path($nested_workdir);

@@ -11,6 +11,25 @@ use PAX::CodeUnitCompiler;
 
 my $compiler = PAX::CodeUnitCompiler->new;
 
+{
+    no warnings 'redefine';
+    my $calls = 0;
+    local *PAX::CodeUnitCompiler::_capture_timeout_supported = sub { return 0 };
+    local *PAX::CodeUnitCompiler::_capture_live_unit = sub {
+        my ($path) = @_;
+        $calls++;
+        return {
+            status => 'ok',
+            capture => {
+                sub_optrees => [],
+            },
+        };
+    };
+    my $capture = PAX::CodeUnitCompiler::_capture_with_timeout('/tmp/demo.pm', 'lib');
+    is($capture->{status}, 'ok', 'capture timeout helper falls back to direct live capture when ALRM setup is unavailable');
+    is($calls, 1, 'capture timeout fallback performs one direct live capture');
+}
+
 my $entry = $compiler->compile(
     path => "$FindBin::Bin/fixtures/app_entry.pl",
     kind => 'entrypoint',
