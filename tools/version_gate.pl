@@ -38,3 +38,16 @@ if (@bad) {
 }
 
 print "version-gate: all module versions match $version\n";
+
+=pod
+
+=head1 NAME
+
+version_gate.pl - implement the version gate release or maintenance utility used by the PAX project.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to implement the version gate release or maintenance utility used by the PAX project.
+
+=cut
+

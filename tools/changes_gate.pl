@@ -36,3 +36,16 @@ die "changes-gate failed: top release block still uses placeholder 'Version bump
     if $top_block =~ /^\s*-\s*Version bump\s*$/m;
 
 print "changes-gate: top Changes entry matches version $version\n";
+
+=pod
+
+=head1 NAME
+
+changes_gate.pl - implement the changes gate release or maintenance utility used by the PAX project.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to implement the changes gate release or maintenance utility used by the PAX project.
+
+=cut
+

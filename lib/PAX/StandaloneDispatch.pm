@@ -1,6 +1,6 @@
 package PAX::StandaloneDispatch;
 
-our $VERSION = '0.020';
+our $VERSION = '0.024';
 
 use strict;
 use warnings;
@@ -204,3 +204,16 @@ print defined $value ? $value : q{};
 }
 
 1;
+
+=pod
+
+=head1 NAME
+
+PAX::StandaloneDispatch - document the StandaloneDispatch component within the PAX compiler, packaging, or runtime stack.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to document the StandaloneDispatch component within the PAX compiler, packaging, or runtime stack.
+
+=cut
+

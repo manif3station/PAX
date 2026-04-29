@@ -81,3 +81,16 @@ my $osr = PAX::OSR->new(threshold => 2)->evaluate(
 is($osr->{status}, 'promote', 'OSR promotes loop at threshold');
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/runtime_acceleration.t - cover the runtime acceleration behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the runtime acceleration behavior exercised by the PAX test suite.
+
+=cut
+

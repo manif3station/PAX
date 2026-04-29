@@ -43,3 +43,16 @@ sub _update_dist_ini {
     print {$out} $ini;
     close $out;
 }
+
+=pod
+
+=head1 NAME
+
+bump_version.pl - implement the bump version release or maintenance utility used by the PAX project.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to implement the bump version release or maintenance utility used by the PAX project.
+
+=cut
+

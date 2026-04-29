@@ -13,22 +13,19 @@ my @errors;
 
 for my $path (@perl_files) {
     my $content = _slurp($path);
-    my $needs_file_pod = $always{$path} || $changed{$path};
-    if ($needs_file_pod) {
-        push @errors, "$path missing =head1 NAME"
-            if $content !~ /^=head1 NAME\b/m;
-        if (_is_module($path)) {
-            push @errors, "$path missing descriptive POD section"
-                if $content !~ /^=head1 (?:DESCRIPTION|INTRODUCTION|SYNOPSIS|PURPOSE)\b/m;
-        }
-        elsif (_is_test($path)) {
-            push @errors, "$path missing =head1 DESCRIPTION"
-                if $content !~ /^=head1 DESCRIPTION\b/m;
-        }
-        else {
-            push @errors, "$path missing synopsis or description POD"
-                if $content !~ /^=head1 (?:SYNOPSIS|DESCRIPTION|PURPOSE)\b/m;
-        }
+    push @errors, "$path missing =head1 NAME"
+        if $content !~ /^=head1 NAME\b/m;
+    if (_is_module($path)) {
+        push @errors, "$path missing descriptive POD section"
+            if $content !~ /^=head1 (?:DESCRIPTION|INTRODUCTION|SYNOPSIS|PURPOSE)\b/m;
+    }
+    elsif (_is_test($path)) {
+        push @errors, "$path missing =head1 DESCRIPTION"
+            if $content !~ /^=head1 DESCRIPTION\b/m;
+    }
+    else {
+        push @errors, "$path missing synopsis or description POD"
+            if $content !~ /^=head1 (?:SYNOPSIS|DESCRIPTION|PURPOSE)\b/m;
     }
 
     my @subs = _changed_named_subs($path, \%changed);
@@ -61,25 +58,45 @@ if (@errors) {
     exit 1;
 }
 
-print "POD-DOC-ALL: changed Perl files carry current POD and changed subroutines carry non-boilerplate comments\n";
+print "POD-DOC-ALL: maintained Perl files carry current POD and changed subroutines carry non-boilerplate comments\n";
 
 # Gather every Perl asset the documentation gate treats as part of the
 # maintained code surface.
 sub _perl_files {
     my @files;
     push @files, 'bin/pax' if -f 'bin/pax';
+    my @roots = grep { -d $_ } qw(lib t tools);
     File::Find::find(
         sub {
-            return if -d $_;
+            if (-d $_) {
+                if (_skip_tree(File::Spec->abs2rel($File::Find::name, '.'))) {
+                    $File::Find::prune = 1;
+                }
+                return;
+            }
             my $path = File::Spec->abs2rel($File::Find::name, '.');
+            return if _skip_tree($path);
             push @files, $path
                 if $path =~ m{\Alib/.*\.pm\z}
                 || $path =~ m{\At/.*\.t\z}
+                || $path =~ m{\At/.*\.pl\z}
                 || $path =~ m{\Atools/.*\.pl\z};
         },
-        'lib', 't', 'tools',
+        @roots,
     );
     return @files;
+}
+
+# Skip generated, excluded, or copied trees that are not part of the maintained
+# repository Perl surface.
+sub _skip_tree {
+    my ($path) = @_;
+    return 1 if !defined $path || $path eq '.';
+    return 1 if $path =~ m{\APAX-\d};
+    return 1 if $path =~ m{\ADD Source Code(?:/|\z)};
+    return 1 if $path =~ m{\At/tmp};
+    return 1 if $path =~ m{\A(?:cover_db|projects|project|examples|pax-webapp)(?:/|\z)};
+    return 0;
 }
 
 # Focus enforcement on files with real behavior or documentation changes, not
@@ -227,10 +244,12 @@ pod_doc_all.pl - enforce repository-wide POD and subroutine-comment coverage
 This script is the strict documentation completeness check behind the PAX doc
 gate.
 
-It inspects Perl assets in C<bin/>, C<lib/>, C<t/>, and C<tools/> and verifies
-that changed files carry current file-level POD. It also verifies that changed
-named subroutines carry unique, non-boilerplate preceding comments so behavior
-changes do not outrun their local documentation.
+It inspects maintained Perl assets in C<bin/>, C<lib/>, C<t/>, and C<tools/>
+and verifies that every in-scope file carries current file-level POD. It also
+verifies that changed named subroutines carry unique, non-boilerplate preceding
+comments so behavior changes do not outrun their local documentation.
 
-The check intentionally ignores pure version-line churn and focuses on semantic
-changes in the current tree or the most recent committed diff.
+The file-level coverage check spans the full maintained Perl surface. The
+subroutine-comment check intentionally ignores pure version-line churn and
+focuses on semantic changes in the current tree or the most recent committed
+diff.

@@ -70,3 +70,16 @@ if ($artifact->{status} eq 'native_artifact') {
 }
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/capture.t - cover the capture behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the capture behavior exercised by the PAX test suite.
+
+=cut
+

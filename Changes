@@ -1,3 +1,38 @@
+0.024  Wed Apr 29 20:40:00 2026
+    - Fixed the shebang/interpreter contract for scripts that use `FindBin` by
+      resetting the cached `FindBin` globals against the target script before
+      PAX evaluates it as `main`.
+    - Kept the quiet CLI acceptance harness from `0.023`, so the shebang
+      regression can now validate script-local `use lib` paths without
+      drowning the gate replay in progress output.
+
+0.023  Wed Apr 29 20:10:00 2026
+    - Kept the new shebang/interpreter workflow and full-surface
+      documentation gate intact while tightening the CLI acceptance harness so
+      progress output is disabled for routine standalone builds and only
+      enabled where the rundown itself is under test.
+    - This removes the avoidable stderr flood from self-hosting acceptance
+      runs and makes the SOW-03 gate replay practical without weakening the
+      actual shebang or standalone coverage.
+
+0.022  Wed Apr 29 19:15:00 2026
+    - Completed the shebang/interpreter workflow so an installed standalone
+      `pax` binary can execute a Perl script directly from a shebang such as
+      `#!/usr/local/bin/pax` while preserving the script-facing `$0` and
+      `@ARGV` contract.
+    - Tightened `POD-DOC-ALL` from a changed-files check into a full
+      maintained-surface check across PAX modules, Perl scripts, tool scripts,
+      tests, and test fixtures, then backfilled the missing file-level POD
+      inventory so the documentation gate now closes at 100 percent coverage.
+
+0.021  Wed Apr 29 18:20:00 2026
+    - Added interpreter-mode execution to the public `pax` entrypoint so a
+      built `pax` binary can be installed and used directly from a shebang line
+      such as `#!/usr/local/bin/pax` for normal Perl scripts.
+    - Preserved the script-facing process contract in that path by running the
+      target file as `main` with the expected `$0` and `@ARGV`, then added
+      regression coverage around self-built shebang execution.
+
 0.020  Wed Apr 29 16:55:00 2026
     - Fixed the `POD-DOC-ALL` gate so changed-subroutine comments are checked
       as real preceding comments instead of in-body narration, which closes the

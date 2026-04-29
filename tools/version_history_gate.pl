@@ -60,3 +60,16 @@ sub _git_lines {
     chomp @lines;
     return grep { defined $_ && $_ ne '' } @lines;
 }
+
+=pod
+
+=head1 NAME
+
+version_history_gate.pl - implement the version history gate release or maintenance utility used by the PAX project.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to implement the version history gate release or maintenance utility used by the PAX project.
+
+=cut
+

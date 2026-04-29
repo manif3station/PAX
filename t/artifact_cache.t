@@ -43,3 +43,16 @@ is(PAX::Mode->policy('prod')->{telemetry}, 'low_overhead', 'prod mode uses low o
 
 remove_tree($cache_root) if -d $cache_root;
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/artifact_cache.t - cover the artifact cache behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the artifact cache behavior exercised by the PAX test suite.
+
+=cut
+

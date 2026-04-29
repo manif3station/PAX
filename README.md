@@ -134,6 +134,19 @@ perl bin/pax run bin/my-app -- version
 `pax run` uses the same build inputs as `pax build`, writes or refreshes the
 standalone executable, and then executes that binary with arguments after `--`.
 
+Interpreter-style execution is also available when the `pax` executable is used
+as a shebang target for a Perl script:
+
+```perl
+#!/usr/local/bin/pax
+use strict;
+use warnings;
+print "hello from pax shebang\n";
+```
+
+In that mode, `pax` treats the script path as a direct execution target instead
+of requiring an explicit `build` or `run` command.
+
 ## CLI Contract
 
 ```text
@@ -146,6 +159,11 @@ Public commands:
 
 - `build`: compile/package the source tree behind an entrypoint into one executable.
 - `run`: build the executable, then run it.
+
+Interpreter mode:
+
+- if `pax` is invoked with a plain Perl script path instead of `build` or `run`,
+  it executes that script directly as a shebang/interpreter target
 
 Common options:
 

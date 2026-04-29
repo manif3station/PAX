@@ -785,3 +785,16 @@ ok((grep { ($_->{name} // '') eq 'reverse_words' && ($_->{op} // '') eq 'split_r
 is(scalar(@{ $residual_record->{unsupported_subs} // [] }), 0, 'residual-only fixture no longer needs residual fallback');
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/code_unit_compiler.t - cover the code unit compiler behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the code unit compiler behavior exercised by the PAX test suite.
+
+=cut
+

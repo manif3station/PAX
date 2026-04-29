@@ -69,3 +69,16 @@ my $unsupported_dispatch = PAX::RuntimeDispatcher->new->dispatch_i64(
 is($unsupported_dispatch->{status}, 'fallback', 'unsupported loop falls back at dispatch');
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/loop_lowering.t - cover the loop lowering behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the loop lowering behavior exercised by the PAX test suite.
+
+=cut
+

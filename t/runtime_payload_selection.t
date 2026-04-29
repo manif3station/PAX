@@ -36,3 +36,16 @@ SKIP: {
 }
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/runtime_payload_selection.t - cover the runtime payload selection behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the runtime payload selection behavior exercised by the PAX test suite.
+
+=cut
+

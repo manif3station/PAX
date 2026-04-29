@@ -25,3 +25,16 @@ is($regions{'main::multiply'}{osr_promotions}, 1, 'OSR promotion count recorded'
 is($regions{'main::multiply'}{osr_retirements}, 1, 'OSR retirement count recorded');
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/profile_store.t - cover the profile store behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the profile store behavior exercised by the PAX test suite.
+
+=cut
+

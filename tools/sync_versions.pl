@@ -53,3 +53,16 @@ sub _read_version {
     die "cannot read VERSION from $file" unless $version;
     return $version;
 }
+
+=pod
+
+=head1 NAME
+
+sync_versions.pl - implement the sync versions release or maintenance utility used by the PAX project.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to implement the sync versions release or maintenance utility used by the PAX project.
+
+=cut
+

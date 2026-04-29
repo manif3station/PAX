@@ -25,6 +25,7 @@ support via C<-I>, C<-M>, and C<-e> for the public build/run surface.
 my $repo = abs_path("$FindBin::Bin/..");
 my $pax = "$repo/bin/pax";
 my $sow03_root = "$repo/t/tmp-sow03";
+local $ENV{PAX_PROGRESS} = 0;
 remove_tree($sow03_root) if -d $sow03_root;
 make_path($sow03_root);
 
@@ -65,7 +66,7 @@ is($override_run_output, "embedded-fixture-asset\n", 'run command executes binar
 
 my $progress_json = "$sow03_root/progress-build.json";
 my $progress_stderr = "$sow03_root/progress-build.stderr";
-system("$^X $pax build --compact --paxfile t/fixtures/paxfile.yml >$progress_json 2>$progress_stderr");
+system("PAX_PROGRESS=1 $^X $pax build --compact --paxfile t/fixtures/paxfile.yml >$progress_json 2>$progress_stderr");
 is($? >> 8, 0, 'pax build still succeeds when progress rundown is emitted by default');
 open my $progress_fh, '<', $progress_stderr or die "cannot read progress stderr: $!";
 my $progress_text = do { local $/; <$progress_fh> };
@@ -216,5 +217,44 @@ ok(-x $standalone_input_binary, 'standalone pax input rebuild writes an executab
 my $standalone_input_help = `env -i PATH=/nonexistent TMPDIR=/tmp $standalone_input_binary help`;
 is($? >> 8, 0, 'rebuilt standalone pax binary from standalone input executes');
 like($standalone_input_help, qr/^usage:\n  pax build /, 'rebuilt standalone pax binary from standalone input keeps minimal CLI');
+
+my $shebang_root = "$sow03_root/shebang";
+my $shebang_bin_dir = "$shebang_root/bin";
+my $shebang_lib_dir = "$shebang_root/lib";
+make_path($shebang_bin_dir, $shebang_lib_dir);
+open my $shebang_module_fh, '>', "$shebang_lib_dir/ShebangDemo.pm" or die "cannot write shebang fixture module: $!";
+print {$shebang_module_fh} <<'END_SHEBANG_MODULE';
+package ShebangDemo;
+
+use strict;
+use warnings;
+
+our $render = sub { return join q{|}, @ARGV; };
+*render = $render;
+
+1;
+END_SHEBANG_MODULE
+close $shebang_module_fh or die "cannot close shebang fixture module: $!";
+
+my $shebang_script = "$shebang_bin_dir/shebang-demo.pl";
+open my $shebang_script_fh, '>', $shebang_script or die "cannot write shebang fixture script: $!";
+print {$shebang_script_fh} <<"END_SHEBANG_SCRIPT";
+#!$self_binary
+use strict;
+use warnings;
+use FindBin;
+use lib "\$FindBin::Bin/../lib";
+use ShebangDemo;
+
+print "script=\$0\\n";
+print "args=" . ShebangDemo::render() . "\\n";
+END_SHEBANG_SCRIPT
+close $shebang_script_fh or die "cannot close shebang fixture script: $!";
+chmod 0755, $shebang_script or die "cannot chmod shebang fixture script: $!";
+
+my $shebang_output = `env -i PATH=/nonexistent TMPDIR=/tmp $self_binary $shebang_script alpha beta`;
+is($? >> 8, 0, 'self-built pax binary runs a shebang-target Perl script directly');
+like($shebang_output, qr/^\Qscript=$shebang_script\E$/m, 'shebang execution sets $0 to the script path');
+like($shebang_output, qr/^args=alpha\|beta$/m, 'shebang execution preserves @ARGV for the script');
 
 done_testing;

@@ -30,3 +30,16 @@ ok(exists $runtime->{native_available}, 'native availability recorded');
 ok(ref $runtime->{memory_impact} eq 'HASH', 'runtime benchmark records memory impact');
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/validation.t - cover the validation behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the validation behavior exercised by the PAX test suite.
+
+=cut
+

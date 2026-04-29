@@ -53,16 +53,16 @@ Scope:
 
 Enforcement rules:
 
-1. every changed Perl file must carry current file-level POD that explains what
-   the file is for in its current shape
+1. every maintained Perl file must carry current file-level POD that explains
+   what the file is for in its current shape
 2. module POD must stay unique to the module and must not collapse into generic
    boilerplate that could describe any file
 3. changed public or operationally meaningful subroutines must carry preceding
    comments that explain intent or behavior impact in concrete language
 4. subroutine comments must not use boilerplate filler such as `helper`,
    `utility`, `method`, or similar low-information labels
-5. changed tests must explain the behavior contract they validate
-6. changed scripts must explain their public role and invocation shape
+5. tests must explain the behavior contract they validate
+6. scripts must explain their public role and invocation shape
 7. doc updates are part of the same change set as behavior updates; they are
    not deferred cleanup
 

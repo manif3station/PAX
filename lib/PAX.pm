@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.020';
+our $VERSION = '0.024';
 
 1;
 
@@ -168,12 +168,24 @@ executable.
 Run the same build flow and then execute the resulting binary with arguments
 after C<-->.
 
+=item * interpreter mode
+
+If C<pax> is invoked with a plain Perl script path instead of C<build> or
+C<run>, it executes that script directly as interpreter-mode shebang
+execution.
+
 =back
 
 The canonical usage is:
 
   pax build ...
   pax run ...
+
+Interpreter-mode execution is intended for the case where a built C<pax>
+binary is installed at a stable path and then used from a shebang line such as
+C<#!/usr/local/bin/pax>. In that path, C<PAX::CLI> treats the script argument
+as a direct Perl program to run under the packaged runtime instead of as a CLI
+subcommand.
 
 Common CLI switches include:
 
@@ -469,8 +481,8 @@ Release readiness requires:
 
 =item * POD and README parity for public behavior.
 
-=item * C<make doc-gate>, which includes C<POD-DOC-ALL> for changed Perl
-scripts, modules, tests, and tooling helpers.
+=item * C<make doc-gate>, which includes C<POD-DOC-ALL> for the full
+maintained Perl surface plus changed subroutine comments.
 
 =item * C<make test>.
 
@@ -504,9 +516,9 @@ version and commit the release-preparation changes. After a successful PAUSE
 upload, the operator must move C<RELEASED_TO_PAUSE> to the released commit and
 push the tag to C<origin>. C<make cpan-dist> and
 C<make cpan-build> then enforce the version gate, the C<Changes> gate, and the
-documentation gate for C<README.md>, this module POD, and changed Perl assets
-through C<POD-DOC-ALL> without mutating tracked source files during the
-packaging step.
+documentation gate for C<README.md>, this module POD, and the full maintained
+Perl surface through C<POD-DOC-ALL> without mutating tracked source files
+during the packaging step.
 
 =head1 TESTING AND COVERAGE
 

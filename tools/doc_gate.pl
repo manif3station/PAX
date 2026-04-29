@@ -69,5 +69,5 @@ This script checks the repository-level documentation contract for PAX.
 
 It verifies that C<README.md> stays product-focused and that C<lib/PAX.pm>
 contains the required distribution-level POD sections. It then runs
-C<POD-DOC-ALL> so file-level POD and changed-subroutine comments are enforced
-across the Perl code surface touched by the current change set.
+C<POD-DOC-ALL> so file-level POD is enforced across the full maintained Perl
+surface and changed-subroutine comments stay current where behavior changed.

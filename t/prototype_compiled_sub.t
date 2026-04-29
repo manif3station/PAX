@@ -43,3 +43,16 @@ is($? >> 8, 0, 'prototype standalone runs');
 is($output, "1\n", 'prototype compiled sub preserves call behavior');
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/prototype_compiled_sub.t - cover the prototype compiled sub behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the prototype compiled sub behavior exercised by the PAX test suite.
+
+=cut
+

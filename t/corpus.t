@@ -24,3 +24,16 @@ if ($pax_manifest->{runtime}{baseline_match}) {
 }
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/corpus.t - cover the corpus behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the corpus behavior exercised by the PAX test suite.
+
+=cut
+

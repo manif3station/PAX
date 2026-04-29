@@ -1,6 +1,6 @@
 package PAX::Differential;
 
-our $VERSION = '0.020';
+our $VERSION = '0.024';
 
 use strict;
 use warnings;

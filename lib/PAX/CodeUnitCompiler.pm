@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.020';
+our $VERSION = '0.024';
 
 use strict;
 use warnings;
@@ -12839,3 +12839,16 @@ sub _same_source_path {
 }
 
 1;
+
+=pod
+
+=head1 NAME
+
+PAX::CodeUnitCompiler - document the CodeUnitCompiler component within the PAX compiler, packaging, or runtime stack.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to document the CodeUnitCompiler component within the PAX compiler, packaging, or runtime stack.
+
+=cut
+

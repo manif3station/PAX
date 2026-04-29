@@ -39,3 +39,16 @@ is($deopt->{fallback}{reconstructed_frame}{status}, 'reconstructed', 'deopt reco
 is_deeply($deopt->{fallback}{reconstructed_frame}{frame}{argv}, [2, 3], 'deopt frame preserves arguments');
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/deopt.t - cover the deopt behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the deopt behavior exercised by the PAX test suite.
+
+=cut
+

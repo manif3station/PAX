@@ -50,3 +50,16 @@ for my $unit (@$ssa) {
 
 is($seen, 4, 'all native leaf fixture functions were selected');
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/native_emitters.t - cover the native emitters behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the native emitters behavior exercised by the PAX test suite.
+
+=cut
+

@@ -1,6 +1,6 @@
 package PAX::GuardedSSA;
 
-our $VERSION = '0.020';
+our $VERSION = '0.024';
 
 use strict;
 use warnings;
@@ -70,3 +70,16 @@ sub build_unit {
 }
 
 1;
+
+=pod
+
+=head1 NAME
+
+PAX::GuardedSSA - document the GuardedSSA component within the PAX compiler, packaging, or runtime stack.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to document the GuardedSSA component within the PAX compiler, packaging, or runtime stack.
+
+=cut
+

@@ -1,10 +1,11 @@
 package PAX::CLI;
 
-our $VERSION = '0.020';
+our $VERSION = '0.024';
 
 use strict;
 use warnings;
 use JSON::PP qw(encode_json);
+use File::Spec ();
 use File::Temp ();
 use PAX::Capture;
 use PAX::CLI::Progress;
@@ -47,10 +48,52 @@ sub run {
         print _usage();
         return 0;
     }
+    if ($class->_looks_like_interpreter_script($command)) {
+        return $class->_run_interpreter_script($command, @argv);
+    }
 
     print STDERR "unknown command: $command\n";
     print STDERR _usage();
     return 2;
+}
+
+# Treat a plain script path as interpreter-mode execution so a built pax binary
+# can be used directly from a shebang line.
+sub _looks_like_interpreter_script {
+    my ($class, $candidate) = @_;
+    return 0 if !defined $candidate || $candidate eq q{};
+    return 0 if $candidate =~ /\A-/;
+    return -f $candidate ? 1 : 0;
+}
+
+# Execute a shebang-target script as package main while preserving the expected
+# process-facing script path and argument vector.
+sub _run_interpreter_script {
+    my ($class, $script, @argv) = @_;
+    my $script_path = File::Spec->rel2abs($script);
+    local @ARGV = @argv;
+    local $0 = $script_path;
+    require FindBin;
+    local $FindBin::Bin;
+    local $FindBin::RealBin;
+    local $FindBin::Script;
+    local $FindBin::RealScript;
+    FindBin::again();
+
+    my $runner = sub {
+        package main;
+        my ($path) = @_;
+        return do $path;
+    };
+
+    my $rv = $runner->($script_path);
+    if (!defined $rv) {
+        my $error = $@ || $! || "unknown interpreter failure";
+        print STDERR "pax interpreter failed for $script_path: $error\n";
+        return 255;
+    }
+
+    return 0;
 }
 
 sub _run {

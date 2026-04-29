@@ -22,6 +22,7 @@ pax - public build and run switchboard for PAX
   pax run [options] [entrypoint] [-- args...]
   pax build -I lib -MDateTime -e 'print DateTime->now'
   pax run -I lib -MDateTime -e 'print DateTime->now'
+  /path/to/pax /path/to/script.pl [script-args...]
 
 =head1 DESCRIPTION
 
@@ -47,5 +48,9 @@ keeps the user-visible command surface at C<build> and C<run>
 
 The compiler, packager, runtime, and diagnostic logic live in the Perl modules
 under C<lib/PAX/>. This script is only the stable front door.
+
+When the executable is used as a shebang target, C<PAX::CLI> also accepts a
+plain Perl script path and runs that file directly as interpreter-mode
+execution.
 
 =cut

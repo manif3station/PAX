@@ -45,3 +45,16 @@ is($missing->{status}, 'fallback', 'missing region falls back');
 like($missing->{reason}, qr/requested region not found/, 'missing region reason reported');
 
 done_testing;
+
+=pod
+
+=head1 NAME
+
+t/dispatcher.t - cover the dispatcher behavior exercised by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to cover the dispatcher behavior exercised by the PAX test suite.
+
+=cut
+

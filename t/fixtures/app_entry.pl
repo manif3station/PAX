@@ -43,3 +43,16 @@ if ($cmd eq 'residual-only') {
 
 print STDERR "unknown command: $cmd\n";
 exit 2;
+
+=pod
+
+=head1 NAME
+
+t/fixtures/app_entry.pl - provide the app_entry fixture used by the PAX test suite.
+
+=head1 DESCRIPTION
+
+This file is part of the maintained PAX Perl surface and exists to provide the app_entry fixture used by the PAX test suite.
+
+=cut
+
