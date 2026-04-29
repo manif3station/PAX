@@ -29,8 +29,6 @@ When documenting PAX, use this structure:
    - self-hosted build
    - web application packaging
    - Docker deployment
-   - testing
-   - release gates
 6. Document the public command surface clearly and keep it synchronized between
    `README.md` and `lib/PAX.pm`.
 7. Include known limits and caveats in both places.
@@ -39,6 +37,46 @@ When documenting PAX, use this structure:
 9. Keep the README and main POD aligned in structure and examples.
 10. For major behavior changes, update both the operator manual and the module
     reference in the same change set.
+11. Enforce documentation completeness through `POD-DOC-ALL` inside the doc
+    gate, not as a separate optional cleanup step.
+
+## POD-DOC-ALL Rule
+
+`POD-DOC-ALL` is the documentation-completeness check for Perl assets in this
+repository.
+
+Scope:
+
+- Perl scripts such as `bin/pax`
+- Perl modules under `lib/`
+- Perl tests under `t/`
+
+Enforcement rules:
+
+1. every changed Perl file must carry current file-level POD that explains what
+   the file is for in its current shape
+2. module POD must stay unique to the module and must not collapse into generic
+   boilerplate that could describe any file
+3. changed public or operationally meaningful subroutines must carry preceding
+   comments that explain intent or behavior impact in concrete language
+4. subroutine comments must not use boilerplate filler such as `helper`,
+   `utility`, `method`, or similar low-information labels
+5. changed tests must explain the behavior contract they validate
+6. changed scripts must explain their public role and invocation shape
+7. doc updates are part of the same change set as behavior updates; they are
+   not deferred cleanup
+
+Reference style:
+
+- Use `Developer::Dashboard` modules as the breadth/clarity example for module
+  POD density and subroutine-level intent comments.
+- Follow that standard without copying project-specific wording into PAX.
+
+Operational rule:
+
+- `doc-gate` is not complete unless `POD-DOC-ALL` passes.
+- If a change touches Perl behavior and the documentation was not updated to
+  match, the change set is not done.
 
 ## Changes File Rule
 
@@ -119,6 +157,9 @@ Rules:
 7. version examples in operator docs must use generic placeholders such as
    `<next-version>` instead of the current live release number, so the docs do
    not drift every time a checkpoint is cut
+8. after a successful PAUSE upload, the release flow must move the
+   `RELEASED_TO_PAUSE` git tag to the released commit and push that tag to
+   `origin`
 
 This keeps the release flow reproducible and prevents the cycle where a build
 target creates new tracked changes and then fails its own git cleanliness gate.
@@ -171,7 +212,6 @@ PAX main documentation should keep these section families available over time:
 - Manual
 - Architecture
 - Known Limits
-- Testing and Release Gates
 - FAQ
 - Files / Repository Map
 

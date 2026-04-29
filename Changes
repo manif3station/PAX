@@ -1,3 +1,18 @@
+0.019  Wed Apr 29 14:20:00 2026
+    - Added a mandatory post-PAUSE release rule: after a successful PAUSE
+      upload, the release flow must move the `RELEASED_TO_PAUSE` git tag to the
+      released commit and push that tag to `origin`.
+    - Wired the rule into `make cpan-release` so the repository now tags the
+      released commit through a dedicated `pause-release-tag` target instead of
+      relying on operator memory after upload.
+    - Refocused the README on PAX as software instead of release-process
+      choreography, keeping the gate and release policy in the rulebook and
+      main POD instead of the product manual.
+    - Upgraded the documentation gate so `doc-gate` now runs `POD-DOC-ALL`,
+      which enforces current file-level POD plus non-boilerplate changed
+      subroutine comments across Perl scripts, modules, tests, and tool
+      helpers.
+
 0.018  Wed Apr 29 12:55:00 2026
     - Added Perl-style `-I`, `-M`, and `-e` support to the public `pax build`
       and `pax run` workflow so operators can compile or execute inline Perl

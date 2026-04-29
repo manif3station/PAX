@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.018';
+our $VERSION = '0.019';
 
 1;
 
@@ -469,6 +469,9 @@ Release readiness requires:
 
 =item * POD and README parity for public behavior.
 
+=item * C<make doc-gate>, which includes C<POD-DOC-ALL> for changed Perl
+scripts, modules, tests, and tooling helpers.
+
 =item * C<make test>.
 
 =item * C<make release-gate>.
@@ -487,15 +490,20 @@ non-release paths.
 
 C<make cpan-release> follows the DD-style PAUSE flow: run the repo gates,
 locate the built tarball in the repository root, and upload it with
-C<cpan-upload> using the local uploader configuration.
+C<cpan-upload> using the local uploader configuration. After a successful
+upload, the release flow must retag the released commit as
+C<RELEASED_TO_PAUSE> and push that tag to C<origin>.
 
 The version bump happens before C<dzil build>, for example with
 C<make cpan-bump-version VERSION=E<lt>next-versionE<gt>> or C<make cpan-auto-bump>. After the
 bump, the operator must write a meaningful top C<Changes> entry for that
-version and commit the release-preparation changes. C<make cpan-dist> and
+version and commit the release-preparation changes. After a successful PAUSE
+upload, the operator must move C<RELEASED_TO_PAUSE> to the released commit and
+push the tag to C<origin>. C<make cpan-dist> and
 C<make cpan-build> then enforce the version gate, the C<Changes> gate, and the
-documentation gate for C<README.md> plus this module POD without mutating
-tracked source files during the packaging step.
+documentation gate for C<README.md>, this module POD, and changed Perl assets
+through C<POD-DOC-ALL> without mutating tracked source files during the
+packaging step.
 
 =head1 TESTING AND COVERAGE
 

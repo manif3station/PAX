@@ -7,3 +7,45 @@ use lib "$FindBin::Bin/../lib";
 use PAX::CLI;
 
 exit PAX::CLI->run(@ARGV);
+
+__END__
+
+=pod
+
+=head1 NAME
+
+pax - public build and run switchboard for PAX
+
+=head1 SYNOPSIS
+
+  pax build [options] [entrypoint]
+  pax run [options] [entrypoint] [-- args...]
+  pax build -I lib -MDateTime -e 'print DateTime->now'
+  pax run -I lib -MDateTime -e 'print DateTime->now'
+
+=head1 DESCRIPTION
+
+The public C<pax> entrypoint stays intentionally small.
+
+It only:
+
+=over 4
+
+=item *
+
+bootstraps the repository C<lib/> path when running from a checkout
+
+=item *
+
+hands the public CLI contract to C<PAX::CLI>
+
+=item *
+
+keeps the user-visible command surface at C<build> and C<run>
+
+=back
+
+The compiler, packager, runtime, and diagnostic logic live in the Perl modules
+under C<lib/PAX/>. This script is only the stable front door.
+
+=cut

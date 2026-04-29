@@ -24,7 +24,7 @@ ATDD_TESTS = \
 	t/app_image.t \
 	t/standalone_image.t
 
-.PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate version-history-gate doc-gate changes-gate release-gate cpan-verify-paths cpan-gate git-gate
+.PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release pause-release-tag cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate version-history-gate doc-gate pod-doc-all changes-gate release-gate cpan-verify-paths cpan-gate git-gate
 
 test:
 	prove -lr t
@@ -66,6 +66,9 @@ version-history-gate:
 
 doc-gate:
 	$(PERL) tools/doc_gate.pl
+
+pod-doc-all:
+	$(PERL) tools/pod_doc_all.pl
 
 changes-gate:
 	$(PERL) tools/changes_gate.pl
@@ -157,6 +160,17 @@ cpan-release:
 		exit 1; \
 	fi; \
 	cpan-upload "$$tarball"
+	$(MAKE) pause-release-tag RELEASED_COMMIT="$$(git rev-parse HEAD)"
+
+pause-release-tag:
+	@commit="$${RELEASED_COMMIT:-$$(git rev-parse HEAD)}"; \
+	git tag -f RELEASED_TO_PAUSE "$$commit"; \
+	if git remote get-url origin >/dev/null 2>&1; then \
+		git push --force origin refs/tags/RELEASED_TO_PAUSE; \
+	else \
+		echo "pause-release-tag: no origin remote configured"; \
+		exit 1; \
+	fi
 
 cpan-sync-versions:
 	$(PERL) tools/sync_versions.pl
