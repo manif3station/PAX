@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 use Test::More;
+use Capture::Tiny qw(capture);
 
 use lib 'lib';
 use PAX::StandaloneRuntime ();
@@ -73,6 +74,51 @@ ok(PAX::StandaloneRuntime::_system_command_missing($missing_stderr, $missing_exi
         argv => [],
     );
     is($result, '/tmp/pax-demo', 'standalone runtime runs entrypoint with the standalone executable path as $0');
+}
+
+{
+    no warnings 'redefine';
+    my @asset_requests;
+    local *PAX::StandaloneRuntime::_standalone_executable_path = sub { return '/tmp/pax-demo' };
+    local *PAX::StandaloneRuntime::_standalone_internal_cli_asset_content = sub {
+        my ($name) = @_;
+        push @asset_requests, $name;
+        return ("print join(q{|}, q{direct}, \$0, \@ARGV), qq{\\n}; 0;\n", "/tmp/$name")
+            if $name eq 'ps1';
+        die "unexpected helper asset lookup for $name";
+    };
+    my ($stdout, $stderr, $result) = capture {
+        PAX::StandaloneRuntime::_run_standalone_managed_helper('ps1', '--jobs', '1');
+    };
+    is($result, 0, 'direct standalone helper execution returns success');
+    is($stderr, '', 'direct standalone helper execution keeps stderr empty');
+    like($stdout, qr{\Adirect\|/tmp/ps1\|--jobs\|1\n\z}, 'direct standalone helper execution preserves helper path and argv');
+    is_deeply(\@asset_requests, ['ps1'], 'direct standalone helper execution loads only the requested helper asset');
+}
+
+{
+    no warnings 'redefine';
+    my @asset_requests;
+    local $ENV{PAX_STANDALONE_EXECUTABLE} = '/tmp/pax-demo';
+    local *PAX::StandaloneRuntime::_standalone_executable_path = sub { return '/tmp/pax-demo' };
+    local *PAX::StandaloneRuntime::_standalone_internal_cli_asset_content = sub {
+        my ($name) = @_;
+        push @asset_requests, $name;
+        return ('my $command = basename($0);' . "\n"
+              . 'my $core = q{/tmp/_dashboard-core};' . "\n"
+              . 'exec { $^X } $^X, $core, $command, @ARGV;' . "\n", '/tmp/shell')
+            if $name eq 'shell';
+        return ("print join(q{|}, q{core}, \@ARGV), qq{\\n}; 0;\n", '/tmp/_dashboard-core')
+            if $name eq '_dashboard-core';
+        die "unexpected helper asset lookup for $name";
+    };
+    my ($stdout, $stderr, $result) = capture {
+        PAX::StandaloneRuntime::_run_standalone_managed_helper('shell', 'bash');
+    };
+    is($result, 0, 'delegating standalone helper execution returns success');
+    is($stderr, '', 'delegating standalone helper execution keeps stderr empty');
+    like($stdout, qr{\Acore\|shell\|bash\n\z}, 'delegating standalone helper execution routes through dashboard core with helper name');
+    is_deeply(\@asset_requests, ['shell', '_dashboard-core'], 'delegating standalone helper execution loads helper asset and dashboard core');
 }
 
 done_testing;

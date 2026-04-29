@@ -137,8 +137,15 @@ The mandatory closure rule is:
 3. run ATDD gates for standalone/application acceptance behavior
 4. run the QA gate that aggregates TDD, BDD, ATDD, and release metadata checks
 5. commit the required tracked changes
-6. run the final all-gates verification, including CPAN and git gates, against
-   the committed tree
+6. finish at git gate on the committed tree
+
+Terminology rule:
+
+- "all gates" means the whole closure sequence above
+- it is not the semantic name of a single gate
+- `make all-gates` is only a convenience target that replays the final
+  verification set on an already committed tree
+- do not describe `make all-gates` as if it replaces the earlier gates
 
 Operational consequences:
 
@@ -147,9 +154,9 @@ Operational consequences:
 3. `git-gate` alone is not enough
 4. a new edit after a successful gate run invalidates that gate state and the
    affected gates must be rerun
-5. do not say work is done until `all-gates` passes or the user explicitly
+5. do not say work is done until all gates are closed or the user explicitly
    waives part of the gate chain
-6. `all-gates` must include a committed-history version check, not just a
+6. `make all-gates` must include a committed-history version check, not just a
    working-tree version consistency check
 
 ## Section Expectations

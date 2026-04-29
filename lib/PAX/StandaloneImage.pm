@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.012';
+our $VERSION = '0.014';
 
 use strict;
 use warnings;
@@ -1822,7 +1822,6 @@ sub _runtime_manifest {
         $perl = abs_path($^X) || $^X;
         my @inc_dirs = _runtime_inc_dirs($args{exclude_dirs} // []);
         push @payloads, _file_payload($perl, 'runtime_binary', 'bin/perl');
-        push @payloads, _runtime_shared_lib_payloads($perl, \@inc_dirs);
         my @selected = _runtime_selected_files(
             inc_dirs => \@inc_dirs,
             dependencies => $args{dependencies} // [],
@@ -1867,6 +1866,12 @@ sub _runtime_manifest {
                 push @payloads, _tree_payloads($dir, $prefix, 'runtime_inc', $args{exclude_files} // []);
             }
         }
+        my @runtime_shared_objects = map { $_->{source_path} // () }
+            grep {
+                (($_->{unit_kind} // '') eq 'runtime_inc')
+                    && _looks_like_shared_object($_->{source_path} // '')
+            } @payloads;
+        push @payloads, _runtime_shared_lib_payloads($perl, \@inc_dirs, \@runtime_shared_objects);
     }
     push @payloads, @helper_payloads;
 
@@ -1913,35 +1918,127 @@ sub _pax_runtime_helper_payloads {
 }
 
 sub _runtime_shared_lib_payloads {
-    my ($perl, $runtime_inc_dirs) = @_;
+    my ($perl, $runtime_inc_dirs, $runtime_files) = @_;
     return () if !$perl || !-x $perl;
+    my @payloads;
+    my %seen_source;
+    my %seen_logical;
+    for my $path (_shared_lib_dependency_closure($perl, grep { _looks_like_shared_object($_) } @{ $runtime_files // [] })) {
+        my $abs = abs_path($path) || $path;
+        next if $seen_source{$abs}++;
+        push @payloads, _shared_lib_payload_variants($abs, \%seen_logical);
+    }
+    for my $runtime_lib (_runtime_core_libs_from_inc_dirs($runtime_inc_dirs // [])) {
+        my $abs = abs_path($runtime_lib) || $runtime_lib;
+        next if $seen_source{$abs}++;
+        push @payloads, _shared_lib_payload_variants($abs, \%seen_logical);
+    }
+    return @payloads;
+}
+
+sub _shared_lib_payload_variants {
+    my ($path, $seen_logical) = @_;
+    return () if !$path || !-f $path;
+    $seen_logical ||= {};
+    my @payloads;
+    my $abs = abs_path($path) || $path;
+    my $primary = _safe_logical_path(File::Spec->catfile('lib', File::Basename::basename($abs)));
+    if (!$seen_logical->{$primary}++) {
+        push @payloads, _file_payload($abs, 'runtime_lib', $primary);
+    }
+    my $soname = _shared_object_soname($abs);
+    if (defined $soname && $soname ne '') {
+        my $alias = _safe_logical_path(File::Spec->catfile('lib', $soname));
+        if ($alias ne $primary && !$seen_logical->{$alias}++) {
+            push @payloads, _file_payload($abs, 'runtime_lib', $alias);
+        }
+    }
+    return @payloads;
+}
+
+sub _shared_lib_dependency_closure {
+    my (@roots) = @_;
+    my @queue = grep { defined $_ && $_ ne '' && -f $_ } @roots;
+    my %seen;
+    my %selected;
+    while (my $path = shift @queue) {
+        my $abs = abs_path($path) || $path;
+        next if $seen{$abs}++;
+        for my $dep (_linked_shared_lib_paths($abs)) {
+            my $dep_abs = abs_path($dep) || $dep;
+            next if !$dep_abs || !-f $dep_abs;
+            next if _runtime_system_lib_exempt($dep_abs);
+            next if $selected{$dep_abs}++;
+            push @queue, $dep_abs;
+        }
+    }
+    return sort keys %selected;
+}
+
+sub _linked_shared_lib_paths {
+    my ($binary) = @_;
+    return () if !$binary || !-f $binary;
     my $ldd = _which('ldd') || ((-x '/usr/bin/ldd') ? '/usr/bin/ldd' : '');
     return () if $ldd eq '';
-    open my $fh, '-|', $ldd, $perl or return ();
-    my @payloads;
-    my %seen;
+    open my $fh, '-|', $ldd, $binary or return ();
+    my @paths;
     while (my $line = <$fh>) {
         my $path;
         if ($line =~ /=>\s+(\S+)\s+\(/) {
             $path = $1;
-        } elsif ($line =~ /^\s*(\/\S+)\s+\(/) {
+        }
+        elsif ($line =~ /^\s*(\/\S+)\s+\(/) {
             $path = $1;
-        } else {
+        }
+        else {
             next;
         }
         next if !$path || !-f $path;
-        my $abs = abs_path($path) || $path;
-        next if $seen{$abs}++;
-        push @payloads, _file_payload($abs, 'runtime_lib', _safe_logical_path(File::Spec->catfile('lib', File::Basename::basename($abs))));
-    }
-
-    for my $runtime_lib (_runtime_core_libs_from_inc_dirs($runtime_inc_dirs // [])) {
-        my $abs = abs_path($runtime_lib) || $runtime_lib;
-        next if $seen{$abs}++;
-        push @payloads, _file_payload($abs, 'runtime_lib', _safe_logical_path(File::Spec->catfile('lib', File::Basename::basename($abs))));
+        push @paths, $path;
     }
     close $fh;
-    return @payloads;
+    my %seen;
+    return grep { !$seen{$_}++ } @paths;
+}
+
+sub _shared_object_soname {
+    my ($path) = @_;
+    return '' if !$path || !-f $path;
+    for my $tool ([qw(readelf -d)], [qw(objdump -p)]) {
+        my ($program, @args) = @$tool;
+        my $bin = _which($program);
+        next if !$bin;
+        open my $fh, '-|', $bin, @args, $path or next;
+        while (my $line = <$fh>) {
+            if ($line =~ /\(\s*SONAME\s*\)\s+Library soname:\s*\[(.+?)\]/) {
+                close $fh;
+                return $1;
+            }
+            if ($line =~ /^\s*SONAME\s+(.+?)\s*\z/) {
+                close $fh;
+                return $1;
+            }
+        }
+        close $fh;
+    }
+    return '';
+}
+
+sub _looks_like_shared_object {
+    my ($path) = @_;
+    return 0 if !$path;
+    return 1 if $path =~ /\.(?:so|dylib|bundle|dll)(?:\.[^\/\\]+)?\z/i;
+    return 0;
+}
+
+sub _runtime_system_lib_exempt {
+    my ($path) = @_;
+    return 1 if !$path;
+    my $base = File::Basename::basename($path);
+    return 1 if $base =~ /\A(?:linux-vdso\.so(?:\.\d+)*)\z/;
+    return 1 if $base =~ /\Ald-linux[^\/]*\.so(?:\.\d+)*\z/;
+    return 1 if $base =~ /\Alib(?:c|m|pthread|dl|rt|util|resolv|nsl|nss_(?:dns|files)|gcc_s|crypt)\.so(?:\.\d+)*\z/;
+    return 0;
 }
 
 sub _which {

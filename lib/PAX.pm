@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.012';
+our $VERSION = '0.014';
 
 1;
 
@@ -48,6 +48,11 @@ whole working tree.
 PAX aims to turn that into one executable that can carry compiled code units,
 runtime payloads, embedded assets, and native artifacts where a region can be
 proven safe to specialize.
+
+In bundled-runtime mode that includes the packaged helper programs and the
+linked shared libraries and SONAME aliases required by bundled XS modules, so helper commands and
+query/runtime helpers still work after the original source tree and CPAN
+installation are gone.
 
 The goal is not to pretend every Perl feature can become a native binary with
 no trade-offs. The real goal is:
@@ -99,6 +104,11 @@ embedded asset packaging for web applications and static payloads
 =item *
 
 runtime payload packaging for source-tree-free execution
+
+=item *
+
+packaged helper commands plus linked XS shared libraries and SONAME aliases for source-tree-free
+execution
 
 =item *
 
@@ -463,9 +473,11 @@ Primary validation from a repository checkout is:
   make cpan-gate
 
 Completion requires the full chain, not a partial subset. C<release-gate>,
-C<cpan-gate>, or C<git-gate> alone are not sufficient. After tracked changes
-are committed, run C<make all-gates> and treat the change set as complete only
-when that final aggregate gate passes.
+C<cpan-gate>, or C<git-gate> alone are not sufficient. In project rules, "all
+gates" means the full closure sequence from TDD through git gate. C<make
+all-gates> is only the convenience target for replaying the final
+committed-tree verification set. Treat the change set as complete only when the
+full gate chain has closed and the committed tree passes git gate.
 
 =head1 KNOWN LIMITATIONS
 

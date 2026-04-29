@@ -20,6 +20,11 @@ PAX changes that deployment shape. The target artifact is one executable that
 can carry compiled code units, packaged runtime payloads, embedded assets, and
 native artifacts where PAX can prove a region is safe to specialize.
 
+In bundled-runtime mode that includes the packaged helper programs and the
+linked shared libraries and SONAME aliases required by bundled XS modules, so helper commands and
+query/runtime helpers still work after the original source tree and CPAN
+installation are gone.
+
 The design goal is not "replace Perl with magic". The design goal is:
 
 - keep Perl correctness
@@ -47,6 +52,7 @@ subcommands through `bin/pax`.
 - one standalone executable output
 - embedded assets for web applications and static payloads
 - packaged runtime payloads for source-tree-free execution
+- packaged helper commands plus linked XS shared libraries and SONAME aliases for source-tree-free execution
 - adaptive compilation with explicit fallback behavior
 - self-hosted build capability, including building `bin/pax` itself
 - Docker-friendly multi-stage packaging
@@ -428,8 +434,11 @@ Completion rule:
 - `cpan-gate` alone is not enough
 - `git-gate` alone is not enough
 - after code, doc, or metadata edits, rerun the affected gates
-- only treat the change set as complete after `make all-gates` passes on the
-  committed tree
+- "all gates" means the full closure sequence from TDD through git gate
+- `make all-gates` is only the convenience replay target for the final
+  committed-tree verification set
+- treat the change set as complete only when the full gate chain has closed and
+  the committed tree passes git gate
 
 Release flow rule:
 

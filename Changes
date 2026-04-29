@@ -1,3 +1,15 @@
+0.014  Tue Apr 28 23:55:00 2026
+    - Fixed standalone managed-helper dispatch so packaged helper assets that
+      are real Perl programs execute directly inside the bundled runtime while
+      wrapper helpers still route through the packaged helper core.
+    - Packaged SONAME alias paths alongside concrete shared-library files for
+      bundled XS runtime dependencies, which fixes source-tree-free stage-3
+      standalone runs that previously failed on loader lookups such as
+      `libexpat.so.1`.
+    - Revalidated the external three-stage Dashboard build flow so the final
+      source-free binary now runs `version`, `init`, `ps1`, `jq`, `of`,
+      `restart`, and `shell bash` directly from the packaged runtime.
+
 0.012  Tue Apr 28 11:30:00 2026
     - Added a committed-history version gate so `all-gates` now fails when a
       release-facing commit lands without advancing the PAX version number.

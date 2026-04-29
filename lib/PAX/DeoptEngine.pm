@@ -1,6 +1,6 @@
 package PAX::DeoptEngine;
 
-our $VERSION = '0.012';
+our $VERSION = '0.014';
 
 use strict;
 use warnings;

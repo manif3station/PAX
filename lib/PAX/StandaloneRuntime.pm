@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.012';
+our $VERSION = '0.014';
 
 use strict;
 use warnings;
@@ -584,18 +584,40 @@ sub _share_dist_private_cli_dir {
 
 sub _run_standalone_managed_helper {
     my ($helper, @argv) = @_;
-    my ($core_source, $core_path) = _standalone_internal_cli_asset_content('_dashboard-core');
-    die "standalone managed helper core is unavailable\n" if !defined $core_source || $core_source eq '';
-    my @core_argv = @argv;
-    unshift @core_argv, $helper if $helper ne '_dashboard-core';
-    local @ARGV = @core_argv;
+    my ($helper_source, $helper_path) = _standalone_internal_cli_asset_content($helper);
+    die "standalone managed helper '$helper' is unavailable\n" if !defined $helper_source || $helper_source eq '';
     my $self_path = _standalone_executable_path();
     local $ENV{DEVELOPER_DASHBOARD_ENTRYPOINT} = $self_path if defined $self_path && $self_path ne '';
-    my $wrapped = "package main;\n#line 1 \"$core_path\"\n" . $core_source;
+    my ($source, $path, @helper_argv);
+    if ($helper eq '_dashboard-core' || _standalone_helper_delegates_to_dashboard_core($helper_source)) {
+        my ($core_source, $core_path) = _standalone_internal_cli_asset_content('_dashboard-core');
+        die "standalone managed helper core is unavailable\n" if !defined $core_source || $core_source eq '';
+        $source = $core_source;
+        $path = $core_path;
+        @helper_argv = @argv;
+        unshift @helper_argv, $helper if $helper ne '_dashboard-core';
+    }
+    else {
+        $source = $helper_source;
+        $path = $helper_path;
+        @helper_argv = @argv;
+    }
+    local @ARGV = @helper_argv;
+    local $0 = $path if defined $path && $path ne '';
+    my $wrapped = "package main;\n#line 1 \"$path\"\n" . $source;
     my $rv = eval $wrapped;
     die $@ if $@;
     return 0 if !defined $rv;
     return $rv;
+}
+
+sub _standalone_helper_delegates_to_dashboard_core {
+    my ($source) = @_;
+    return 0 if !defined $source || $source eq '';
+    return 1 if $source =~ /_dashboard-core/
+        && $source =~ /basename\(\$0\)/
+        && $source =~ /exec\s+\{\s*\$\^X\s*\}\s+\$\^X,\s+\$core,\s+\$command,\s+\@ARGV;/s;
+    return 0;
 }
 
 sub _install_pending_wrappers {

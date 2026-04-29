@@ -1,6 +1,6 @@
 package PAX::OSR;
 
-our $VERSION = '0.012';
+our $VERSION = '0.014';
 
 use strict;
 use warnings;

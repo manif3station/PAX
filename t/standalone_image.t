@@ -110,6 +110,63 @@ close $libfh;
 my @fake_runtime_libs = PAX::StandaloneImage::_runtime_core_libs_from_inc_dirs([$fake_runtime_root]);
 is(scalar(@fake_runtime_libs), 1, 'runtime lib discovery finds libperl in a synthetic CORE directory');
 is($fake_runtime_libs[0], $fake_libperl, 'runtime lib discovery returns exact fake lib path');
+my $fake_ldd_root = File::Spec->catdir($tmp_base, 'fake-ldd');
+make_path($fake_ldd_root);
+my $fake_ldd = File::Spec->catfile($fake_ldd_root, 'ldd');
+my $fake_readelf = File::Spec->catfile($fake_ldd_root, 'readelf');
+my $fake_xs = File::Spec->catfile($fake_ldd_root, 'FakeXS.so');
+my $fake_dep = File::Spec->catfile($fake_ldd_root, 'libexpat.so.1');
+my $fake_dep_real = File::Spec->catfile($fake_ldd_root, 'libexpat.so.1.10.2');
+my $fake_system = File::Spec->catfile($fake_ldd_root, 'libc.so.6');
+open my $fake_xs_fh, '>:raw', $fake_xs or die "cannot create fake xs object: $!";
+print {$fake_xs_fh} 'fake-xs';
+close $fake_xs_fh;
+open my $fake_dep_fh, '>:raw', $fake_dep_real or die "cannot create fake runtime dependency: $!";
+print {$fake_dep_fh} 'fake-dep';
+close $fake_dep_fh;
+symlink $fake_dep_real, $fake_dep or die "cannot create fake dependency symlink: $!";
+open my $fake_system_fh, '>:raw', $fake_system or die "cannot create fake system dependency: $!";
+print {$fake_system_fh} 'fake-system';
+close $fake_system_fh;
+open my $fake_ldd_fh, '>', $fake_ldd or die "cannot create fake ldd: $!";
+print {$fake_ldd_fh} <<"SH";
+#!/bin/sh
+target="\$1"
+case "\$target" in
+  *FakeXS.so|*XS.so)
+    printf '%s => %s (0x0)\\n' libexpat.so.1 "$fake_dep"
+    printf '%s => %s (0x0)\\n' libc.so.6 "$fake_system"
+    ;;
+  *perl)
+    :
+    ;;
+  *)
+    :
+    ;;
+esac
+SH
+close $fake_ldd_fh;
+chmod 0755, $fake_ldd;
+open my $fake_readelf_fh, '>', $fake_readelf or die "cannot create fake readelf: $!";
+print {$fake_readelf_fh} <<"SH";
+#!/bin/sh
+target="\$2"
+case "\$target" in
+  *libexpat.so.1.10.2)
+    printf ' 0x000000000000000e (SONAME)             Library soname: [libexpat.so.1]\\n'
+    ;;
+  *)
+    :
+    ;;
+esac
+SH
+close $fake_readelf_fh;
+chmod 0755, $fake_readelf;
+{
+    local $ENV{PATH} = join(':', $fake_ldd_root, ($ENV{PATH} // '/usr/bin:/bin'));
+    my @closure = PAX::StandaloneImage::_shared_lib_dependency_closure($fake_xs);
+    is_deeply(\@closure, [$fake_dep_real], 'shared library closure includes non-system XS dependency and skips exempt system libs');
+}
 {
     local @INC = ($fake_runtime_root, @INC);
     my $manifest = PAX::StandaloneImage::_runtime_manifest(
@@ -150,14 +207,19 @@ my $fake_site_root = File::Spec->catdir($tmp_base, 'fake-site-perl', 'site_perl'
 my $fake_site_arch_root = File::Spec->catdir($fake_site_root, 'x86_64-linux-gnu');
 make_path(File::Spec->catdir($fake_site_root, 'Types'));
 make_path(File::Spec->catdir($fake_site_arch_root, 'JSON'));
+make_path(File::Spec->catdir($fake_site_arch_root, 'auto', 'JSON', 'XS'));
 my $fake_site_types = File::Spec->catfile($fake_site_root, 'Types', 'Serialiser.pm');
 my $fake_site_json = File::Spec->catfile($fake_site_arch_root, 'JSON', 'XS.pm');
+my $fake_site_json_so = File::Spec->catfile($fake_site_arch_root, 'auto', 'JSON', 'XS', 'XS.so');
 open my $site_types_fh, '>', $fake_site_types or die "cannot create fake site Types module: $!";
 print {$site_types_fh} "package Types::Serialiser;\n1;\n";
 close $site_types_fh;
 open my $site_json_fh, '>', $fake_site_json or die "cannot create fake site JSON module: $!";
 print {$site_json_fh} "package JSON::XS;\nuse Types::Serialiser ();\n1;\n";
 close $site_json_fh;
+open my $site_json_so_fh, '>:raw', $fake_site_json_so or die "cannot create fake site JSON shared object: $!";
+print {$site_json_so_fh} 'fake-json-xs';
+close $site_json_so_fh;
 {
     local @INC = ($fake_site_arch_root, $fake_site_root, @INC);
     my $manifest = PAX::StandaloneImage::_runtime_manifest(
@@ -179,6 +241,17 @@ close $site_json_fh;
         (($_->{source_path} // '') eq $fake_site_types)
     } @{ $manifest->{payloads} // [] };
     ok(@site_family_payloads >= 1, 'runtime payload includes sibling plain site_perl tree for arch-specific runtime roots');
+}
+
+{
+    local @INC = ($fake_site_arch_root, $fake_site_root, @INC);
+    local $ENV{PATH} = join(':', $fake_ldd_root, ($ENV{PATH} // '/usr/bin:/bin'));
+    my @shared_dep_payloads = grep { ($_->{logical_path} // '') eq 'lib/libexpat.so.1' }
+        PAX::StandaloneImage::_runtime_shared_lib_payloads($^X, [$fake_site_arch_root, $fake_site_root], [$fake_site_json_so]);
+    ok(@shared_dep_payloads >= 1, 'runtime payload includes linked shared library dependency for bundled XS module');
+    my @shared_dep_real_payloads = grep { ($_->{logical_path} // '') eq 'lib/libexpat.so.1.10.2' }
+        PAX::StandaloneImage::_runtime_shared_lib_payloads($^X, [$fake_site_arch_root, $fake_site_root], [$fake_site_json_so]);
+    ok(@shared_dep_real_payloads >= 1, 'runtime payload also keeps the concrete shared library filename when SONAME differs');
 }
 
 my $nested_runtime_root = File::Spec->catdir($tmp_base, 'nested-runtime-app-lib');
