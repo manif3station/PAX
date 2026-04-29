@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.019';
+our $VERSION = '0.020';
 
 1;
 
@@ -482,11 +482,14 @@ C<Changes>.
 
 =item * C<make cpan-build> and C<make cpan-gate>.
 
+=item * C<make git-gate> as the final independent closure gate.
+
 =back
 
-C<cpan-gate> also verifies that release tarballs and the git index exclude
-temporary probes, generated workspaces, planning artifacts, and other
-non-release paths.
+C<cpan-gate> verifies that release tarballs exclude temporary probes,
+generated workspaces, planning artifacts, and other non-release paths. Git
+cleanliness and forbidden tracked-file checks belong to the separate final
+C<git-gate>.
 
 C<make cpan-release> follows the DD-style PAUSE flow: run the repo gates,
 locate the built tarball in the repository root, and upload it with
@@ -520,10 +523,10 @@ Primary validation from a repository checkout is:
 
 Completion requires the full chain, not a partial subset. C<release-gate>,
 C<cpan-gate>, or C<git-gate> alone are not sufficient. In project rules, "all
-gates" means the full closure sequence from TDD through git gate. C<make
-all-gates> is only the convenience target for replaying the final
-committed-tree verification set. Treat the change set as complete only when the
-full gate chain has closed and the committed tree passes git gate.
+gates" means the full closure sequence from TDD through the final independent
+git gate. C<make all-gates> is only the convenience target for replaying that
+final verification set. Treat the change set as complete only when the full
+gate chain has closed and the committed tree passes git gate.
 
 =head1 KNOWN LIMITATIONS
 

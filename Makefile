@@ -41,7 +41,7 @@ atdd-gate:
 qa-gate: tdd-gate bdd-gate atdd-gate release-gate
 	@echo "qa-gate: TDD, BDD, ATDD, version, Changes, and docs OK"
 
-all-gates: qa-gate version-history-gate cpan-gate
+all-gates: qa-gate version-history-gate cpan-gate git-gate
 	@echo "all-gates: QA, version history, CPAN, and git gates OK"
 
 build:
@@ -98,8 +98,8 @@ cpan-build: cpan-dist
 	@version="$$( $(PERL) -Ilib -MPAX -e 'print $$PAX::VERSION' )"; \
 	echo "PAX distribution PAX-$$version.tar.gz built"
 
-cpan-gate: cpan-dist cpan-verify-paths git-gate
-	@echo "cpan-gate: CPAN and git gates OK"
+cpan-gate: cpan-dist cpan-verify-paths
+	@echo "cpan-gate: CPAN packaging gates OK"
 
 cpan-verify-paths:
 	@version="$$( $(PERL) -Ilib -MPAX -e 'print $$PAX::VERSION' )"; \

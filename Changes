@@ -1,3 +1,11 @@
+0.020  Wed Apr 29 16:55:00 2026
+    - Fixed the `POD-DOC-ALL` gate so changed-subroutine comments are checked
+      as real preceding comments instead of in-body narration, which closes the
+      false-negative path caught by the committed-tree replay.
+    - Extended the repository-wide POD sweep across Perl tool scripts and
+      silenced the internal git-parent probe so the documentation gate stays
+      deterministic and quiet while checking committed history.
+
 0.019  Wed Apr 29 14:20:00 2026
     - Added a mandatory post-PAUSE release rule: after a successful PAUSE
       upload, the release flow must move the `RELEASED_TO_PAUSE` git tag to the

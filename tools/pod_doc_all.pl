@@ -63,9 +63,9 @@ if (@errors) {
 
 print "POD-DOC-ALL: changed Perl files carry current POD and changed subroutines carry non-boilerplate comments\n";
 
+# Gather every Perl asset the documentation gate treats as part of the
+# maintained code surface.
 sub _perl_files {
-    # Gather every Perl asset the documentation gate treats as part of the
-    # maintained code surface.
     my @files;
     push @files, 'bin/pax' if -f 'bin/pax';
     File::Find::find(
@@ -82,9 +82,9 @@ sub _perl_files {
     return @files;
 }
 
+# Focus enforcement on files with real behavior or documentation changes, not
+# pure version-line churn.
 sub _semantic_changed_perl_files {
-    # Focus enforcement on files with real behavior or documentation changes,
-    # not pure version-line churn.
     my @targets = grep { -f $_ } ('bin/pax');
     push @targets, map { File::Spec->abs2rel($_, '.') } glob('lib/PAX/**/*.pm');
     push @targets, map { File::Spec->abs2rel($_, '.') } glob('lib/PAX/*.pm');
@@ -115,9 +115,9 @@ sub _semantic_changed_perl_files {
     return %semantic;
 }
 
+# Limit subroutine-comment enforcement to newly touched named subs in the
+# current semantic change set.
 sub _changed_named_subs {
-    # Limit subroutine-comment enforcement to newly touched named subs in the
-    # current semantic change set.
     my ($path, $changed) = @_;
     return if !$changed->{$path};
     my @diff_cmd = ('git', 'diff', '--unified=0');
@@ -136,9 +136,9 @@ sub _changed_named_subs {
     return @subs;
 }
 
+# Resolve the live source line for a named subroutine so comment lookup can
+# inspect the current file rather than the patch hunk.
 sub _find_sub_line {
-    # Resolve the live source line for a named subroutine so comment lookup can
-    # inspect the current file rather than the patch hunk.
     my ($path, $name) = @_;
     my @lines = split /\n/, _slurp($path), -1;
     for my $idx (0 .. $#lines) {
@@ -147,8 +147,8 @@ sub _find_sub_line {
     return;
 }
 
+# Read the contiguous preceding comment block that documents a subroutine.
 sub _sub_comment {
-    # Read the contiguous preceding comment block that documents a subroutine.
     my ($lines, $line_no) = @_;
     my @comments;
     for (my $idx = $line_no - 2; $idx >= 0; $idx--) {
@@ -165,11 +165,14 @@ sub _sub_comment {
     return join ' ', @comments;
 }
 
+# Classify a path as a Perl module.
 sub _is_module { $_[0] =~ /\.pm\z/ }
+
+# Classify a path as a Perl test file.
 sub _is_test   { $_[0] =~ m{\At/.*\.t\z} }
 
+# Read a full file into memory for lightweight structural checks.
 sub _slurp {
-    # Read a full file into memory for lightweight structural checks.
     my ($path) = @_;
     open my $fh, '<', $path or die "open $path: $!";
     local $/;
@@ -178,9 +181,9 @@ sub _slurp {
     return $content;
 }
 
+# Capture command output without shell interpolation so the gate stays
+# deterministic across git invocations.
 sub _capture {
-    # Capture command output without shell interpolation so the gate stays
-    # deterministic across git invocations.
     my @cmd = @_;
     my $pid = open my $fh, '-|', @cmd or die "exec @cmd: $!";
     local $/;
@@ -189,9 +192,9 @@ sub _capture {
     return $out;
 }
 
+# Cache working-tree cleanliness because the gate asks for it several times
+# while building git diff commands.
 sub _clean_tree {
-    # Cache working-tree cleanliness because the gate asks for it several times
-    # while building git diff commands.
     our $clean_cache;
     return $clean_cache if defined $clean_cache;
     my $dirty = _capture('git', 'status', '--short');
@@ -199,12 +202,12 @@ sub _clean_tree {
     return $clean_cache;
 }
 
+# Detect whether HEAD^ exists so the gate can compare committed changes when the
+# tree is already clean.
 sub _has_head_parent {
-    # Detect whether HEAD^ exists so the gate can compare committed changes when
-    # the tree is already clean.
     our $has_parent_cache;
     return $has_parent_cache if defined $has_parent_cache;
-    system('git', 'rev-parse', '--verify', 'HEAD^');
+    _capture('git', 'rev-parse', '--verify', 'HEAD^');
     $has_parent_cache = $? == 0 ? 1 : 0;
     return $has_parent_cache;
 }

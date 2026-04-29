@@ -148,9 +148,9 @@ Rules:
    must not invent changelog text or mutate tracked source files
 4. `Changes` content must be written by the operator or change author in
    meaningful language before `release-gate` runs
-5. `git-gate` must verify a clean tree after the release-preparation commit;
-   it must not be paired with a target that dirties tracked files during the
-   same verification pass
+5. `git-gate` is independent of `cpan-gate` and is the final gate in the
+   closure sequence; it must verify a clean tree after the release-preparation
+   commit
 6. the final gate chain must compare `HEAD` against `HEAD^` and fail if a
    committed change touched release-facing files without advancing the PAX
    version
@@ -177,15 +177,16 @@ The mandatory closure rule is:
 2. run BDD gates for operator-visible CLI and workflow behavior
 3. run ATDD gates for standalone/application acceptance behavior
 4. run the QA gate that aggregates TDD, BDD, ATDD, and release metadata checks
-5. commit the required tracked changes
-6. finish at git gate on the committed tree
+5. run the committed-tree version-history and CPAN packaging gates
+6. commit the required tracked changes
+7. finish at git gate on the committed tree
 
 Terminology rule:
 
 - "all gates" means the whole closure sequence above
 - it is not the semantic name of a single gate
 - `make all-gates` is only a convenience target that replays the final
-  verification set on an already committed tree
+  verification set ending at git gate
 - do not describe `make all-gates` as if it replaces the earlier gates
 
 Operational consequences:
