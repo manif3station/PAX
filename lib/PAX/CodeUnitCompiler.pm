@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.014';
+our $VERSION = '0.015';
 
 use strict;
 use warnings;
@@ -6520,7 +6520,7 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'config_skill_config_entries',
-            dispatcher_class => _sibling_class($package, 'SkillDispatcher'),
+            dispatcher_class => _related_class_from_source($source, $package, $body, 'SkillDispatcher', methods => ['new', 'get_skill_config']),
             prototype => $prototype,
         };
     }
@@ -6875,7 +6875,7 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'skill_dispatcher_new',
-            skill_manager_class => _sibling_class($package, 'SkillManager'),
+            skill_manager_class => _related_class_from_source($source, $package, $body, 'SkillManager', methods => ['new']),
             prototype => $prototype,
         };
     }
@@ -10412,8 +10412,8 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'locate_skill_target',
-            skill_manager_class => _sibling_class($package, 'SkillManager'),
-            skill_dispatcher_class => _sibling_class($package, 'SkillDispatcher'),
+            skill_manager_class => _related_class_from_source($source, $package, $body, 'SkillManager', methods => ['new']),
+            skill_dispatcher_class => _related_class_from_source($source, $package, $body, 'SkillDispatcher', methods => ['new']),
             prototype => $prototype,
         };
     }
@@ -10470,8 +10470,8 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'suggest_new',
-            path_registry_class => _sibling_class($package, 'PathRegistry'),
-            skill_manager_class => _sibling_class($package, 'SkillManager'),
+            path_registry_class => _related_class_from_source($source, $package, $body, 'PathRegistry', methods => ['new']),
+            skill_manager_class => _related_class_from_source($source, $package, $body, 'SkillManager', methods => ['new']),
             prototype => $prototype,
         };
     }
@@ -11274,8 +11274,8 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'skills_install_progress',
-            progress_class => _sibling_class($package, 'CLI::Progress'),
-            manager_class => _sibling_class($package, 'SkillManager'),
+            progress_class => _related_class_from_source($source, $package, $body, 'CLI::Progress', methods => ['new']),
+            manager_class => _related_class_from_source($source, $package, $body, 'SkillManager', methods => ['install_progress_tasks', 'new']),
             title => 'dashboard skills install progress',
             prototype => $prototype,
         };
@@ -11292,8 +11292,8 @@ sub _compile_simple_transform_sub_from_source {
             name => $short_name,
             full_name => $full_name,
             op => 'skills_install_progress_for_sources',
-            progress_class => _sibling_class($package, 'CLI::Progress'),
-            manager_class => _sibling_class($package, 'SkillManager'),
+            progress_class => _related_class_from_source($source, $package, $body, 'CLI::Progress', methods => ['new']),
+            manager_class => _related_class_from_source($source, $package, $body, 'SkillManager', methods => ['install_progress_tasks_for_sources', 'new']),
             title => 'dashboard skills install progress',
             prototype => $prototype,
         };
@@ -11468,8 +11468,8 @@ sub _compile_simple_transform_sub_from_source {
             install_summary_method => $package . '::_skills_install_summary_table',
             skills_table_method => $package . '::_skills_table',
             usage_table_method => $package . '::_usage_table',
-            manager_class => _sibling_class($package, 'SkillManager'),
-            dispatcher_class => _sibling_class($package, 'SkillDispatcher'),
+            manager_class => _related_class_from_source($source, $package, $body, 'SkillManager', methods => ['new']),
+            dispatcher_class => _related_class_from_source($source, $package, $body, 'SkillDispatcher', methods => ['new']),
             prototype => $prototype,
         };
     }

@@ -1,5 +1,5 @@
 package PAX::Backend::Tier2LLVM;
-our $VERSION = '0.014';
+our $VERSION = '0.015';
 
 use strict;
 use warnings;

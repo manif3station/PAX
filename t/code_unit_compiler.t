@@ -418,6 +418,9 @@ ok((grep { ($_->{name} // '') eq '_locate_target' && ($_->{op} // '') eq 'locate
 ok((grep { ($_->{name} // '') eq '_command_hook_files' && ($_->{op} // '') eq 'command_hook_files' } @{ $cli_which_record->{subs} // [] }) >= 1, 'CLI which PCU compiles hook enumerator');
 ok((grep { ($_->{name} // '') eq '_custom_command_path' && ($_->{op} // '') eq 'custom_command_path' } @{ $cli_which_record->{subs} // [] }) >= 1, 'CLI which PCU compiles layered command resolver');
 ok((grep { ($_->{name} // '') eq '_locate_skill_target' && ($_->{op} // '') eq 'locate_skill_target' } @{ $cli_which_record->{subs} // [] }) >= 1, 'CLI which PCU compiles skill target resolver');
+my ($cli_which_skill_target) = grep { ($_->{name} // '') eq '_locate_skill_target' && ($_->{op} // '') eq 'locate_skill_target' } @{ $cli_which_record->{subs} // [] };
+is($cli_which_skill_target->{skill_manager_class}, 'Developer::Dashboard::SkillManager', 'CLI which PCU resolves imported SkillManager class');
+is($cli_which_skill_target->{skill_dispatcher_class}, 'Developer::Dashboard::SkillDispatcher', 'CLI which PCU resolves imported SkillDispatcher class');
 is(scalar(@{ $cli_which_record->{unsupported_subs} // [] }), 0, 'CLI which PCU no longer needs residual fallback');
 
 my $cli_skills = $compiler->compile(
@@ -434,6 +437,15 @@ ok((grep { ($_->{name} // '') eq '_plain_text' && ($_->{op} // '') eq 'ansi_plai
 ok((grep { ($_->{name} // '') eq '_skills_table' && ($_->{op} // '') eq 'skills_table' } @{ $cli_skills_record->{subs} // [] }) >= 1, 'CLI skills PCU compiles skills table helper');
 ok((grep { ($_->{name} // '') eq '_usage_table' && ($_->{op} // '') eq 'skills_usage_table' } @{ $cli_skills_record->{subs} // [] }) >= 1, 'CLI skills PCU compiles usage table helper');
 ok((grep { ($_->{name} // '') eq 'run_skills_command' && ($_->{op} // '') eq 'run_skills_command' } @{ $cli_skills_record->{subs} // [] }) >= 1, 'CLI skills PCU compiles command dispatcher');
+my ($cli_skills_progress) = grep { ($_->{name} // '') eq '_skills_install_progress' && ($_->{op} // '') eq 'skills_install_progress' } @{ $cli_skills_record->{subs} // [] };
+is($cli_skills_progress->{progress_class}, 'Developer::Dashboard::CLI::Progress', 'CLI skills progress helper resolves imported CLI::Progress class');
+is($cli_skills_progress->{manager_class}, 'Developer::Dashboard::SkillManager', 'CLI skills progress helper resolves imported SkillManager class');
+my ($cli_skills_sources_progress) = grep { ($_->{name} // '') eq '_skills_install_progress_for_sources' && ($_->{op} // '') eq 'skills_install_progress_for_sources' } @{ $cli_skills_record->{subs} // [] };
+is($cli_skills_sources_progress->{progress_class}, 'Developer::Dashboard::CLI::Progress', 'CLI skills source progress helper resolves imported CLI::Progress class');
+is($cli_skills_sources_progress->{manager_class}, 'Developer::Dashboard::SkillManager', 'CLI skills source progress helper resolves imported SkillManager class');
+my ($cli_skills_run) = grep { ($_->{name} // '') eq 'run_skills_command' && ($_->{op} // '') eq 'run_skills_command' } @{ $cli_skills_record->{subs} // [] };
+is($cli_skills_run->{manager_class}, 'Developer::Dashboard::SkillManager', 'CLI skills dispatcher resolves imported SkillManager class');
+is($cli_skills_run->{dispatcher_class}, 'Developer::Dashboard::SkillDispatcher', 'CLI skills dispatcher resolves imported SkillDispatcher class');
 is(scalar(@{ $cli_skills_record->{unsupported_subs} // [] }), 0, 'CLI skills PCU no longer needs residual fallback');
 
 my $housekeeper = $compiler->compile(
@@ -479,6 +491,9 @@ my $cli_suggest = $compiler->compile(
 is($cli_suggest->{packaging}, 'compiled_pcu_v1', 'CLI suggest module now compiles to PCU');
 my $cli_suggest_record = JSON::PP->new->decode($cli_suggest->{bytes});
 ok((grep { ($_->{name} // '') eq 'new' && ($_->{op} // '') eq 'suggest_new' } @{ $cli_suggest_record->{subs} // [] }) >= 1, 'CLI suggest PCU compiles constructor');
+my ($cli_suggest_new) = grep { ($_->{name} // '') eq 'new' && ($_->{op} // '') eq 'suggest_new' } @{ $cli_suggest_record->{subs} // [] };
+is($cli_suggest_new->{path_registry_class}, 'Developer::Dashboard::PathRegistry', 'CLI suggest constructor resolves imported PathRegistry class');
+is($cli_suggest_new->{skill_manager_class}, 'Developer::Dashboard::SkillManager', 'CLI suggest constructor resolves imported SkillManager class');
 ok((grep { ($_->{name} // '') eq 'unknown_command_message' && ($_->{op} // '') eq 'suggest_unknown_command_message' } @{ $cli_suggest_record->{subs} // [] }) >= 1, 'CLI suggest PCU compiles unknown command message helper');
 ok((grep { ($_->{name} // '') eq '_top_level_candidates' && ($_->{op} // '') eq 'suggest_internal_top_level_candidates' } @{ $cli_suggest_record->{subs} // [] }) >= 1, 'CLI suggest PCU compiles top-level candidate collector');
 ok((grep { ($_->{name} // '') eq '_collect_skill_commands' && ($_->{op} // '') eq 'suggest_collect_skill_commands' } @{ $cli_suggest_record->{subs} // [] }) >= 1, 'CLI suggest PCU compiles skill command collector');

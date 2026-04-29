@@ -1,3 +1,15 @@
+0.015  Wed Apr 29 01:30:00 2026
+    - Fixed generic imported-class resolution in compiled code-unit rewrites so
+      generated standalone runtime ops now honor classes brought in through
+      `use` and `require` instead of guessing by sibling package shape.
+    - Closed the stage-3 standalone Dashboard `skills install` crash by making
+      compiled skill CLI progress and dispatcher helpers resolve the imported
+      `SkillManager`, `SkillDispatcher`, `PathRegistry`, and `CLI::Progress`
+      classes structurally from source.
+    - Extended the three-stage dashboard standalone Docker acceptance flow to
+      exercise the broader helper surface and a valid git-backed sample skill
+      install from the final binary-only runtime stage.
+
 0.014  Tue Apr 28 23:55:00 2026
     - Fixed standalone managed-helper dispatch so packaged helper assets that
       are real Perl programs execute directly inside the bundled runtime while
