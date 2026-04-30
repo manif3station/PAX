@@ -1,3 +1,12 @@
+0.031  Thu Apr 30 23:58:00 2026
+    - Made `git push` part of the formal closure process instead of relying on
+      memory. The gate chain now ends with an explicit `push-gate` that pushes
+      the committed HEAD to `origin` after `git-gate` has already confirmed a
+      clean tree.
+    - Updated the gate rule documentation and main PAX POD so "all gates"
+      now means QA, version-history, CPAN packaging, git cleanliness, and the
+      final push of the committed release checkpoint.
+
 0.030  Thu Apr 30 23:40:00 2026
     - Replaced the repetitive sum-loop marketing block in the README and main
       PAX POD with five separately measured workload examples that are framed

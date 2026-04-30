@@ -143,6 +143,9 @@ The correct end state is:
 - forbidden paths not tracked
 - `git status --short` is empty
 
+After the commit is accepted by `git-gate`, the change set is still not done
+until the committed HEAD has been pushed to `origin`.
+
 ## Release Flow Rule
 
 Release preparation and release verification are separate steps.
@@ -156,16 +159,17 @@ Rules:
    must not invent changelog text or mutate tracked source files
 4. `Changes` content must be written by the operator or change author in
    meaningful language before `release-gate` runs
-5. `git-gate` is independent of `cpan-gate` and is the final gate in the
-   closure sequence; it must verify a clean tree after the release-preparation
-   commit
-6. the final gate chain must compare `HEAD` against `HEAD^` and fail if a
+5. `git-gate` is independent of `cpan-gate`; it must verify a clean tree after
+   the release-preparation commit
+6. `push-gate` is the last gate in the closure sequence and must push the
+   committed HEAD to `origin`
+7. the final gate chain must compare `HEAD` against `HEAD^` and fail if a
    committed change touched release-facing files without advancing the PAX
    version
-7. version examples in operator docs must use generic placeholders such as
+8. version examples in operator docs must use generic placeholders such as
    `<next-version>` instead of the current live release number, so the docs do
    not drift every time a checkpoint is cut
-8. after a successful PAUSE upload, the release flow must move the
+9. after a successful PAUSE upload, the release flow must move the
    `RELEASED_TO_PAUSE` git tag to the released commit and push that tag to
    `origin`
 
@@ -187,14 +191,15 @@ The mandatory closure rule is:
 4. run the QA gate that aggregates TDD, BDD, ATDD, and release metadata checks
 5. run the committed-tree version-history and CPAN packaging gates
 6. commit the required tracked changes
-7. finish at git gate on the committed tree
+7. pass `git-gate` on the committed tree
+8. finish at `push-gate` by pushing the committed HEAD to `origin`
 
 Terminology rule:
 
 - "all gates" means the whole closure sequence above
 - it is not the semantic name of a single gate
 - `make all-gates` is only a convenience target that replays the final
-  verification set ending at git gate
+  verification set ending at push gate
 - do not describe `make all-gates` as if it replaces the earlier gates
 
 Operational consequences:
@@ -202,11 +207,12 @@ Operational consequences:
 1. `release-gate` alone is not enough
 2. `cpan-gate` alone is not enough
 3. `git-gate` alone is not enough
-4. a new edit after a successful gate run invalidates that gate state and the
+4. `push-gate` alone is not enough if earlier gates are stale
+5. a new edit after a successful gate run invalidates that gate state and the
    affected gates must be rerun
-5. do not say work is done until all gates are closed or the user explicitly
+6. do not say work is done until all gates are closed or the user explicitly
    waives part of the gate chain
-6. `make all-gates` must include a committed-history version check, not just a
+7. `make all-gates` must include a committed-history version check, not just a
    working-tree version consistency check
 
 ## Section Expectations

@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.030';
+our $VERSION = '0.031';
 
 1;
 
@@ -504,7 +504,10 @@ C<Changes>.
 
 =item * C<make cpan-build> and C<make cpan-gate>.
 
-=item * C<make git-gate> as the final independent closure gate.
+=item * C<make git-gate> on the committed tree.
+
+=item * C<make push-gate> as the final closure gate that pushes the committed
+HEAD to C<origin>.
 
 =back
 
@@ -544,11 +547,12 @@ Primary validation from a repository checkout is:
   make cpan-gate
 
 Completion requires the full chain, not a partial subset. C<release-gate>,
-C<cpan-gate>, or C<git-gate> alone are not sufficient. In project rules, "all
-gates" means the full closure sequence from TDD through the final independent
-git gate. C<make all-gates> is only the convenience target for replaying that
-final verification set. Treat the change set as complete only when the full
-gate chain has closed and the committed tree passes git gate.
+C<cpan-gate>, C<git-gate>, or C<push-gate> alone are not sufficient. In
+project rules, "all gates" means the full closure sequence from TDD through
+the final push gate. C<make all-gates> is only the convenience target for
+replaying that final verification set. Treat the change set as complete only
+when the full gate chain has closed, the committed tree passes git gate, and
+the committed HEAD has been pushed to C<origin>.
 
 =head1 KNOWN LIMITATIONS
 

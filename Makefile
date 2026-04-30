@@ -24,7 +24,7 @@ ATDD_TESTS = \
 	t/app_image.t \
 	t/standalone_image.t
 
-.PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release pause-release-tag cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate version-history-gate doc-gate pod-doc-all changes-gate release-gate cpan-verify-paths cpan-gate git-gate
+.PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release pause-release-tag cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate version-history-gate doc-gate pod-doc-all changes-gate release-gate cpan-verify-paths cpan-gate git-gate push-gate
 
 test:
 	prove -lr t
@@ -41,8 +41,8 @@ atdd-gate:
 qa-gate: tdd-gate bdd-gate atdd-gate release-gate
 	@echo "qa-gate: TDD, BDD, ATDD, version, Changes, and docs OK"
 
-all-gates: qa-gate version-history-gate cpan-gate git-gate
-	@echo "all-gates: QA, version history, CPAN, and git gates OK"
+all-gates: qa-gate version-history-gate cpan-gate git-gate push-gate
+	@echo "all-gates: QA, version history, CPAN, git, and push gates OK"
 
 build:
 	$(PERL) bin/pax build --paxfile t/fixtures/paxfile.yml
@@ -149,6 +149,11 @@ git-gate:
 			exit 1; \
 		fi
 	@echo "git-gate: forbidden tracked files absent and working tree clean"
+
+push-gate:
+	@git remote get-url origin >/dev/null 2>&1 || (echo "push-gate: no origin remote configured" && exit 1)
+	git push origin HEAD
+	@echo "push-gate: origin updated for HEAD"
 
 cpan-release:
 	command -v cpan-upload >/dev/null 2>&1 || (echo "CPAN::Uploader is required: cpanm CPAN::Uploader" && exit 1)
