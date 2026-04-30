@@ -1,3 +1,12 @@
+0.028  Thu Apr 30 21:35:00 2026
+    - Closed the CPANTS kwalitee gaps from the `0.027` release by adding
+      explicit `Capture::Tiny` prereqs, repository/provides metadata, a Perl
+      version declaration, a real license section in the main POD, and shipped
+      `SECURITY.md` plus `CONTRIBUTING.md` with concrete reporting guidance.
+    - Fixed the `make cpan-release` upload path so it passes the configured
+      PAUSE credentials to `cpan-upload` instead of relying on an implicit
+      shell environment inside the make recipe.
+
 0.027  Thu Apr 30 09:40:00 2026
     - Expanded the README and main PAX POD to explain the current
       shape-driven performance model directly, including concrete examples of

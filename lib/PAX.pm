@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.027';
+our $VERSION = '0.028';
 
 1;
 
@@ -654,6 +654,24 @@ framework code embedded into one standalone executable.
 =item * C<Changes>, C<cpanfile>, C<dist.ini> - release metadata.
 
 =back
+
+=head1 LICENSE
+
+Copyright 2026 PAX Contributors.
+
+This distribution is licensed under the Artistic License 2.0.
+
+You may use, modify, and redistribute it under the terms of the Artistic
+License 2.0. The full license text is available at
+L<https://opensource.org/license/artistic-2-0>.
+
+=head1 SECURITY
+
+Security issues should be reported privately before they are discussed in a
+public issue tracker.
+
+See the repository F<SECURITY.md> for the reporting address, the backup private
+advisory route, and the reproduction detail needed for triage.
 
 =head1 SEE ALSO
 

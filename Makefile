@@ -159,7 +159,9 @@ cpan-release:
 		echo "missing tarball $$tarball"; \
 		exit 1; \
 	fi; \
-	cpan-upload "$$tarball"
+	: "$${PAUSE_USER:?PAUSE_USER is required}"; \
+	: "$${PAUSE_PASS:?PAUSE_PASS is required}"; \
+	cpan-upload --user "$$PAUSE_USER" --password "$$PAUSE_PASS" "$$tarball"
 	$(MAKE) pause-release-tag RELEASED_COMMIT="$$(git rev-parse HEAD)"
 
 pause-release-tag:
