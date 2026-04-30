@@ -1,3 +1,10 @@
+0.027  Thu Apr 30 09:40:00 2026
+    - Expanded the README and main PAX POD to explain the current
+      shape-driven performance model directly, including concrete examples of
+      workloads that do well, workloads that are still weak, and what operators
+      should report when they see a performance regression or an unexpectedly
+      slow packaged binary.
+
 0.026  Tue Apr 29 23:55:00 2026
     - Stopped standalone builds from executing arbitrary long-running source
       scripts during source-plan or native-shape discovery. Script entrypoints

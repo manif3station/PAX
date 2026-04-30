@@ -415,6 +415,23 @@ public facade.
 
 - Perl’s dynamic loading and runtime mutation can require fallback code paths.
 - Native speedups depend on whether PAX can prove a region is safe to compile.
+- Performance is still shape-driven today. PAX is not hard-coded for one app or
+  one module name, but it does accelerate some Perl code shapes better than
+  others. Good current candidates include tight integer arithmetic loops,
+  repeated numeric leaf routines, and structurally predictable hot paths. Weak
+  current candidates include dynamic metaprogramming, runtime-heavy startup,
+  IO-dominated scripts, irregular control flow, and broad general-purpose Perl
+  that never lowers into a native region.
+- Practical examples:
+  - A long-running numeric benchmark like `/tmp/long-process-2.pl` can do very
+    well once PAX recognizes the loop shape and lowers it into a packaged native
+    kernel.
+  - A normal CLI command such as `dashboard version` or `dashboard ps1` can be
+    bottlenecked by framework startup, helper dispatch, subprocess work, or
+    other runtime behavior that is not yet a native hot region.
+- This means PAX is not yet "compile once and every Perl workload becomes
+  Rust-fast." The current model is broader than a one-off app patch, but still
+  selective by supported semantic pattern.
 - Bundled runtime artifacts are larger than source-only wrappers because they
   include enough Perl/runtime payload to run without the source tree.
 - Bundled-perl binaries are validated for builder and runtime environments from
@@ -435,6 +452,32 @@ and runtime logic are expected to stay neutral and reusable.
 No. The target is to package the whole application correctly and accelerate hot
 paths that PAX can prove are safe to specialize. Dynamic regions still use
 fallback execution.
+
+### Is PAX still case by case?
+
+Not by project name or package name. It should stay neutral across arbitrary
+Perl applications. But today it is still case by supported code shape. If PAX
+recognizes a loop or leaf routine class and can lower it safely, it can do very
+well. If the workload stays in dynamic Perl semantics, it will package
+correctly but may run close to stock Perl speed.
+
+### What should I report as a performance issue?
+
+Report any case where:
+
+- a standalone binary is slower than stock Perl in a workload that looks
+  structurally simple
+- a hot loop or numeric kernel does not improve when you expected it to
+- an application command regresses badly after packaging
+- performance changes significantly across builder/runtime environments
+
+For a useful report, include:
+
+- the command or script you ran
+- stock Perl timing
+- PAX build timing
+- standalone runtime timing
+- whether the workload is CPU-heavy, IO-heavy, startup-heavy, or dynamic
 
 ### Does `pax run` require a separate app server?
 
