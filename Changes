@@ -1,3 +1,15 @@
+0.030  Thu Apr 30 23:40:00 2026
+    - Replaced the repetitive sum-loop marketing block in the README and main
+      PAX POD with five separately measured workload examples that are framed
+      as different common jobs: invoice rollup, retry budget planning, shard
+      weight planning, backfill window checksum, and cohort retention
+      counting.
+    - Synced the README and main POD again so both documents now carry the
+      same inline code snippets and the same proven measurements from the
+      local Linux/x86_64 host. Across those examples, stock Perl took about
+      `116s` to `120s`, while the packaged standalone binaries finished in
+      about `1.16s` to `1.27s`.
+
 0.029  Thu Apr 30 22:45:00 2026
     - Synced the README and main PAX POD again and replaced file-name-only
       performance discussion with five measured code snippets that PAX

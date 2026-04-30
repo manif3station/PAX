@@ -425,7 +425,9 @@ public facade.
 - Proven acceleration examples matter more than claims. The current strong
   cases are simple integer sum-loop kernels that PAX can lower into a native
   region safely. The following five snippets were measured on this repository's
-  `0.029` toolchain on the local Linux/x86_64 build host:
+  `0.030` toolchain on the local Linux/x86_64 build host:
+
+  Invoice rollup:
 
   ```perl
   use strict;
@@ -439,37 +441,23 @@ public facade.
       }
       return $sum;
   }
+  sub invoice_rollup {
+      my ($lines, $tax_basis) = @_;
+      my $subtotal = sum_to_n($lines);
+      my $tax = sum_to_n($tax_basis) & 0xFFFF;
+      return ($subtotal ^ $tax) & 0x7fffffff;
+  }
   my $start = time();
-  my $total = 0;
-  for (my $r = 0; $r < 6; $r++) {
-      $total ^= sum_to_n(500_000_000);
+  my $out = 0;
+  for my $batch (1..8) {
+      $out ^= invoice_rollup(500_000_000, 50_000);
   }
   print "elapsed=", time() - $start, "\n";
   ```
-  Measured runtime: stock Perl `89.94s`, standalone `0.95s`, about `94.9x`
+  Measured runtime: stock Perl `120.35s`, standalone `1.26s`, about `95.4x`
   faster.
 
-  ```perl
-  use strict;
-  use warnings;
-  use Time::HiRes qw(time);
-  sub sum_to_n {
-      my ($n) = @_;
-      my $sum = 0;
-      for (my $i = 1; $i <= $n; $i++) {
-          $sum += $i;
-      }
-      return $sum;
-  }
-  my $start = time();
-  my $total = 0;
-  for (my $r = 0; $r < 6; $r++) {
-      $total += sum_to_n(500_000_000) & 0xFFFF;
-  }
-  print "elapsed=", time() - $start, "\n";
-  ```
-  Measured runtime: stock Perl `88.96s`, standalone `0.91s`, about `97.7x`
-  faster.
+  Retry budget planning:
 
   ```perl
   use strict;
@@ -483,16 +471,22 @@ public facade.
       }
       return $sum;
   }
+  sub retry_budget {
+      my ($attempts) = @_;
+      my $budget = sum_to_n($attempts);
+      return ($budget >> 3) & 0xFFFFFFFF;
+  }
   my $start = time();
-  my $best = 0;
-  for (my $r = 0; $r < 6; $r++) {
-      my $v = sum_to_n(500_000_000);
-      $best = $v if $v > $best;
+  my $acc = 0;
+  for my $svc (1..8) {
+      $acc += retry_budget(500_000_000);
   }
   print "elapsed=", time() - $start, "\n";
   ```
-  Measured runtime: stock Perl `88.26s`, standalone `0.95s`, about `93.0x`
+  Measured runtime: stock Perl `116.70s`, standalone `1.27s`, about `91.6x`
   faster.
+
+  Shard weight planning:
 
   ```perl
   use strict;
@@ -506,15 +500,24 @@ public facade.
       }
       return $sum;
   }
-  my $start = time();
-  my $rolling = 0;
-  for (my $r = 0; $r < 6; $r++) {
-      $rolling = (($rolling << 1) ^ sum_to_n(500_000_000)) & 0x7fffffff;
+  sub shard_weight {
+      my ($events) = @_;
+      my $w = sum_to_n($events);
+      return (($w << 1) ^ ($w >> 5)) & 0x7FFFFFFF;
   }
+  my $start = time();
+  my @weights;
+  for my $shard (1..8) {
+      push @weights, shard_weight(500_000_000);
+  }
+  my $acc = 0;
+  $acc ^= $_ for @weights;
   print "elapsed=", time() - $start, "\n";
   ```
-  Measured runtime: stock Perl `88.39s`, standalone `0.92s`, about `96.0x`
+  Measured runtime: stock Perl `117.49s`, standalone `1.19s`, about `98.4x`
   faster.
+
+  Backfill window checksum:
 
   ```perl
   use strict;
@@ -528,15 +531,48 @@ public facade.
       }
       return $sum;
   }
+  sub window_checksum {
+      my ($n) = @_;
+      my $v = sum_to_n($n);
+      return (($v & 0xFFFF) ^ (($v >> 16) & 0xFFFF));
+  }
   my $start = time();
-  my $bucket = 0;
-  for (my $r = 0; $r < 6; $r++) {
-      my $v = sum_to_n(500_000_000);
-      $bucket += ($v & 1) ? ($v & 0xFFFF) : (($v >> 4) & 0xFFFF);
+  my $checksum = 0;
+  for my $window (1..8) {
+      $checksum = (($checksum << 5) ^ window_checksum(500_000_000)) & 0x7FFFFFFF;
   }
   print "elapsed=", time() - $start, "\n";
   ```
-  Measured runtime: stock Perl `88.98s`, standalone `0.92s`, about `96.3x`
+  Measured runtime: stock Perl `117.31s`, standalone `1.23s`, about `95.1x`
+  faster.
+
+  Cohort retention counting:
+
+  ```perl
+  use strict;
+  use warnings;
+  use Time::HiRes qw(time);
+  sub sum_to_n {
+      my ($n) = @_;
+      my $sum = 0;
+      for (my $i = 1; $i <= $n; $i++) {
+          $sum += $i;
+      }
+      return $sum;
+  }
+  sub retention_counter {
+      my ($population) = @_;
+      my $total = sum_to_n($population);
+      return ($total % 1_000_003);
+  }
+  my $start = time();
+  my $acc = 1;
+  for my $cohort (1..8) {
+      $acc = ($acc * 33 + retention_counter(500_000_000)) % 1_000_003;
+  }
+  print "elapsed=", time() - $start, "\n";
+  ```
+  Measured runtime: stock Perl `117.10s`, standalone `1.16s`, about `100.7x`
   faster.
 
 - By contrast, a normal CLI command such as `dashboard version` or `dashboard
@@ -572,10 +608,12 @@ fallback execution.
 Not by project name or package name. It should stay neutral across arbitrary
 Perl applications. But today it is still case by supported code shape. If PAX
 recognizes a loop or leaf routine class and can lower it safely, it can do very
-well. The five sum-loop examples above are proven cases where stock Perl took
-about `88s` to `90s` and the standalone binary finished in about `0.91s` to
-`0.95s`. If the workload stays in dynamic Perl semantics, it will package
-correctly but may run close to stock Perl speed.
+well. The five examples above are proven cases on this host: invoice rollup,
+retry budget planning, shard weight planning, backfill window checksum, and
+cohort retention counting. In those runs stock Perl took about `116s` to
+`120s`, while the standalone binaries finished in about `1.16s` to `1.27s`.
+If the workload stays in dynamic Perl semantics, it will package correctly but
+may run close to stock Perl speed.
 
 ### What should I report as a performance issue?
 

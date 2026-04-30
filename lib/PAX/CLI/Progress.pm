@@ -1,6 +1,6 @@
 package PAX::CLI::Progress;
 
-our $VERSION = '0.029';
+our $VERSION = '0.030';
 
 use strict;
 use warnings;
