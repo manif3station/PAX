@@ -1,6 +1,6 @@
 package PAX::Capture;
 
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;
@@ -356,7 +356,9 @@ sub _native_shape_for_sub {
     my $source = _slurp($file || $entrypoint);
     my $body = _extract_sub_body($source, $sub_name);
     return undef if !defined $body;
-    return _lower_i64_binary_leaf($body) || _lower_i64_sum_loop($body);
+    return _lower_i64_binary_leaf($body)
+        || _lower_i64_sum_loop($body)
+        || _lower_i64_masked_mix_accum_loop($body);
 }
 
 sub _extract_sub_body {
@@ -432,6 +434,32 @@ sub _lower_i64_sum_loop {
     }
     sum
 RUST_BODY
+        source => 'capture_optree_unit',
+    };
+}
+
+# Recognize the masked-mix accumulator loop shape so the capture pipeline can
+# promote long-running arithmetic kernels into a native loop candidate.
+sub _lower_i64_masked_mix_accum_loop {
+    my ($body) = @_;
+    return if $body !~ /my\s*\(\s*\$([A-Za-z_]\w*)\s*\)\s*=\s*\@_\s*;/s;
+    my $limit = $1;
+    return if $body !~ /my\s+\$([A-Za-z_]\w*)\s*=\s*0\s*;/s;
+    my $acc = $1;
+    my $limit_ref = quotemeta('$' . $limit);
+    my $acc_ref = quotemeta('$' . $acc);
+    return if $body !~ /for\s*\(\s*my\s+\$([A-Za-z_]\w*)\s*=\s*0\s*;\s*\$\1\s*<\s*$limit_ref\s*;\s*\$\1\+\+\s*\)\s*\{\s*$acc_ref\s*\+=\s*\(\(\s*\$\1\s*\*\s*13\s*\)\s*\^\s*\(\s*\$\1\s*>>\s*3\s*\)\)\s*&\s*0xFFFF\s*;\s*\}/s;
+    my $induction = $1;
+    return if $body !~ /return\s+$acc_ref\s*;/s;
+    return {
+        kind => 'i64_masked_mix_accum_loop',
+        op => 'masked_mix_accumulate',
+        args => [$limit],
+        accumulator => $acc,
+        induction => $induction,
+        smoke_left => 8,
+        smoke_right => 0,
+        smoke_expected => 360,
         source => 'capture_optree_unit',
     };
 }

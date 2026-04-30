@@ -1,5 +1,5 @@
 package PAX::Backend::Tier2LLVM;
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;
@@ -73,6 +73,10 @@ sub module_for {
 
     if (($shape->{kind} // '') eq 'i64_sum_loop') {
         return _module($region_id, $region_name, _llvm_sum_loop_body(), 'LLVM IR emitted for guarded i64 sum loop');
+    }
+
+    if (($shape->{kind} // '') eq 'i64_masked_mix_accum_loop') {
+        return _module($region_id, $region_name, _llvm_masked_mix_accum_loop_body(), 'LLVM IR emitted for guarded i64 masked mix accumulation loop');
     }
 
     return {
@@ -159,6 +163,34 @@ done_zero:
 
 done_sum:
   ret i64 %next_sum
+LLVM
+}
+
+# Lower the masked-mix accumulator loop into Tier 2 LLVM IR for native script
+# and standalone benchmarking paths.
+sub _llvm_masked_mix_accum_loop_body {
+    return <<'LLVM';
+entry:
+  %non_positive = icmp sle i64 %left, 0
+  br i1 %non_positive, label %done_zero, label %loop
+
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next_i, %loop ]
+  %acc = phi i64 [ 0, %entry ], [ %next_acc, %loop ]
+  %mul = mul nsw i64 %i, 13
+  %shift = ashr i64 %i, 3
+  %mix = xor i64 %mul, %shift
+  %term = and i64 %mix, 65535
+  %next_acc = add nsw i64 %acc, %term
+  %next_i = add nsw i64 %i, 1
+  %again = icmp slt i64 %next_i, %left
+  br i1 %again, label %loop, label %done_sum
+
+done_zero:
+  ret i64 0
+
+done_sum:
+  ret i64 %next_acc
 LLVM
 }
 

@@ -1,6 +1,6 @@
 package PAX::StandaloneAnalysis;
 
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;
@@ -159,6 +159,10 @@ sub native_artifacts {
     my ($self, %args) = @_;
     my $entrypoint = $args{entrypoint} // die 'entrypoint required';
     my $code_units = $args{code_units} // [];
+    my $static_units = _static_native_units_from_code_units($code_units);
+    if (@$static_units) {
+        return _native_artifacts_from_units($static_units, _default_runtime_epochs());
+    }
     my @probe_paths = _native_probe_paths($entrypoint, $code_units);
     return { items => [], summary => { native_ready => 0, fallback_only => 0, total => 0 }, runtime_epochs => undef }
         if !_native_probe_worthwhile(\@probe_paths);
@@ -194,13 +198,20 @@ sub native_artifacts {
         runtime_epochs => undef,
     } if $@;
 
+    return _native_artifacts_from_units($ssa, $manifest->{runtime_epochs});
+}
+
+# Convert compiled unit metadata into the standalone native-artifact summary
+# without requiring a fresh live capture step.
+sub _native_artifacts_from_units {
+    my ($units, $runtime_epochs) = @_;
     my @items;
     my %summary = (
         total => 0,
         native_ready => 0,
         fallback_only => 0,
     );
-    for my $unit (@$ssa) {
+    for my $unit (@$units) {
         my $artifact = PAX::Tier1->new(out_dir => '.pax/standalone-native')->compile($unit);
         my %item = (
             region_id => $unit->{region_id},
@@ -208,8 +219,8 @@ sub native_artifacts {
             status => $artifact->{status},
             entry_kind => $artifact->{entry_kind},
             reason => $artifact->{reason},
-            guards => $unit->{guards},
-            deopt => $unit->{deopt},
+            guards => $unit->{guards} // [],
+            deopt => $unit->{deopt} // {},
             tier2_artifact => $artifact->{tier2_artifact},
         );
         if (($artifact->{entry_kind} // '') =~ /\Anative_i64_(?:leaf|loop)\z/ && $artifact->{executable_path}) {
@@ -226,8 +237,73 @@ sub native_artifacts {
     return {
         items => \@items,
         summary => \%summary,
-        runtime_epochs => $manifest->{runtime_epochs},
+        runtime_epochs => $runtime_epochs,
     };
+}
+
+# Scan packaged code units for native-capable sub metadata that can be promoted
+# into standalone dispatch artifacts.
+sub _static_native_units_from_code_units {
+    my ($code_units) = @_;
+    my @units;
+    my $index = 0;
+    for my $unit (@$code_units) {
+        next if ref($unit) ne 'HASH';
+        my $bytes = $unit->{bytes};
+        next if !defined $bytes || $bytes eq '';
+        my $record = eval { JSON::PP::decode_json($bytes) };
+        next if !$record || ref($record) ne 'HASH';
+        my @subs = (
+            @{ $record->{subs} // [] },
+            @{ $record->{compiled_subs} // [] },
+        );
+        for my $sub (@subs) {
+            next if ref($sub) ne 'HASH';
+            my $shape = $sub->{native_shape};
+            next if ref($shape) ne 'HASH' || !%$shape;
+            my $full_name = $sub->{full_name} // do {
+                my $package = $record->{package} // 'main';
+                my $name = $sub->{name} // next;
+                $package . '::' . $name;
+            };
+            push @units, {
+                region_id => sprintf('static-region-%04d', ++$index),
+                region_name => $full_name,
+                native_shape => $shape,
+                source => {
+                    native_shape => $shape,
+                },
+                guards => _default_guards(),
+                deopt => {
+                    safepoint => sprintf('static-region-%04d:entry', $index),
+                },
+            };
+        }
+    }
+    return \@units;
+}
+
+# Seed static standalone artifacts with the baseline epoch set used by guarded
+# runtime dispatch.
+sub _default_runtime_epochs {
+    return {
+        package_symbols => 1,
+        method_resolution => 1,
+        loaded_modules => 1,
+    };
+}
+
+# Provide the default guard set for static native artifacts derived from
+# compiled-unit metadata.
+sub _default_guards {
+    return [
+        map +{
+            id => 'guard_' . $_,
+            predicate => $_ . '_epoch_unchanged',
+            invalidation_key => $_,
+            compatibility_classification => 'guarded',
+        }, qw(package_symbols method_resolution loaded_modules)
+    ];
 }
 
 sub _native_probe_paths {

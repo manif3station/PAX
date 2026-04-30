@@ -29,6 +29,64 @@ local $ENV{PAX_PROGRESS} = 0;
 remove_tree($sow03_root) if -d $sow03_root;
 make_path($sow03_root);
 
+# Execute a CLI command with explicit stdout/stderr capture so the test can
+# inspect machine-readable output without shell redirection races.
+sub _run_with_redirect {
+    my (%args) = @_;
+    my $stdout_path = $args{stdout};
+    my $stderr_path = $args{stderr};
+    my $env = $args{env} // {};
+    my $cwd = $args{cwd};
+    my @cmd = @{ $args{cmd} // [] };
+
+    die 'stdout path is required' if !defined $stdout_path;
+    die 'stderr path is required' if !defined $stderr_path;
+    die 'command is required' if !@cmd;
+
+    my $pid = fork();
+    die "fork failed: $!" if !defined $pid;
+    if ($pid == 0) {
+        if (defined $cwd) {
+            chdir $cwd or die "cannot chdir to $cwd: $!";
+        }
+        while (my ($key, $value) = each %{$env}) {
+            if (defined $value) {
+                $ENV{$key} = $value;
+            }
+            else {
+                delete $ENV{$key};
+            }
+        }
+        open STDOUT, '>', $stdout_path or die "cannot open stdout redirect $stdout_path: $!";
+        open STDERR, '>', $stderr_path or die "cannot open stderr redirect $stderr_path: $!";
+        exec { $cmd[0] } @cmd or die "cannot exec @cmd: $!";
+    }
+
+    waitpid($pid, 0);
+    return $? >> 8;
+}
+
+# Remove a temporary file or directory created by the CLI acceptance harness.
+sub _cleanup_path {
+    my ($path) = @_;
+    return if !defined $path || !-e $path;
+    if (-d $path) {
+        remove_tree($path);
+        return;
+    }
+    unlink $path or die "cannot remove $path: $!";
+}
+
+# Remove a generated standalone binary and its sibling C source when the test no
+# longer needs them.
+sub _cleanup_binary_artifact {
+    my ($path) = @_;
+    return if !defined $path;
+    _cleanup_path($path) if -e $path;
+    my $c_path = "$path.c";
+    _cleanup_path($c_path) if -e $c_path;
+}
+
 my $help = `$^X $pax help`;
 is($? >> 8, 0, 'pax help exits successfully');
 like($help, qr/^usage:\n  pax build /, 'help starts with build usage');
@@ -66,8 +124,13 @@ is($override_run_output, "embedded-fixture-asset\n", 'run command executes binar
 
 my $progress_json = "$sow03_root/progress-build.json";
 my $progress_stderr = "$sow03_root/progress-build.stderr";
-system("PAX_PROGRESS=1 $^X $pax build --compact --paxfile t/fixtures/paxfile.yml >$progress_json 2>$progress_stderr");
-is($? >> 8, 0, 'pax build still succeeds when progress rundown is emitted by default');
+my $progress_rc = _run_with_redirect(
+    env => { PAX_PROGRESS => 1 },
+    stdout => $progress_json,
+    stderr => $progress_stderr,
+    cmd => [ $^X, $pax, 'build', '--compact', '--paxfile', 't/fixtures/paxfile.yml' ],
+);
+is($progress_rc, 0, 'pax build still succeeds when progress rundown is emitted by default');
 open my $progress_fh, '<', $progress_stderr or die "cannot read progress stderr: $!";
 my $progress_text = do { local $/; <$progress_fh> };
 close $progress_fh;
@@ -90,8 +153,13 @@ is($progress_build->{status}, 'built', 'pax build keeps machine-readable payload
 
 my $quiet_json = "$sow03_root/quiet-build.json";
 my $quiet_stderr = "$sow03_root/quiet-build.stderr";
-system("PAX_PROGRESS=0 $^X $pax build --compact --paxfile t/fixtures/paxfile.yml >$quiet_json 2>$quiet_stderr");
-is($? >> 8, 0, 'pax build still succeeds when progress rundown is disabled');
+my $quiet_rc = _run_with_redirect(
+    env => { PAX_PROGRESS => 0 },
+    stdout => $quiet_json,
+    stderr => $quiet_stderr,
+    cmd => [ $^X, $pax, 'build', '--compact', '--paxfile', 't/fixtures/paxfile.yml' ],
+);
+is($quiet_rc, 0, 'pax build still succeeds when progress rundown is disabled');
 open my $quiet_fh, '<', $quiet_stderr or die "cannot read quiet stderr: $!";
 my $quiet_text = do { local $/; <$quiet_fh> };
 close $quiet_fh;
@@ -121,12 +189,29 @@ my $no_arg_run_output = `cd $workdir && $^X $pax run -- status`;
 is($? >> 8, 0, 'pax run with no build arguments reads local paxfile.yml');
 is($no_arg_run_output, "slowload-ready\n", 'no-argument run executes built standalone binary');
 
+for my $early_artifact (
+    $paxfile_binary,
+    $override_binary,
+    $no_arg_binary,
+) {
+    _cleanup_binary_artifact($early_artifact);
+}
+_cleanup_path($progress_json) if -e $progress_json;
+_cleanup_path($progress_stderr) if -e $progress_stderr;
+_cleanup_path($quiet_json) if -e $quiet_json;
+_cleanup_path($quiet_stderr) if -e $quiet_stderr;
+
 my $blank = "$sow03_root/blank";
 make_path($blank);
 my $self_binary = "$sow03_root/pax-self";
 my $self_build_log = "$sow03_root/pax-self-build.json";
-system("cd $blank && $^X $pax build --compact -o $self_binary $repo/bin/pax > $self_build_log");
-is($? >> 8, 0, 'pax build -o output bin/pax succeeds from a blank directory without paxfile.yml');
+my $self_build_rc = _run_with_redirect(
+    cwd => $blank,
+    stdout => $self_build_log,
+    stderr => File::Spec->catfile($sow03_root, 'pax-self-build.stderr'),
+    cmd => [ $^X, $pax, 'build', '--compact', '-o', $self_binary, "$repo/bin/pax" ],
+);
+is($self_build_rc, 0, 'pax build -o output bin/pax succeeds from a blank directory without paxfile.yml');
 ok(-x $self_binary, 'self-built pax binary is executable');
 my $self_help = `cd $blank && env -i PATH=/nonexistent TMPDIR=/tmp $self_binary help`;
 is($? >> 8, 0, 'self-built pax runs without source checkout in its working directory');
@@ -180,6 +265,20 @@ my $inline_output = `env -i PATH=/nonexistent TMPDIR=/tmp $inline_binary`;
 is($? >> 8, 0, 'inline standalone binary executes successfully');
 is($inline_output, 'inline:alpha|beta', 'inline standalone binary honors imported module arguments');
 
+# Reclaim earlier standalone artifacts before the nested self-host build. Each
+# bundled-perl binary is large enough that keeping every intermediate around can
+# exhaust CI or local acceptance volumes.
+for my $old_artifact (
+    $self_run_binary,
+    $inline_binary,
+) {
+    _cleanup_binary_artifact($old_artifact);
+}
+_cleanup_path($self_build_log) if -e $self_build_log;
+_cleanup_path(File::Spec->catfile($sow03_root, 'pax-self-build.stderr')) if -e File::Spec->catfile($sow03_root, 'pax-self-build.stderr');
+remove_tree($blank);
+make_path($blank);
+
 my $inline_run_output = `cd $blank && $^X $pax run -I$inline_lib_root -MLocal::InlineDemo=gamma,delta -e 'print Local::InlineDemo->render'`;
 is($? >> 8, 0, 'pax run accepts compact -I and -M forms with -e');
 is($inline_run_output, 'inline:gamma|delta', 'inline pax run executes synthesized entrypoint');
@@ -208,8 +307,14 @@ my $nested_status = `env -i PATH=/nonexistent TMPDIR=/tmp $nested_binary status`
 is($? >> 8, 0, 'nested standalone binary built by self-built pax executes');
 is($nested_status, "slowload-ready\n", 'nested standalone built by self-built pax returns expected output');
 
+_cleanup_path($nested_binary);
+_cleanup_binary_artifact($nested_binary);
+remove_tree($nested_workdir);
+
 my $standalone_input_binary = "$sow03_root/pax-standalone-input";
-my $standalone_input_build_json = `cd $blank && env -i PATH=/nonexistent TMPDIR=/tmp PAX_PROGRESS=0 $self_binary build --compact -o $standalone_input_binary $self_binary`;
+my $standalone_blank = "$sow03_root/standalone-input-work";
+make_path($standalone_blank);
+my $standalone_input_build_json = `cd $standalone_blank && env -i PATH=/nonexistent TMPDIR=/tmp PAX_PROGRESS=0 $self_binary build --compact -o $standalone_input_binary $self_binary`;
 is($? >> 8, 0, 'self-built pax can rebuild from a standalone pax binary input');
 my $standalone_input_build = decode_json($standalone_input_build_json);
 is($standalone_input_build->{status}, 'built', 'standalone pax input rebuild reports success');
@@ -217,6 +322,7 @@ ok(-x $standalone_input_binary, 'standalone pax input rebuild writes an executab
 my $standalone_input_help = `env -i PATH=/nonexistent TMPDIR=/tmp $standalone_input_binary help`;
 is($? >> 8, 0, 'rebuilt standalone pax binary from standalone input executes');
 like($standalone_input_help, qr/^usage:\n  pax build /, 'rebuilt standalone pax binary from standalone input keeps minimal CLI');
+remove_tree($standalone_blank);
 
 my $shebang_root = "$sow03_root/shebang";
 my $shebang_bin_dir = "$shebang_root/bin";

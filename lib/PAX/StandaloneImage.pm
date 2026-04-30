@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;
@@ -300,6 +300,7 @@ sub _progress_emit {
 sub _standalone_source_plan {
     my ($entrypoint) = @_;
     return {} if !defined $entrypoint || !-f $entrypoint || !-x $entrypoint;
+    return {} if _looks_like_plain_script_entrypoint($entrypoint);
 
     my $inspect = _standalone_inspect_json($entrypoint);
     return {} if $inspect eq '';
@@ -368,6 +369,16 @@ sub _standalone_source_plan {
         app_entrypoint_fallback => $manifest->{app}{entrypoint_fallback},
         app_command => $manifest->{app}{command},
     };
+}
+
+# Detect executable Perl scripts that should be compiled as scripts rather than
+# treated as already-built standalone binaries.
+sub _looks_like_plain_script_entrypoint {
+    my ($entrypoint) = @_;
+    open my $fh, '<:raw', $entrypoint or return 0;
+    read($fh, my $prefix, 128);
+    close $fh;
+    return $prefix =~ /\A#!/ ? 1 : 0;
 }
 
 sub _standalone_inspect_json {

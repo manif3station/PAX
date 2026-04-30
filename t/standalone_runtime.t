@@ -23,6 +23,57 @@ ok(PAX::StandaloneRuntime::_system_command_missing($missing_stderr, $missing_exi
 }
 
 {
+    my $shape = {
+        kind => 'i64_masked_mix_accum_loop',
+        args => ['n'],
+    };
+    my $source = <<'PERL';
+# Mirror the long-running masked-mix loop shape so standalone runtime tests can
+# validate script-native dispatch and fallback behavior.
+sub dot_i64 {
+    my ($n) = @_;
+    my $acc = 0;
+    for (my $i = 0; $i < $n; $i++) {
+        $acc += (($i * 13) ^ ($i >> 3)) & 0xFFFF;
+    }
+    return $acc;
+}
+
+print dot_i64(8), "\n";
+PERL
+    my $rewritten = PAX::StandaloneRuntime::_apply_compiled_script_subs($source, [{
+        op => 'native_shape_sub',
+        name => 'dot_i64',
+        full_name => 'main::dot_i64',
+        prototype => undef,
+        native_shape => $shape,
+    }]);
+    like($rewritten, qr/_run_native_shape_sub\('main::dot_i64'/, 'compiled script source rewrites native-capable sub bodies through standalone runtime dispatcher');
+    is(index($rewritten, '(($i * 13) ^ ($i >> 3)) & 0xFFFF'), -1, 'compiled script source removes original Perl loop body for rewritten native sub');
+}
+
+{
+    no warnings 'redefine';
+    my @calls;
+    local *PAX::StandaloneRuntime::_invoke_native_shape_runtime = sub {
+        my ($full, $shape, $args) = @_;
+        push @calls, [$full, $shape->{kind}, [@$args]];
+        return {
+            status => 'ok',
+            value => 360,
+        };
+    };
+    my $value = PAX::StandaloneRuntime::_run_native_shape_sub('main::dot_i64', {
+        kind => 'i64_masked_mix_accum_loop',
+        args => ['n'],
+    }, 8);
+    is($value, 360, 'native shape helper returns the native runtime value when a bundled artifact is available');
+    is_deeply(\@calls, [
+        ['main::dot_i64', 'i64_masked_mix_accum_loop', [8]],
+    ], 'native shape helper dispatches unary loop shapes through the bundled native artifact path');
+}
+
+{
     my $bin_dir = 't/tmp-standalone-bin';
     mkdir $bin_dir if !-d $bin_dir;
     open my $fh, '>', "$bin_dir/pax-demo" or die "cannot write fake standalone executable: $!";

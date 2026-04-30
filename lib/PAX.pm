@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 1;
 
@@ -109,6 +109,11 @@ runtime payload packaging for source-tree-free execution
 
 packaged helper commands plus linked XS shared libraries and SONAME aliases for source-tree-free
 execution
+
+=item *
+
+static standalone analysis for plain Perl scripts, so long-running entrypoints
+do not execute themselves during C<pax build>
 
 =item *
 
@@ -344,6 +349,11 @@ own C<paxfile.yml>. A self-built standalone C<pax> binary can also rebuild
 from another standalone C<pax> binary input after the original source tree has
 been removed, because the rebuild path carries an embedded source snapshot for
 the application units it needs to rebuild.
+
+For plain executable Perl scripts, the standalone build path now keeps source
+analysis static. C<pax build> does not need to execute a long-running script
+just to inspect it, and recognized numeric loop subs can be rebound through
+packaged native artifacts before the script's top-level work starts.
 
 =head1 ARCHITECTURE
 

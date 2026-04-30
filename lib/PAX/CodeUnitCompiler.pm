@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;
@@ -214,12 +214,12 @@ sub _compile_sub {
     my $name = $sub->{name} // return;
     my ($full_package, $short_name) = $name =~ /^(.*)::([^:]+)$/ or return;
     my $shape = $sub->{native_shape};
-    if ($shape && ($shape->{kind} // '') eq 'i64_binary_leaf') {
+    if ($shape && ($shape->{kind} // '') =~ /\Ai64_(?:binary_leaf|sum_loop|masked_mix_accum_loop)\z/) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
             name => $short_name,
             full_name => $name,
-            op => 'i64_binary_leaf',
+            op => 'native_shape_sub',
             native_shape => $shape,
             prototype => $prototype,
         };
@@ -12355,11 +12355,13 @@ sub _compiled_unit {
 
 sub _compiled_script_unit {
     my ($path, $kind, $logical_path, $source) = @_;
+    my @compiled_subs = _compiled_script_subs($path, $source);
     my $record = {
         format => 'script_pcu_v1',
         source_kind => $kind,
         source_path => $path,
         script_source => $source,
+        compiled_subs => \@compiled_subs,
     };
     if ($source =~ /exit\s+main\s*\(\s*\@ARGV\s*\)\s+unless\s+caller\s*;/s) {
         $record->{entry_invocation} = {
@@ -12381,6 +12383,123 @@ sub _compiled_script_unit {
         sha256 => sha256_hex($bytes),
         c_symbol => 'pax_code_' . sha256_hex($compiled_logical),
         bytes => $bytes,
+    };
+}
+
+# Derive compiled-sub metadata for plain script entrypoints without executing
+# the script during build-time analysis.
+sub _compiled_script_subs {
+    my ($path, $source) = @_;
+    my @subs;
+    for my $full_name (_declared_subs($source, 'main')) {
+        my ($short_name) = $full_name =~ /::([^:]+)\z/;
+        next if !$short_name;
+        my $compiled = _compile_script_sub_from_source($source, $full_name, $short_name) or next;
+        push @subs, $compiled;
+    }
+    my %seen;
+    return grep { !$seen{($_->{full_name} // '')}++ } @subs;
+}
+
+# Compile one extracted script sub into the same op records used for package
+# code units so standalone packaging can treat scripts and modules uniformly.
+sub _compile_script_sub_from_source {
+    my ($source, $full_name, $short_name) = @_;
+    my $body = _extract_sub_body($source, $short_name) or return;
+    if (my $shape = _native_shape_from_source_body($body)) {
+        return {
+            name => $short_name,
+            full_name => $full_name,
+            op => 'native_shape_sub',
+            native_shape => $shape,
+            prototype => _sub_prototype_from_source($source, $short_name),
+        };
+    }
+    return;
+}
+
+# Run the static script-body recognizers in priority order and return the first
+# supported native shape.
+sub _native_shape_from_source_body {
+    my ($body) = @_;
+    return _native_i64_binary_leaf_shape($body)
+        || _native_i64_sum_loop_shape($body)
+        || _native_i64_masked_mix_accum_loop_shape($body);
+}
+
+# Recognize small two-argument arithmetic leaf subs in extracted script source.
+sub _native_i64_binary_leaf_shape {
+    my ($body) = @_;
+    return if $body !~ /my\s*\(\s*\$([A-Za-z_]\w*)\s*,\s*\$([A-Za-z_]\w*)\s*\)\s*=\s*\@_\s*;/s;
+    my ($left, $right) = ($1, $2);
+    return if $body !~ /return\s+\$([A-Za-z_]\w*)\s*([+\-*]|>)\s*\$([A-Za-z_]\w*)\s*;/s;
+    return if $1 ne $left || $3 ne $right;
+    my %ops = (
+        '+' => ['add', 5],
+        '-' => ['subtract', -1],
+        '*' => ['multiply', 6],
+        '>' => ['greater_than', 0],
+    );
+    my $op = $ops{$2} or return;
+    return {
+        kind => 'i64_binary_leaf',
+        op => $op->[0],
+        args => [$left, $right],
+        smoke_left => 2,
+        smoke_right => 3,
+        smoke_expected => $op->[1],
+        source => 'source_static_scan',
+    };
+}
+
+# Recognize simple integer sum loops in extracted script source.
+sub _native_i64_sum_loop_shape {
+    my ($body) = @_;
+    return if $body !~ /my\s*\(\s*\$([A-Za-z_]\w*)\s*\)\s*=\s*\@_\s*;/s;
+    my $limit = $1;
+    return if $body !~ /my\s+\$([A-Za-z_]\w*)\s*=\s*0\s*;/s;
+    my $sum = $1;
+    my $limit_ref = quotemeta('$' . $limit);
+    my $sum_ref = quotemeta('$' . $sum);
+    return if $body !~ /for\s*\(\s*my\s+\$([A-Za-z_]\w*)\s*=\s*1\s*;\s*\$\1\s*<=\s*$limit_ref\s*;\s*\$\1\+\+\s*\)\s*\{\s*$sum_ref\s*\+=\s*\$\1\s*;\s*\}/s;
+    return if $body !~ /return\s+$sum_ref\s*;/s;
+    my $induction = $1;
+    return {
+        kind => 'i64_sum_loop',
+        op => 'sum_to_n',
+        args => [$limit],
+        accumulator => $sum,
+        induction => $induction,
+        smoke_left => 10,
+        smoke_right => 0,
+        smoke_expected => 55,
+        source => 'source_static_scan',
+    };
+}
+
+# Recognize the heavier masked-mix accumulator loop used by the long-process
+# benchmark scripts so standalone builds can emit a native kernel.
+sub _native_i64_masked_mix_accum_loop_shape {
+    my ($body) = @_;
+    return if $body !~ /my\s*\(\s*\$([A-Za-z_]\w*)\s*\)\s*=\s*\@_\s*;/s;
+    my $limit = $1;
+    return if $body !~ /my\s+\$([A-Za-z_]\w*)\s*=\s*0\s*;/s;
+    my $acc = $1;
+    my $limit_ref = quotemeta('$' . $limit);
+    my $acc_ref = quotemeta('$' . $acc);
+    return if $body !~ /for\s*\(\s*my\s+\$([A-Za-z_]\w*)\s*=\s*0\s*;\s*\$\1\s*<\s*$limit_ref\s*;\s*\$\1\+\+\s*\)\s*\{\s*$acc_ref\s*\+=\s*\(\(\s*\$\1\s*\*\s*13\s*\)\s*\^\s*\(\s*\$\1\s*>>\s*3\s*\)\)\s*&\s*0xFFFF\s*;\s*\}/s;
+    return if $body !~ /return\s+$acc_ref\s*;/s;
+    my $induction = $1;
+    return {
+        kind => 'i64_masked_mix_accum_loop',
+        op => 'masked_mix_accumulate',
+        args => [$limit],
+        accumulator => $acc,
+        induction => $induction,
+        smoke_left => 8,
+        smoke_right => 0,
+        smoke_expected => 360,
+        source => 'source_static_scan',
     };
 }
 

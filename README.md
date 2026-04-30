@@ -54,6 +54,7 @@ subcommands through `bin/pax`.
 - packaged runtime payloads for source-tree-free execution
 - packaged helper commands plus linked XS shared libraries and SONAME aliases for source-tree-free execution
 - adaptive compilation with explicit fallback behavior
+- static standalone analysis for plain Perl scripts, so long-running entrypoints do not execute themselves during `pax build`
 - self-hosted build capability, including building `bin/pax` itself
 - Docker-friendly multi-stage packaging
 
@@ -310,6 +311,11 @@ its own `paxfile.yml`. It can also rebuild from another standalone `pax`
 binary when the original source checkout is no longer present, because the
 build path carries an embedded source snapshot for the application units it
 needs to rebuild.
+
+For plain executable Perl scripts, the standalone build path now keeps source
+analysis static. `pax build` does not need to execute a long-running script
+just to inspect it, and recognized numeric loop subs can be rebound through
+packaged native artifacts before the script's top-level work starts.
 
 ## Asset Embedding
 

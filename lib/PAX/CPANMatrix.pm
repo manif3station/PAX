@@ -1,6 +1,6 @@
 package PAX::CPANMatrix;
 
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;

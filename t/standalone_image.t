@@ -39,6 +39,16 @@ local $ENV{PAX_STANDALONE_ROOT} = $root;
 my $builder = PAX::StandaloneImage->new(root => $root);
 my @progress_events;
 
+{
+    my $plain_script = File::Spec->catfile($tmp_base, 'plain-script.pl');
+    make_path($tmp_base);
+    open my $plain_fh, '>', $plain_script or die "cannot write plain script fixture: $!";
+    print {$plain_fh} "#!/usr/bin/env perl\nprint qq{plain\\n};\n";
+    close $plain_fh;
+    chmod 0755, $plain_script;
+    is_deeply(PAX::StandaloneImage::_standalone_source_plan($plain_script), {}, 'standalone source-plan skips arbitrary executable scripts instead of probing them as standalone binaries');
+}
+
 sub _free_tcp_port {
     my $sock = IO::Socket::INET->new(
         LocalAddr => '127.0.0.1',

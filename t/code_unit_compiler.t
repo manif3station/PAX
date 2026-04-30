@@ -40,6 +40,41 @@ my $entry_record = JSON::PP->new->decode($entry->{bytes});
 is($entry_record->{format}, 'dispatch_script_pcu_v1', 'dispatch script record format recorded');
 ok((grep { ($_->{command} // '') eq 'status' } @{ $entry_record->{actions} // [] }) >= 1, 'dispatch script records status action');
 
+{
+    my $script_root = tempdir(CLEANUP => 1);
+    my $script_path = "$script_root/native-loop.pl";
+    open my $script_fh, '>', $script_path or die "cannot write native loop script fixture: $!";
+    print {$script_fh} <<'PERL';
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+# Exercise the masked-mix accumulator loop shape that long-process benchmarks
+# rely on for native script lowering.
+sub dot_i64 {
+    my ($n) = @_;
+    my $acc = 0;
+    for (my $i = 0; $i < $n; $i++) {
+        $acc += (($i * 13) ^ ($i >> 3)) & 0xFFFF;
+    }
+    return $acc;
+}
+
+print dot_i64(8), "\n";
+PERL
+    close $script_fh;
+    my $script_unit = $compiler->compile(
+        path => $script_path,
+        kind => 'entrypoint',
+        logical_path => 'entrypoint/native-loop.pl',
+    );
+    is($script_unit->{packaging}, 'compiled_script_pcu_v1', 'native-loop script compiles to script PCU');
+    my $script_record = JSON::PP->new->decode($script_unit->{bytes});
+    my ($native_sub) = grep { ($_->{full_name} // '') eq 'main::dot_i64' } @{ $script_record->{compiled_subs} // [] };
+    ok($native_sub, 'script PCU records compiled native-capable sub metadata');
+    is(($native_sub->{native_shape}{kind} // ''), 'i64_masked_mix_accum_loop', 'script PCU records masked mix accumulation native shape');
+}
+
 my $slow = $compiler->compile(
     path => "$FindBin::Bin/fixtures/app_lib/SlowLoad.pm",
     kind => 'lib',

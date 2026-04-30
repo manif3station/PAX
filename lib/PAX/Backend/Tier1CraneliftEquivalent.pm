@@ -1,5 +1,5 @@
 package PAX::Backend::Tier1CraneliftEquivalent;
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;

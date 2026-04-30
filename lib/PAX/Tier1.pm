@@ -1,5 +1,5 @@
 package PAX::Tier1;
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;
@@ -130,6 +130,21 @@ sub _c_source_for_region {
         };
     }
 
+    if (($shape->{kind} // '') eq 'i64_masked_mix_accum_loop') {
+        return {
+            reason => "native i64 $shape->{op} loop emitted from guarded SSA through the Tier 1 C ABI backend and smoke-tested",
+            entry_kind => 'native_i64_loop',
+            executable => 1,
+            smoke_left => $shape->{smoke_left},
+            smoke_right => $shape->{smoke_right},
+            smoke_expected => $shape->{smoke_expected},
+            source => _c_translation_unit(
+                $region_id,
+                _c_masked_mix_accum_loop_body(),
+            ),
+        };
+    }
+
     if (($shape->{kind} // '') eq 'i64_binary_leaf') {
         return {
             reason => "native i64 $shape->{op} leaf emitted from guarded SSA through the Tier 1 C ABI backend and smoke-tested",
@@ -182,6 +197,22 @@ for (int64_t i = 1; i <= left; i++) {
     sum += i;
 }
 return sum;
+C_BODY
+}
+
+# Emit Tier 1 C for the masked-mix accumulator loop shape used by synthetic
+# long-running arithmetic benchmarks.
+sub _c_masked_mix_accum_loop_body {
+    return <<'C_BODY';
+if (left <= 0) {
+    return 0;
+}
+uint64_t acc = 0;
+for (int64_t i = 0; i < left; i++) {
+    uint64_t term = (((uint64_t)i * 13ULL) ^ ((uint64_t)i >> 3)) & 0xFFFFULL;
+    acc += term;
+}
+return (int64_t)acc;
 C_BODY
 }
 

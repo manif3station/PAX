@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.025';
+our $VERSION = '0.026';
 
 use strict;
 use warnings;
@@ -968,6 +968,7 @@ sub _run_script_unit {
         // _script_source_from_residual_payload($entrypoint);
     die "script source missing for $entrypoint" if !defined $source;
     die "script source is empty for $entrypoint" if $source eq '';
+    $source = _apply_compiled_script_subs($source, $record->{compiled_subs} // []);
     my $path = _virtual_entrypoint_path($entrypoint);
     my $wrapped = "package main;\n#line 1 \"$path\"\n" . $source;
     my $rv = eval $wrapped;
@@ -1129,16 +1130,10 @@ sub _install_compiled_sub {
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
     }
 
-    if (($sub->{op} // '') eq 'i64_binary_leaf') {
+    if (($sub->{op} // '') eq 'native_shape_sub') {
         my $shape = $sub->{native_shape} // {};
-        my $op = $shape->{op} // '';
         $impl = sub {
-            my ($left, $right) = @_;
-            return $left + $right if $op eq 'add';
-            return $left - $right if $op eq 'subtract';
-            return $left * $right if $op eq 'multiply';
-            return $left > $right ? 1 : 0 if $op eq 'greater_than';
-            die "unsupported compiled leaf op: $op";
+            return _run_native_shape_sub($full, $shape, @_);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
     }
@@ -14658,6 +14653,144 @@ JS
     }
 
     die "unsupported compiled sub op: " . ($sub->{op} // '');
+}
+
+# Rewrite script-source subroutines with their compiled/native-aware variants
+# before the top-level script body is evaluated.
+sub _apply_compiled_script_subs {
+    my ($source, $subs) = @_;
+    return $source if !defined $source || $source eq '' || !$subs || !@$subs;
+    for my $sub (@$subs) {
+        next if (($sub->{op} // '') ne 'native_shape_sub');
+        my $full = $sub->{full_name} // '';
+        next if $full !~ /^main::([^:]+)\z/;
+        my $short = $1;
+        my $replacement = _compiled_script_sub_source($full, $short, $sub->{prototype}, $sub->{native_shape});
+        next if !defined $replacement || $replacement eq '';
+        my $original = _extract_sub_source_runtime($source, $short) or next;
+        $source =~ s/\Q$original\E/$replacement/s;
+    }
+    return $source;
+}
+
+# Render a compiled script sub back into source that the runtime can splice into
+# the packaged script body.
+sub _compiled_script_sub_source {
+    my ($full, $short, $prototype, $shape) = @_;
+    return if !defined $short || $short eq '' || ref($shape) ne 'HASH';
+    my $proto = defined $prototype ? $prototype : '';
+    my $args = '$PAX_ARG0';
+    $args .= ', $PAX_ARG1' if scalar(@{ $shape->{args} // [] }) > 1;
+    return sprintf(
+        "sub %s%s {\n    my (%s) = \@_;\n    return PAX::StandaloneRuntime::_run_native_shape_sub(%s, %s, \@_);\n}\n",
+        $short,
+        $proto || '',
+        $args,
+        _perl_literal($full),
+        _perl_literal(JSON::PP->new->canonical(1)->encode($shape)),
+    );
+}
+
+# Extract the original subroutine source from the packaged script so runtime
+# rewriting has an exact source range to replace.
+sub _extract_sub_source_runtime {
+    my ($source, $sub_name) = @_;
+    return if $source !~ /\bsub\s+\Q$sub_name\E\b[^\{]*\{/g;
+    my $start = $-[0];
+    my $brace = index($source, '{', $+[0] - 1);
+    return if $brace < 0;
+    my $depth = 1;
+    my $i = $brace + 1;
+    while ($i < length($source)) {
+        my $char = substr($source, $i, 1);
+        $depth++ if $char eq '{';
+        $depth-- if $char eq '}';
+        if ($depth == 0) {
+            my $end = $i + 1;
+            while ($end < length($source) && substr($source, $end, 1) =~ /[ \t]/) {
+                $end++;
+            }
+            $end++ if $end < length($source) && substr($source, $end, 1) eq ';';
+            return substr($source, $start, $end - $start);
+        }
+        $i++;
+    }
+    return;
+}
+
+# Execute a compiled script sub through the packaged native-dispatch entry when
+# the runtime emitted a matching native artifact.
+sub _run_native_shape_sub {
+    my ($full, $shape_json, @args) = @_;
+    my $shape = ref($shape_json) eq 'HASH' ? $shape_json : _runtime_json_decode($shape_json);
+    my $expected = scalar @{ $shape->{args} // [] };
+    if ($expected && @args == $expected && _native_shape_args_are_i64(\@args)) {
+        my $result = _invoke_native_shape_runtime($full, $shape, \@args);
+        return $result->{value} if $result->{status} eq 'ok' && exists $result->{value};
+    }
+    return _interpret_native_shape($shape, \@args);
+}
+
+# Dispatch supported native-shape script subs through the runtime dispatcher and
+# fall back to interpretation when no packaged artifact is available.
+sub _invoke_native_shape_runtime {
+    my ($full, $shape, $args) = @_;
+    my $state = _state();
+    my $meta = $state->{by_region}{$full} || {};
+    return { status => 'fallback', reason => 'native region missing' } if !($meta->{executable_logical_path} // '');
+    my $probe = File::Spec->catfile($state->{root}, split m{/}, $meta->{executable_logical_path});
+    chmod 0700, $probe if -f $probe;
+    my $left = $args->[0];
+    my $right = @$args > 1 ? $args->[1] : 0;
+    return $state->{native_runner}->run_i64_binary(
+        path => $probe,
+        left => $left,
+        right => $right,
+    );
+}
+
+# Confirm that the current call arguments fit the narrow integer ABI used by
+# packaged native script helpers.
+sub _native_shape_args_are_i64 {
+    my ($args) = @_;
+    for my $arg (@$args) {
+        return 0 if !defined $arg || $arg !~ /\A-?\d+\z/;
+    }
+    return 1;
+}
+
+# Mirror the supported native shapes in Perl so deopt or unsupported dispatch
+# can still run script-native candidates correctly.
+sub _interpret_native_shape {
+    my ($shape, $args) = @_;
+    my $kind = $shape->{kind} // '';
+    if ($kind eq 'i64_binary_leaf') {
+        my ($left, $right) = @$args;
+        my $op = $shape->{op} // '';
+        return $left + $right if $op eq 'add';
+        return $left - $right if $op eq 'subtract';
+        return $left * $right if $op eq 'multiply';
+        return $left > $right ? 1 : 0 if $op eq 'greater_than';
+    }
+    if ($kind eq 'i64_sum_loop') {
+        my ($limit) = @$args;
+        return 0 if !defined $limit || $limit <= 0;
+        my $sum = 0;
+        for (my $i = 1; $i <= $limit; $i++) {
+            $sum += $i;
+        }
+        return $sum;
+    }
+    if ($kind eq 'i64_masked_mix_accum_loop') {
+        my ($limit) = @$args;
+        return 0 if !defined $limit || $limit <= 0;
+        my $acc = 0;
+        for (my $i = 0; $i < $limit; $i++) {
+            $acc += (($i * 13) ^ ($i >> 3)) & 0xFFFF;
+        }
+        return $acc;
+    }
+    die "unsupported native shape kind: $kind";
 }
 
 sub _install_sub_impl {

@@ -5,6 +5,7 @@ use File::Path qw(make_path remove_tree);
 use File::Spec;
 use File::Temp qw(tempdir);
 use FindBin;
+use JSON::PP ();
 use lib "$FindBin::Bin/../lib";
 
 use PAX::StandaloneAnalysis;
@@ -82,6 +83,40 @@ my %modules = map { ($_->{module} => $_) } @{ $deps->{items} || [] };
 ok($modules{'Example::Transitive::Mid'}, 'dependency analysis includes direct module reference');
 ok($modules{'Example::Transitive::Leaf'}, 'dependency analysis includes transitive module reference');
 is($modules{'Example::Transitive::Leaf'}{class}, 'bundled_pure_perl', 'transitive dependency is packaged as bundled pure-Perl runtime payload');
+
+my $native_script_record = JSON::PP->new->canonical(1)->encode({
+    format => 'script_pcu_v1',
+    compiled_subs => [
+        {
+            name => 'dot_i64',
+            full_name => 'main::dot_i64',
+            op => 'native_shape_sub',
+            native_shape => {
+                kind => 'i64_masked_mix_accum_loop',
+                op => 'masked_mix_accumulate',
+                args => ['n'],
+                smoke_left => 8,
+                smoke_right => 0,
+                smoke_expected => 360,
+            },
+        },
+    ],
+});
+
+my $native = $analysis->native_artifacts(
+    entrypoint => $entry_module,
+    code_units => [
+        {
+            logical_path => 'entrypoint/native-loop.script.json',
+            unit_kind => 'entrypoint',
+            packaging => 'compiled_script_pcu_v1',
+            bytes => $native_script_record,
+        },
+    ],
+);
+is(($native->{summary}{total} // 0), 1, 'native artifact analysis can derive one native candidate from compiled script metadata without live capture');
+is(($native->{summary}{native_ready} // 0), 1, 'native artifact analysis emits a native-ready artifact from static compiled script metadata');
+is(($native->{items}[0]{region_name} // ''), 'main::dot_i64', 'native artifact analysis preserves the original script sub region name');
 
 done_testing;
 
