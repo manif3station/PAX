@@ -1,5 +1,5 @@
 package PAX::Tier1;
-our $VERSION = '0.028';
+our $VERSION = '0.029';
 
 use strict;
 use warnings;

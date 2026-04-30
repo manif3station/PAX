@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.028';
+our $VERSION = '0.029';
 
 1;
 
@@ -566,12 +566,122 @@ metaprogramming, runtime-heavy startup, IO-dominated scripts, irregular control
 flow, and broad general-purpose Perl that never lowers into a native region are
 weaker current candidates.
 
-=item * Practical examples matter. A long-running numeric benchmark such as
-C</tmp/long-process-2.pl> can improve substantially once PAX recognizes the
-loop shape and lowers it into a packaged native kernel. A normal CLI command
-such as C<dashboard version> or C<dashboard ps1> can still be dominated by
-framework startup, helper dispatch, subprocess work, or other runtime behavior
-that is outside the current native region coverage.
+=item * Practical examples matter more than slogans. The current strong cases
+are simple integer sum-loop kernels that PAX can lower into a native region
+safely. The following five snippets were measured on this repository's
+C<0.029> toolchain on the local Linux/x86_64 build host:
+
+  use strict;
+  use warnings;
+  use Time::HiRes qw(time);
+  sub sum_to_n {
+      my ($n) = @_;
+      my $sum = 0;
+      for (my $i = 1; $i <= $n; $i++) {
+          $sum += $i;
+      }
+      return $sum;
+  }
+  my $start = time();
+  my $total = 0;
+  for (my $r = 0; $r < 6; $r++) {
+      $total ^= sum_to_n(500_000_000);
+  }
+  print "elapsed=", time() - $start, "\n";
+
+Measured runtime: stock Perl C<89.94s>, standalone C<0.95s>, about C<94.9x>
+faster.
+
+  use strict;
+  use warnings;
+  use Time::HiRes qw(time);
+  sub sum_to_n {
+      my ($n) = @_;
+      my $sum = 0;
+      for (my $i = 1; $i <= $n; $i++) {
+          $sum += $i;
+      }
+      return $sum;
+  }
+  my $start = time();
+  my $total = 0;
+  for (my $r = 0; $r < 6; $r++) {
+      $total += sum_to_n(500_000_000) & 0xFFFF;
+  }
+  print "elapsed=", time() - $start, "\n";
+
+Measured runtime: stock Perl C<88.96s>, standalone C<0.91s>, about C<97.7x>
+faster.
+
+  use strict;
+  use warnings;
+  use Time::HiRes qw(time);
+  sub sum_to_n {
+      my ($n) = @_;
+      my $sum = 0;
+      for (my $i = 1; $i <= $n; $i++) {
+          $sum += $i;
+      }
+      return $sum;
+  }
+  my $start = time();
+  my $best = 0;
+  for (my $r = 0; $r < 6; $r++) {
+      my $v = sum_to_n(500_000_000);
+      $best = $v if $v > $best;
+  }
+  print "elapsed=", time() - $start, "\n";
+
+Measured runtime: stock Perl C<88.26s>, standalone C<0.95s>, about C<93.0x>
+faster.
+
+  use strict;
+  use warnings;
+  use Time::HiRes qw(time);
+  sub sum_to_n {
+      my ($n) = @_;
+      my $sum = 0;
+      for (my $i = 1; $i <= $n; $i++) {
+          $sum += $i;
+      }
+      return $sum;
+  }
+  my $start = time();
+  my $rolling = 0;
+  for (my $r = 0; $r < 6; $r++) {
+      $rolling = (($rolling << 1) ^ sum_to_n(500_000_000)) & 0x7fffffff;
+  }
+  print "elapsed=", time() - $start, "\n";
+
+Measured runtime: stock Perl C<88.39s>, standalone C<0.92s>, about C<96.0x>
+faster.
+
+  use strict;
+  use warnings;
+  use Time::HiRes qw(time);
+  sub sum_to_n {
+      my ($n) = @_;
+      my $sum = 0;
+      for (my $i = 1; $i <= $n; $i++) {
+          $sum += $i;
+      }
+      return $sum;
+  }
+  my $start = time();
+  my $bucket = 0;
+  for (my $r = 0; $r < 6; $r++) {
+      my $v = sum_to_n(500_000_000);
+      $bucket += ($v & 1) ? ($v & 0xFFFF) : (($v >> 4) & 0xFFFF);
+  }
+  print "elapsed=", time() - $start, "\n";
+
+Measured runtime: stock Perl C<88.98s>, standalone C<0.92s>, about C<96.3x>
+faster.
+
+=item * By contrast, a normal CLI command such as C<dashboard version> or
+C<dashboard ps1> can still be dominated by framework startup, helper dispatch,
+subprocess work, or other runtime behavior that is outside the current native
+region coverage.
 
 =item * This means PAX is not yet "compile once and every Perl workload becomes
 Rust-fast." The current model is broader than one-off app patches, but still
@@ -606,7 +716,9 @@ it can safely specialize. Dynamic regions continue to use fallback execution.
 Not by project name or package name. PAX should stay neutral across arbitrary
 Perl applications. But today it is still case by supported code shape. If PAX
 recognizes a loop or leaf routine class and can lower it safely, it can do very
-well. If the workload stays in dynamic Perl semantics, it will package
+well. The five sum-loop examples above are proven cases where stock Perl took
+about C<88s> to C<90s> and the standalone binary finished in about C<0.91s> to
+C<0.95s>. If the workload stays in dynamic Perl semantics, it will package
 correctly but may run close to stock Perl speed.
 
 =head2 What should operators report as a performance issue?

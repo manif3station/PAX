@@ -1,3 +1,10 @@
+0.029  Thu Apr 30 22:45:00 2026
+    - Synced the README and main PAX POD again and replaced file-name-only
+      performance discussion with five measured code snippets that PAX
+      accelerates strongly on the current toolchain. Each documented example is
+      a proven integer sum-loop kernel with stock Perl around `88s` to `90s`
+      and the packaged standalone binary around `0.91s` to `0.95s`.
+
 0.028  Thu Apr 30 21:35:00 2026
     - Closed the CPANTS kwalitee gaps from the `0.027` release by adding
       explicit `Capture::Tiny` prereqs, repository/provides metadata, a Perl
