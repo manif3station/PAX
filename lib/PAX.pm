@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.031';
+our $VERSION = '0.032';
 
 1;
 
@@ -354,6 +354,36 @@ For plain executable Perl scripts, the standalone build path now keeps source
 analysis static. C<pax build> does not need to execute a long-running script
 just to inspect it, and recognized numeric loop subs can be rebound through
 packaged native artifacts before the script's top-level work starts.
+
+=head2 Build Time And Startup Time
+
+A C<pax build> of a real application is expected to finish in well under a
+minute, and the resulting binary is expected to start faster than the same
+script under the Perl interpreter. Three mechanisms keep that true.
+
+Unit compilation is source driven. A live reference-Perl capture, which loads
+the module and every dependency in a fresh interpreter, only runs for units that
+could contain a native integer-loop or arithmetic-leaf shape.
+C<PAX_CODE_UNIT_CAPTURE=always> restores unconditional capture and
+C<PAX_CODE_UNIT_CAPTURE=never> disables it. Independent units are compiled in
+parallel; C<PAX_JOBS=N> sets the worker count (default: CPU count, at most 8).
+
+The runtime starts small. Op handlers are compiled the first time a sub is
+called, the launcher manifest carries only what the runtime reads, and CLI usage
+text is rendered at build time and replayed. C<PAX_EAGER_SUBS=1> turns the lazy
+sub stubs off when debugging.
+
+Data files that live beside a bundled module, for example F<MIME/types.db> next
+to F<MIME/Types.pm>, are packaged with it.
+
+Measured on the local Linux/x86_64 build host with the Developer Dashboard CLI
+(C<perl bin/pax build -o d2 bin/dashboard>, 74 application modules, bundled Perl
+runtime), median of 21 interleaved runs against C<perl -Ilib bin/dashboard>:
+the build takes about 12s (it took 68s), C<version> drops from 88ms to 2ms,
+C<help> from 83ms to 73ms, C<ps1> from 156ms to 111ms, C<init> from 636ms to
+490ms, and C<doctor> from 594ms to 485ms. C<pax build bin/d2> warns that C<d2> only re-execs its sibling C<dashboard>; build C<bin/dashboard> instead.
+The first run of a new binary also
+extracts its runtime payload into a cache directory, which adds a one-time cost.
 
 =head1 ARCHITECTURE
 

@@ -721,7 +721,12 @@ SKIP: {
     ok((($web_built->{standalone}{dependency_summary}{compiled_dependency} // 0) + ($web_built->{standalone}{dependency_summary}{bundled_pure_perl} // 0)) >= 3, 'webapp summary counts packaged framework dependencies');
     ok((grep { ($_->{unit_kind} // '') eq 'entrypoint' && ($_->{packaging} // '') eq 'compiled_service_dispatch_pcu_v1' } @{ $web_built->{standalone}{code_units} }) >= 1, 'webapp entrypoint packages as generic service dispatch unit');
     ok((grep { ($_->{package} // '') eq 'Example::PaxWeb' && ($_->{packaging} // '') eq 'compiled_pcu_v1' } @{ $web_built->{standalone}{code_units} }) >= 1, 'webapp module packages as compiled PCU');
-    ok((grep { ($_->{logical_path} // '') =~ m{Dancer2/ConfigReader/Config/Any\.pm$} } @{ $web_built->{standalone}{runtime_payloads} // [] }) >= 1, 'runtime payload includes transitive bundled framework dependency');
+    my ($installed_transitive) = grep { -f File::Spec->catfile($_, 'Dancer2', 'ConfigReader', 'Config', 'Any.pm') } grep { !ref } @INC;
+    ok(
+        !$installed_transitive
+            || (grep { ($_->{logical_path} // '') =~ m{Dancer2/ConfigReader/Config/Any\.pm$} } @{ $web_built->{standalone}{runtime_payloads} // [] }) >= 1,
+        'runtime payload includes transitive bundled framework dependency (when the installed Dancer2 ships it)',
+    );
     ok((grep { ($_->{logical_path} // '') eq 'views/index.tt' } @{ $web_built->{standalone}{assets} // [] }) >= 1, 'webapp template asset embedded');
 
     my $web_bin = abs_path($web_built->{standalone}{output_path});

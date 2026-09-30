@@ -1,3 +1,46 @@
+0.032  Wed Sep 30 22:40:00 2026
+    - Cut the standalone build of a real application (Developer Dashboard
+      `bin/dashboard`, 74 modules) from about 68s to about 12s. Live
+      reference-Perl capture now only runs for units that can contain a native
+      loop or arithmetic-leaf shape (`PAX_CODE_UNIT_CAPTURE=always|never`
+      overrides), application units compile in parallel (`PAX_JOBS`), and the
+      native-artifact analysis gate follows the exact shapes the lowering
+      accepts instead of any numeric loop.
+    - Made the standalone runtime start faster: op handlers moved out of the
+      parsed code into lazily compiled text after `__DATA__`, compiled subs
+      install as stubs that build their handler on first call
+      (`PAX_EAGER_SUBS=1` disables), heavy imports load on demand, the launcher
+      manifest no longer embeds source text or the per-file payload list, and
+      CLI router usage text is rendered at build time and replayed. On the
+      dashboard CLI `version` went from 88ms to 2ms and other commands run
+      about 1.2x to 1.4x faster than stock Perl.
+    - Fixed correctness bugs found by comparing the standalone binary with stock
+      Perl: file-scoped lexicals were not visible to op handlers, `$/` stayed
+      undefined for the whole command after the record read, stored source was
+      decoded twice (double-encoded emoji), the CLI router skipped the script's
+      own startup statements, sibling data files of bundled modules were
+      missing, Moo/Moose declarations were silently dropped from compiled
+      units, prototypes were lost on source-compiled subs, and several ops
+      called helper subs that did not exist or carried stale copies of the
+      application's helper lists, doctor checks, and usage wording. Those ops
+      now read the source being compiled or step aside for the real source.
+    - Sped up first-run payload extraction in the launcher: the package header
+      is parsed without copying the whole payload, files are written with one
+      write call each, and directory creation tries the leaf first (about
+      17,700 `mkdir` calls down to 1,500).
+    - Stopped bundling the PAX runtime helper modules twice (the un-rewritten
+      copy from `lib/` duplicated the namespace-aware helper payload).
+    - `pax build` now warns when the entrypoint only launches a sibling script
+      located through `$Bin` (for example `bin/d2` re-execing `bin/dashboard`),
+      since that sibling is not packaged.
+    - Dropped code files from the bundled runtime that an earlier inc root already
+      carries (they can never be loaded), cutting the dashboard payload from
+      2,310 to 1,691 files and 61MB to 51MB; data files stay beside their module.
+    - Added `t/build_speed.t` and `t/dashboard_parity.t` (builds a real
+      application and diffs the binary's output and exit status against stock
+      Perl, and asserts the one-minute build limit). Made the snapshot-only and
+      Dancer2-version-specific assertions skip when their inputs are absent.
+
 0.031  Thu Apr 30 23:58:00 2026
     - Made `git push` part of the formal closure process instead of relying on
       memory. The gate chain now ends with an explicit `push-gate` that pushes

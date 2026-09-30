@@ -1,6 +1,6 @@
 package PAX::StandaloneAnalysis;
 
-our $VERSION = '0.031';
+our $VERSION = '0.032';
 
 use strict;
 use warnings;
@@ -327,11 +327,22 @@ sub _native_probe_worthwhile {
     return 0;
 }
 
+# _source_has_native_candidate($source)
+# True when some sub body matches one of the shapes the native lowering can
+# promote (two-argument arithmetic leaf, integer sum loop, masked-mix loop).
+# The cheap whole-source regexes run first so ordinary modules never pay for the
+# per-sub body extraction, and so a live capture is only spent on real candidates.
 sub _source_has_native_candidate {
     my ($source) = @_;
-    return 1 if $source =~ /sub\s+\w+\s*\{[^{}]*my\s*\(\s*\$\w+\s*,\s*\$\w+\s*\)\s*=\s*\@_;[^{}]*return\s+\$\w+\s*(?:\+|\-|\*)\s*\$\w+\s*;/ms;
-    return 1 if $source =~ /sub\s+\w+\s*\{[^{}]*for\s*\(.*?;.*?;.*?\)\s*\{[^{}]*\$\w+\s*(?:\+=|\-=|\*=)\s*\$\w+/ms;
-    return 1 if $source =~ /sub\s+\w+\s*\{[^{}]*while\s*\(.*?\)\s*\{[^{}]*\$\w+\s*(?:\+=|\-=|\*=)\s*\$\w+/ms;
+    my $leaf = $source =~ /return\s+\$[A-Za-z_]\w*\s*(?:[-+*>])\s*\$[A-Za-z_]\w*\s*;/;
+    my $loop = $source =~ /for\s*\(\s*my\s+\$[A-Za-z_]\w*\s*=\s*[01]\s*;\s*\$[A-Za-z_]\w*\s*<=?\s*\$[A-Za-z_]\w*\s*;\s*\$[A-Za-z_]\w*\+\+\s*\)/;
+    return 0 if !$leaf && !$loop;
+    require PAX::CodeUnitCompiler;
+    while ($source =~ /\bsub\s+([A-Za-z_]\w*)\s*\{/g) {
+        my $body = PAX::CodeUnitCompiler::_extract_sub_body($source, $1);
+        next if !defined $body;
+        return 1 if PAX::CodeUnitCompiler::_native_shape_from_source_body($body);
+    }
     return 0;
 }
 

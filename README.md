@@ -317,6 +317,43 @@ analysis static. `pax build` does not need to execute a long-running script
 just to inspect it, and recognized numeric loop subs can be rebound through
 packaged native artifacts before the script's top-level work starts.
 
+### Build Time And Startup Time
+
+A `pax build` of a real application is expected to finish in well under a
+minute, and the resulting binary is expected to start faster than the same
+script under the Perl interpreter. Three mechanisms keep that true:
+
+- Unit compilation is source driven. A live reference-Perl capture (which loads
+  the module and every dependency in a fresh interpreter) only runs for units
+  that could contain a native integer-loop or arithmetic-leaf shape.
+  `PAX_CODE_UNIT_CAPTURE=always` restores unconditional capture and
+  `PAX_CODE_UNIT_CAPTURE=never` disables it. Independent units are compiled in
+  parallel; `PAX_JOBS=N` sets the worker count (default: CPU count, at most 8).
+- The runtime starts small. Op handlers are compiled the first time a sub is
+  called, the launcher manifest carries only what the runtime reads, and CLI
+  usage text is rendered at build time and replayed. `PAX_EAGER_SUBS=1` turns
+  the lazy sub stubs off when debugging.
+- Data files that live beside a bundled module (for example `MIME/types.db`
+  next to `MIME/Types.pm`) are packaged with it.
+
+Measured on the local Linux/x86_64 build host with the Developer Dashboard CLI
+(`perl bin/pax build -o d2 bin/dashboard`, 74 application modules, bundled Perl
+runtime), median of 21 interleaved runs against
+`perl -Ilib bin/dashboard`:
+
+| Step | Stock Perl | PAX binary |
+| --- | --- | --- |
+| build | n/a | about `12s` (was `68s`) |
+| `version` | `88ms` | `2ms` |
+| `help` | `83ms` | `73ms` |
+| `ps1` | `156ms` | `111ms` |
+| `init` | `636ms` | `490ms` |
+| `doctor` | `594ms` | `485ms` |
+
+`pax build bin/d2` warns that `d2` only re-execs its sibling `dashboard`; build `bin/dashboard` instead.
+The first run of a new binary also extracts its runtime payload into a cache
+directory, which adds a one-time cost.
+
 ## Asset Embedding
 
 Assets are copied into the executable payload and extracted into a private

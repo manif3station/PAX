@@ -3,6 +3,7 @@ DOCKER ?= docker
 PAX_IMAGE ?= pax-dev:perl-5.42
 TDD_TESTS = \
 	t/artifact_cache.t \
+	t/build_speed.t \
 	t/capture.t \
 	t/code_unit_compiler.t \
 	t/compatibility.t \
@@ -22,7 +23,8 @@ BDD_TESTS = \
 	t/compatibility.t
 ATDD_TESTS = \
 	t/app_image.t \
-	t/standalone_image.t
+	t/standalone_image.t \
+	t/dashboard_parity.t
 
 .PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release pause-release-tag cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate version-history-gate doc-gate pod-doc-all changes-gate release-gate cpan-verify-paths cpan-gate git-gate push-gate
 

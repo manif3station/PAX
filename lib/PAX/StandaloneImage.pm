@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.031';
+our $VERSION = '0.032';
 
 use strict;
 use warnings;
@@ -13,6 +13,8 @@ use File::Basename qw(dirname basename);
 use File::Spec;
 use File::Temp qw(tempdir tempfile);
 use JSON::PP ();
+use POSIX ();
+use Time::HiRes ();
 use PAX::CodeUnitCompiler;
 use PAX::StandaloneAnalysis;
 
@@ -780,6 +782,7 @@ sub _code_manifest {
         logical_path => _safe_logical_path(File::Spec->catfile('entrypoint', _logical_name($entrypoint))),
     );
     $entry_unit->{source_bytes} = _slurp_bytes($entrypoint);
+    _warn_unpackaged_sibling_script($entrypoint, $entry_unit->{source_bytes});
     push @manifest, $entry_unit;
     $progress->({
         task_id => 'compile_entrypoint',
@@ -796,6 +799,7 @@ sub _code_manifest {
         status => 'running',
         label => sprintf('Compile application units (0/%d)', $application_total),
     }) if $progress;
+    my @app_jobs;
     for my $set (@application_file_sets) {
         my $dir = $set->{dir};
         my $prefix = $set->{prefix} // _logical_root('lib', $dir);
@@ -803,37 +807,37 @@ sub _code_manifest {
         for my $path (@{ $set->{files} }) {
             next if $seen{$path}++;
             my $rel = File::Spec->abs2rel($path, $dir);
-            $progress->({
-                task_id => 'compile_application_units',
-                status => 'running',
-                label => sprintf(
-                    'Compile application units (%d/%d: %s)',
-                    $compiled_app_units + 1,
-                    $application_total,
-                    _progress_source_label($kind eq 'source' ? 'src' : 'lib', $rel),
-                ),
-            }) if $progress;
-            my $compiled = $compiler->compile(
+            push @app_jobs, {
                 path => $path,
                 kind => $kind,
+                rel => $rel,
                 logical_path => _safe_logical_path(File::Spec->catfile($prefix, $rel)),
-            );
-            $compiled->{source_bytes} = _slurp_bytes($path);
-            push @manifest, $compiled;
-            $compiled_app_units++;
-            $progress->({
-                task_id => 'compile_application_units',
-                status => 'running',
-                label => sprintf(
-                    'Compile application units (%d/%d: %s)',
-                    $compiled_app_units,
-                    $application_total,
-                    _progress_source_label($kind eq 'source' ? 'src' : 'lib', $rel),
-                ),
-            }) if $progress;
-            my $module = _module_name_from_source_path($path);
-            $seen_modules{$module} = 1 if defined $module;
+            };
         }
+    }
+    my $app_done = sub {
+        my ($count, $job) = @_;
+        return if !$progress;
+        $progress->({
+            task_id => 'compile_application_units',
+            status => 'running',
+            label => sprintf(
+                'Compile application units (%d/%d: %s)',
+                $count,
+                $application_total,
+                _progress_source_label($job->{kind} eq 'source' ? 'src' : 'lib', $job->{rel}),
+            ),
+        });
+    };
+    my @app_results = _compile_jobs_parallel($compiler, \@app_jobs, $app_done);
+    for my $i (0 .. $#app_jobs) {
+        my $job = $app_jobs[$i];
+        my $compiled = $app_results[$i];
+        $compiled->{source_bytes} = _slurp_bytes($job->{path});
+        push @manifest, $compiled;
+        $compiled_app_units++;
+        my $module = _module_name_from_source_path($job->{path});
+        $seen_modules{$module} = 1 if defined $module;
     }
     $progress->({
         task_id => 'compile_application_units',
@@ -997,6 +1001,116 @@ sub _module_base_dir_for_files {
     my $base = substr($normalized_path, 0, length($normalized_path) - length($normalized_rel));
     $base =~ s{/+\z}{};
     return $base;
+}
+
+# _warn_unpackaged_sibling_script($entrypoint, $source)
+# Warns when the entrypoint only launches a neighbouring script located through
+# $Bin (for example a short alias that re-execs the real command), because that
+# neighbour is not part of the build and the binary would fail at run time.
+# Input: entrypoint path and its source text. Output: none; writes to STDERR.
+sub _warn_unpackaged_sibling_script {
+    my ($entrypoint, $source) = @_;
+    return if !defined $source || $source !~ /\bexec\b/;
+    my $dir = dirname($entrypoint);
+    while ($source =~ /catfile\(\s*\$Bin\s*,\s*'([^'\/]+)'\s*\)/g) {
+        my $sibling = File::Spec->catfile($dir, $1);
+        next if !-f $sibling || abs_path($sibling) eq abs_path($entrypoint);
+        warn "pax: warning: $entrypoint launches the sibling script '$1' via \$Bin, but only the entrypoint is packaged; build $sibling instead.\n";
+    }
+    return;
+}
+
+# _compile_jobs_parallel($compiler, \@jobs, $on_done)
+# Compiles independent code units across forked workers because each unit
+# compile may spawn a reference-Perl capture probe that dominates build time.
+# Input: compiler object, job hashes (path, kind, logical_path), progress callback.
+# Output: list of compiled unit records in the same order as the jobs.
+# Worker count comes from PAX_JOBS, else the CPU count; 1 keeps the serial path.
+sub _compile_jobs_parallel {
+    my ($compiler, $jobs, $on_done) = @_;
+    my $total = scalar @$jobs;
+    my $workers = _build_job_count();
+    $workers = $total if $workers > $total;
+    my @results;
+    if ($workers <= 1) {
+        for my $i (0 .. $#$jobs) {
+            my $job = $jobs->[$i];
+            $on_done->($i, $job) if $on_done;
+            $results[$i] = $compiler->compile(map { $_ => $job->{$_} } qw(path kind logical_path));
+            $on_done->($i + 1, $job) if $on_done;
+        }
+        return @results;
+    }
+    require Storable;
+    my $dir = tempdir('pax-compile-XXXXXX', TMPDIR => 1, CLEANUP => 1);
+    my %pid_for;
+    for my $w (0 .. $workers - 1) {
+        my $pid = fork();
+        die "cannot fork compile worker: $!" if !defined $pid;
+        if (!$pid) {
+            for (my $i = $w; $i < $total; $i += $workers) {
+                my $job = $jobs->[$i];
+                my $unit = eval { $compiler->compile(map { $_ => $job->{$_} } qw(path kind logical_path)) };
+                $unit = { __pax_compile_error => ($@ || 'compile failed') } if !$unit;
+                Storable::nstore($unit, "$dir/$i.tmp");
+                rename "$dir/$i.tmp", "$dir/$i.unit";
+            }
+            POSIX::_exit(0);
+        }
+        $pid_for{$pid} = $w;
+    }
+    my $loaded = 0;
+    my %loaded_index;
+    while (1) {
+        my $progressed = 0;
+        for my $i (0 .. $total - 1) {
+            next if $loaded_index{$i} || !-f "$dir/$i.unit";
+            $results[$i] = Storable::retrieve("$dir/$i.unit");
+            $loaded_index{$i} = 1;
+            $loaded++;
+            $progressed = 1;
+            $on_done->($loaded, $jobs->[$i]) if $on_done;
+        }
+        last if $loaded >= $total;
+        my $alive = 0;
+        for my $pid (keys %pid_for) {
+            my $r = waitpid($pid, POSIX::WNOHANG());
+            if ($r == $pid || $r < 0) { delete $pid_for{$pid}; next }
+            $alive++;
+        }
+        if (!$alive && !$progressed) {
+            for my $i (0 .. $total - 1) {
+                next if $loaded_index{$i};
+                $results[$i] = -f "$dir/$i.unit" ? Storable::retrieve("$dir/$i.unit")
+                    : $compiler->compile(map { $_ => $jobs->[$i]{$_} } qw(path kind logical_path));
+                $loaded_index{$i} = 1;
+                $loaded++;
+            }
+            last;
+        }
+        Time::HiRes::sleep(0.05) if !$progressed;
+    }
+    for my $i (0 .. $total - 1) {
+        next if !ref $results[$i] || !exists $results[$i]{__pax_compile_error};
+        die "compile of $jobs->[$i]{path} failed: $results[$i]{__pax_compile_error}";
+    }
+    return @results;
+}
+
+# _build_job_count()
+# Chooses how many forked workers compile code units in parallel.
+# Input: none; reads PAX_JOBS and the CPU count.
+# Output: worker count between 1 and 8 (or the PAX_JOBS value).
+sub _build_job_count {
+    my $jobs = $ENV{PAX_JOBS};
+    return int($jobs) if defined $jobs && $jobs =~ /\A\d+\z/ && $jobs > 0;
+    my $cpus = 0;
+    if (open my $fh, '<', '/proc/cpuinfo') {
+        while (<$fh>) { $cpus++ if /^processor\s*:/ }
+        close $fh;
+    }
+    $cpus = 1 if $cpus < 1;
+    return $cpus > 8 ? 8 : $cpus;
 }
 
 sub _progress_source_label {
@@ -1406,8 +1520,11 @@ sub _toolchain_path {
 
 sub _launcher_source {
     my ($manifest) = @_;
-    my $manifest_json = JSON::PP->new->ascii(1)->canonical(1)->encode(_manifest_without_bytes($manifest));
+    my $manifest_json = JSON::PP->new->ascii(1)->canonical(1)->encode(_launcher_manifest($manifest));
     my $manifest_literal = _c_string($manifest_json);
+    # The inspect mode feeds rebuild-from-binary, which needs the embedded source
+    # snapshot that the per-launch manifest leaves out.
+    my $inspect_literal = _c_string(JSON::PP->new->ascii(1)->canonical(1)->encode(_manifest_without_bytes($manifest)));
     my $entrypoint_logical = _c_string($manifest->{entrypoint}{logical_path});
     my $source_hash = _c_string($manifest->{source_hash} // '');
     my $fast_version = _c_string(_manifest_fast_version($manifest) // '');
@@ -1421,6 +1538,7 @@ sub _launcher_source {
     return <<"C";
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1447,10 +1565,24 @@ $runtime_inc_roots
 $code_lib_roots
 
 static void ensure_parent_dirs(const char *path) {
+    static char last_dir[4096];
     char tmp[4096];
     size_t len = strlen(path);
+    const char *slash = strrchr(path, '/');
     if (len >= sizeof(tmp)) return;
+    /* Files arrive grouped by directory, so skip the mkdir walk when it is unchanged. */
+    if (slash && (size_t)(slash - path) == strlen(last_dir) && strncmp(path, last_dir, (size_t)(slash - path)) == 0) return;
     memcpy(tmp, path, len + 1);
+    if (slash && slash > path) {
+        /* Try the leaf directory first; only walk the parents when it cannot be created. */
+        tmp[slash - path] = 0;
+        if (mkdir(tmp, 0700) == 0 || errno == EEXIST) {
+            memcpy(last_dir, path, (size_t)(slash - path));
+            last_dir[slash - path] = 0;
+            return;
+        }
+        tmp[slash - path] = '/';
+    }
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = 0;
@@ -1458,10 +1590,36 @@ static void ensure_parent_dirs(const char *path) {
             *p = '/';
         }
     }
+    if (slash && (size_t)(slash - path) < sizeof(last_dir)) {
+        memcpy(last_dir, path, (size_t)(slash - path));
+        last_dir[slash - path] = 0;
+    }
+}
+
+/* Writes every step-th package entry starting at first; returns 0 on success. */
+static int write_entries(const char *root, const struct pax_pkg_entry *entries, unsigned long count, const char *data_start, unsigned long first, unsigned long step) {
+    for (unsigned long i = first; i < count; i += step) {
+        char path[4096];
+        int fd;
+        unsigned long written = 0;
+        snprintf(path, sizeof(path), "%s/%s", root, entries[i].path);
+        ensure_parent_dirs(path);
+        fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd < 0) return 111;
+        while (written < entries[i].len) {
+            ssize_t n = write(fd, data_start + entries[i].offset + written, entries[i].len - written);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { close(fd); return 111; }
+            written += (unsigned long)n;
+        }
+        if (close(fd) != 0) return 111;
+    }
+    return 0;
 }
 
 static int write_package_root(const char *root, const unsigned char *blob, unsigned long blob_len) {
-    char *copy = malloc(blob_len + 1);
+    char *copy = NULL;
+    unsigned long hdr_len = 0;
     char *cursor;
     char *line;
     char *header_end;
@@ -1472,11 +1630,17 @@ static int write_package_root(const char *root, const unsigned char *blob, unsig
     unsigned long offset = 0;
     int rc = 111;
 
+    /* Only the header (up to the blank line) is copied and parsed; file data is read in place. */
+    for (unsigned long k = 0; k + 1 < blob_len; k++) {
+        if (blob[k] == '\\n' && blob[k + 1] == '\\n') { hdr_len = k + 2; break; }
+    }
+    if (hdr_len == 0) return 111;
+    copy = malloc(hdr_len + 1);
     if (!copy) return 111;
-    memcpy(copy, blob, blob_len);
-    copy[blob_len] = 0;
+    memcpy(copy, blob, hdr_len);
+    copy[hdr_len] = 0;
     cursor = copy;
-    header_end = copy + blob_len;
+    header_end = copy + hdr_len;
 
     line = memchr(cursor, '\\n', (size_t)(header_end - cursor));
     if (!line) goto cleanup;
@@ -1513,22 +1677,11 @@ static int write_package_root(const char *root, const unsigned char *blob, unsig
     }
     if (!data_start) goto cleanup;
     if (entry_index != count) goto cleanup;
-    if ((unsigned long)(header_end - data_start) < offset) goto cleanup;
+    data_start = (char *)blob + hdr_len;
+    if (blob_len - hdr_len < offset) goto cleanup;
 
     mkdir(root, 0700);
-    for (unsigned long i = 0; i < count; i++) {
-        char path[4096];
-        FILE *out;
-        snprintf(path, sizeof(path), "%s/%s", root, entries[i].path);
-        ensure_parent_dirs(path);
-        out = fopen(path, "wb");
-        if (!out) goto cleanup;
-        if (entries[i].len > 0 && fwrite(data_start + entries[i].offset, 1, entries[i].len, out) != entries[i].len) {
-            fclose(out);
-            goto cleanup;
-        }
-        fclose(out);
-    }
+    if (write_entries(root, entries, count, (const char *)data_start, 0, 1) != 0) goto cleanup;
     rc = 0;
 
 cleanup:
@@ -1626,7 +1779,7 @@ static int extract_runtime(char *tmpdir, size_t size, char *entrypoint, size_t e
 
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--pax-standalone-inspect") == 0) {
-        puts($manifest_literal);
+        puts($inspect_literal);
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "version") == 0 && strlen($fast_version) > 0) {
@@ -1696,6 +1849,21 @@ sub _manifest_fast_version {
         return $record->{version} if defined($record->{version}) && $record->{version} ne '';
     }
     return;
+}
+
+# _launcher_manifest($manifest)
+# Builds the manifest copy embedded in the launcher and decoded on every start.
+# Input: full build manifest. Output: hash reference without payload bytes,
+# embedded source text, or the per-file runtime payload list, none of which the
+# runtime reads, so the per-launch JSON decode stays small.
+sub _launcher_manifest {
+    my ($manifest) = @_;
+    my $copy = _manifest_without_bytes($manifest);
+    $copy->{code_units} = [
+        map { my %unit = %$_; delete $unit{source_bytes}; \%unit } @{ $copy->{code_units} // [] }
+    ];
+    delete $copy->{runtime_payloads};
+    return $copy;
 }
 
 sub _manifest_without_bytes {
@@ -1841,6 +2009,9 @@ sub _runtime_manifest {
             lib_dirs => $args{lib_dirs} // [],
             exclude_files => $args{exclude_files} // [],
         );
+        # The runtime helper modules already ship (namespace-rewritten) as helper payloads.
+        my %helper_file = map { (abs_path($_) || $_) => 1 } @helper_module_files;
+        @selected = grep { !$helper_file{$_} } @selected;
         if (@selected) {
             my %by_dir;
             for my $path (@selected) {
@@ -1879,6 +2050,18 @@ sub _runtime_manifest {
                 push @payloads, _tree_payloads($dir, $prefix, 'runtime_inc', $args{exclude_files} // []);
             }
         }
+        # Bundled inc roots are searched in order, so a later root's copy of a file that an
+        # earlier root already carries can never be loaded; drop it from the payload.
+        my %claimed_rel;
+        @payloads = grep {
+            my $keep = 1;
+            # Only code files are resolved through @INC; data files are found relative to
+            # the module that loaded, so every root keeps its own.
+            if (($_->{unit_kind} // '') eq 'runtime_inc' && ($_->{logical_path} // '') =~ m{\Ainc/\d+/(.+\.(?:pm|pod|so|bs|al|ix|pl))\z}) {
+                $keep = 0 if $claimed_rel{$1}++;
+            }
+            $keep;
+        } @payloads;
         my @runtime_shared_objects = map { $_->{source_path} // () }
             grep {
                 (($_->{unit_kind} // '') eq 'runtime_inc')
@@ -2195,6 +2378,10 @@ sub _runtime_selected_files {
         }
     }
 
+    for my $path (_sibling_data_files([ keys %selected ], $args{inc_dirs} // [])) {
+        $selected{$path} = 1;
+    }
+
     my %force = map { $_ => 1 } (@helper_module_files, @hybrid_dependency_files);
     for my $path (@{ $args{exclude_files} // [] }) {
         my $abs = abs_path($path) || $path;
@@ -2202,6 +2389,32 @@ sub _runtime_selected_files {
     }
 
     return sort keys %selected;
+}
+
+# _sibling_data_files(\@module_files, \@inc_dirs)
+# Finds small data files that live beside selected modules (for example a
+# MIME/types.db next to MIME/Types.pm), because a module that resolves its data
+# file relative to its own path breaks when only the .pm files are bundled.
+# Input: selected module file paths and the runtime inc roots.
+# Output: absolute paths of sibling data files; files at an inc root are skipped.
+sub _sibling_data_files {
+    my ($files, $inc_dirs) = @_;
+    my %roots = map { (abs_path($_) || $_) => 1 } @$inc_dirs;
+    my (%dirs_seen, @found);
+    for my $file (@$files) {
+        next if $file !~ /\.pm\z/;
+        my $dir = dirname($file);
+        next if $roots{$dir} || $dirs_seen{$dir}++;
+        opendir my $dh, $dir or next;
+        for my $entry (sort readdir $dh) {
+            next if $entry =~ /\A\./ || $entry =~ /\.(?:pm|pod|pl|so|bs|h|a|o|c|xs|orig|bak)\z/i;
+            my $path = File::Spec->catfile($dir, $entry);
+            next if !-f $path || -s $path > 2_000_000;
+            push @found, abs_path($path) || $path;
+        }
+        closedir $dh;
+    }
+    return @found;
 }
 
 sub _expand_runtime_module_files {

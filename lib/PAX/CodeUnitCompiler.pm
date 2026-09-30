@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.031';
+our $VERSION = '0.032';
 
 use strict;
 use warnings;
@@ -39,6 +39,8 @@ sub compile {
 
     my $source = _slurp($abs_path);
     my $package = _package_name($source) or return _fallback_unit($abs_path, $kind, $logical_path, 'missing_package_declaration');
+    return _fallback_unit($abs_path, $kind, $logical_path, 'unsupported_class_builder_dsl')
+        if _uses_class_builder_dsl($source);
     my $has_sub_defs = ($source =~ /\bsub\s+[A-Za-z_][A-Za-z0-9_]*\b/s) ? 1 : 0;
     my @declared_subs = _declared_subs($source, $package);
     my @source_compiled_subs = map { defined $_ ? ($_) : () } map { _compile_declared_sub_from_source($source, $_) } @declared_subs;
@@ -96,7 +98,9 @@ sub compile {
         );
     }
 
-    my $capture = _capture_with_timeout($abs_path, $kind);
+    my $capture = _source_may_lower_native($source)
+        ? _capture_with_timeout($abs_path, $kind)
+        : { status => 'capture_skipped' };
     if (($capture->{status} // '') ne 'ok') {
         return _compiled_unit($abs_path, $kind, $logical_path, $package, \@initializers, \@source_compiled_subs)
             if @source_compiled_subs && !@declared_unsupported_subs;
@@ -244,7 +248,27 @@ sub _compile_sub {
     return;
 }
 
+# _compile_declared_sub_from_source($source, $full_name)
+# Compiles one declared sub from source text alone and makes sure the record
+# carries the sub's prototype, because callers are parsed against it.
+# Input: module source and the fully qualified sub name.
+# Output: compiled sub record, or undef when the shape is unsupported.
 sub _compile_declared_sub_from_source {
+    my ($source, $full_name) = @_;
+    my $record = _compile_declared_sub_from_source_unprototyped($source, $full_name) or return;
+    if (ref($record) eq 'HASH' && !defined $record->{prototype}) {
+        my ($short_name) = $full_name =~ /([^:]+)\z/;
+        my $prototype = defined $short_name ? _sub_prototype_from_source($source, $short_name) : undef;
+        $record->{prototype} = $prototype if defined $prototype && $prototype ne '';
+    }
+    return $record;
+}
+
+# _compile_declared_sub_from_source_unprototyped($source, $full_name)
+# Matches one declared sub against the source-level op recognizers.
+# Input: module source and the fully qualified sub name.
+# Output: compiled sub record without a prototype, or undef when unsupported.
+sub _compile_declared_sub_from_source_unprototyped {
     my ($source, $full_name) = @_;
     my ($package, $short_name) = $full_name =~ /^(.*)::([^:]+)$/ or return;
     if (
@@ -271,6 +295,36 @@ sub _compile_declared_sub_from_source {
                 value => $literal->{value},
             };
         };
+}
+
+# _uses_class_builder_dsl($source)
+# Detects Moo/Moose-style declarations (has, extends, with, around, ...) that run
+# at load time and generate accessors or roles, because the code-unit compiler
+# only models subs and simple initializers and would silently drop them.
+# Input: module source text. Output: 1 when such top-level declarations exist.
+sub _uses_class_builder_dsl {
+    my ($source) = @_;
+    my $code = _strip_pod($source);
+    return 0 if $code !~ /^\s*use\s+(?:Moo|Moose|Mouse|Role::Tiny|Moo::Role|Moose::Role|Mouse::Role|Class::Accessor|Object::Pad)\b/m;
+    return $code =~ /^(?:has|extends|with|around|before|after|requires)\b[\s(]/m ? 1 : 0;
+}
+
+# _source_may_lower_native($source)
+# Decides whether a live reference-Perl capture can add anything for this unit.
+# The capture probe spawns a fresh Perl that loads the module and all its
+# dependencies, which dominates build time, but it only contributes native
+# integer-loop and binary-leaf shapes. Those need a C-style numeric loop or a
+# two-argument arithmetic return in the source, so units without either skip it.
+# Input: module source text. Output: true when capture may find a native shape.
+# PAX_CODE_UNIT_CAPTURE=always restores unconditional capture, =never disables it.
+sub _source_may_lower_native {
+    my ($source) = @_;
+    my $mode = $ENV{PAX_CODE_UNIT_CAPTURE} // '';
+    return 1 if $mode eq 'always';
+    return 0 if $mode eq 'never';
+    return 1 if $source =~ /for\s*\(\s*my\s+\$[A-Za-z_]\w*\s*=\s*[01]\s*;/;
+    return 1 if $source =~ /return\s+\$[A-Za-z_]\w*\s*[-+*>]\s*\$[A-Za-z_]\w*\s*;/;
+    return 0;
 }
 
 sub _capture_with_timeout {
@@ -1624,6 +1678,7 @@ sub _compile_simple_transform_sub_from_source {
         && $body =~ /my \@roots = \$self->_audit_roots/
         && $body =~ /my \$hooks = \$self->_doctor_hook_results/
         && $body =~ /hook_failures => scalar \@hook_failures/
+        && $body !~ /_helper_issues|_shell_bootstrap_issues|_ssl_certificate_issues/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -2108,17 +2163,15 @@ sub _compile_simple_transform_sub_from_source {
         && $body =~ /jq yq tomq propq iniq csvq xmlq/
         && $body =~ /complete/
     ) {
+        # Read the list from the source being compiled so it cannot drift from it.
+        my ($name_list) = $body =~ /return\s+qw\(\s*(.*?)\s*\)\s*;/s;
+        return if !defined $name_list;
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
             name => $short_name,
             full_name => $full_name,
             op => 'internal_cli_helper_names',
-            names => [qw(
-              jq yq tomq propq iniq csvq xmlq
-              of open-file ticket file files path paths ps1
-              encode decode indicator collector config auth init cpan page action docker serve stop restart shell doctor housekeeper skills which
-              complete
-            )],
+            names => [ grep { length } split /\s+/, $name_list ],
             prototype => $prototype,
         };
     }
@@ -2129,18 +2182,18 @@ sub _compile_simple_transform_sub_from_source {
         && $body =~ /pjq/
         && $body =~ /skill/
     ) {
+        # Read the alias map from the source being compiled so it cannot drift from it.
+        my %aliases;
+        while ($body =~ /\b([A-Za-z_][\w-]*)\s*=>\s*'([^']*)'/g) {
+            $aliases{$1} = $2;
+        }
+        return if !%aliases;
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
             name => $short_name,
             full_name => $full_name,
             op => 'internal_cli_helper_aliases',
-            aliases => {
-                pjq => 'jq',
-                pyq => 'yq',
-                ptomq => 'tomq',
-                pjp => 'propq',
-                skill => 'skills',
-            },
+            aliases => \%aliases,
             prototype => $prototype,
         };
     }
@@ -10497,12 +10550,18 @@ sub _compile_simple_transform_sub_from_source {
         && $body =~ /Unknown dashboard command/
         && $body =~ /top_level_suggestions/
     ) {
+        # Take the wording from the source being compiled so the op cannot drift from it.
+        my ($message_head, $message_tail) = $body =~ /my\s+\$message\s*=\s*"([^"]*?)'\$command'([^"]*)"\s*;/
+            or return;
+        $message_tail =~ s/\\n/\n/g;
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
             name => $short_name,
             full_name => $full_name,
             op => 'suggest_unknown_command_message',
             suggestions_method => $package . '::top_level_suggestions',
+            message_head => $message_head,
+            message_tail => $message_tail,
             prototype => $prototype,
         };
     }
@@ -12534,6 +12593,48 @@ sub _compiled_dispatch_script_unit {
     };
 }
 
+# _precompute_pod_usage($path, $source)
+# Renders the usage text the CLI router prints for its two pod2usage forms at
+# build time, because the text is a pure function of the script's POD and
+# rendering it needs Pod::Usage, Pod::Text and Pod::Simple on every launch.
+# Input: script path and source. Output: hash reference with short/help entries
+# of {stdout, stderr, exit}, or undef when the script does not use pod2usage
+# or rendering fails (the runtime then renders at launch as before).
+sub _precompute_pod_usage {
+    my ($path, $source) = @_;
+    return if $source !~ /\bpod2usage\b/;
+    require IPC::Open3;
+    require Symbol;
+    my %forms = (
+        short => q{-exitval => 1, -verbose => 99, -sections => [qw(NAME SYNOPSIS)]},
+        help => q{-exitval => 0, -verbose => 99},
+    );
+    my %out;
+    for my $form (sort keys %forms) {
+        my $err = Symbol::gensym();
+        my ($in, $stdout);
+        my $pid = eval {
+            IPC::Open3::open3($in, $stdout, $err, $^X, '-MPod::Usage', '-e',
+                "pod2usage(-input => \$ARGV[0], $forms{$form});", $path);
+        };
+        return if !$pid;
+        close $in;
+        my ($stdout_text, $stderr_text);
+        {
+            local $/;
+            $stdout_text = <$stdout>;
+            $stderr_text = <$err>;
+        }
+        waitpid($pid, 0);
+        $out{$form} = {
+            stdout => $stdout_text // '',
+            stderr => $stderr_text // '',
+            exit => $? >> 8,
+        };
+    }
+    return \%out;
+}
+
 sub _compiled_cli_router_unit {
     my ($path, $kind, $logical_path, $source) = @_;
     return if $source !~ /my\s+\$cmd\s*=\s*shift\s+\@ARGV\s*\|\|\s*''\s*;/;
@@ -12551,6 +12652,17 @@ sub _compiled_cli_router_unit {
     my $sub_pos = index($source, "\nsub _prime_command_result_env");
     return if $sub_pos < 0;
     my $bootstrap_source = substr($source, 0, $decl_start) . substr($source, $sub_pos + 1);
+    my $usage_outputs = _precompute_pod_usage($path, $source);
+    my $pod_usage_lazy = 0;
+    if ($usage_outputs && $bootstrap_source =~ s/^use\s+Pod::Usage\s+qw\(\s*pod2usage\s*\)\s*;\n//m) {
+        $bootstrap_source = "sub pod2usage { require Pod::Usage; goto &Pod::Usage::pod2usage; }\n" . $bootstrap_source;
+        $pod_usage_lazy = 1;
+    }
+    my $prelude_source = '';
+    if ($source =~ /\n[ \t]*if\s*\(\s*\$cmd\s+eq\s+''\s*\)/g) {
+        my $branch_pos = $-[0];
+        $prelude_source = substr($source, $decl_end, $branch_pos - $decl_end) if $branch_pos > $decl_end;
+    }
     my @module_roots = _module_search_roots_from_source($source, $path);
     my $version = _module_version_from_roots($version_module, \@module_roots);
     my @subs;
@@ -12573,6 +12685,10 @@ sub _compiled_cli_router_unit {
         source_kind => $kind,
         source_path => $path,
         bootstrap_source => $bootstrap_source,
+        usage_source => $source,
+        prelude_source => $prelude_source,
+        ($usage_outputs ? (usage_outputs => $usage_outputs) : ()),
+        pod_usage_lazy => $pod_usage_lazy,
         version => $version,
         version_module => $version_module,
         suggest_class => $suggest_class,

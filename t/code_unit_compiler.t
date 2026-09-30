@@ -110,6 +110,14 @@ my $capture_module = $compiler->compile(
 is($capture_module->{packaging}, 'source_payload_fallback', 'complex low-coverage modules fall back to source payloads instead of brittle hybrid PCUs');
 is($capture_module->{fallback_reason}, 'hybrid_coverage_too_low', 'source fallback records hybrid coverage reason');
 
+# The remaining assertions compile a checked-out Developer Dashboard snapshot that is
+# git-ignored, so they only run where that snapshot exists.
+if (!-d 'DD Source Code/developer-dashboard') {
+    diag("skipping Developer Dashboard snapshot assertions: 'DD Source Code/developer-dashboard' is absent");
+    done_testing();
+    exit 0;
+}
+
 my $dd = $compiler->compile(
     path => 'DD Source Code/developer-dashboard/lib/Developer/Dashboard.pm',
     kind => 'lib',

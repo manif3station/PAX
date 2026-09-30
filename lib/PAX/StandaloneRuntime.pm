@@ -1,20 +1,14 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.031';
+our $VERSION = '0.032';
 
 use strict;
 use warnings;
-use Capture::Tiny ();
 use Config ();
 use File::Basename qw(basename dirname);
-use File::Path qw(make_path);
 use File::Spec;
 use Cwd qw(abs_path);
-use JSON::PP ();
-use Socket qw(MSG_PEEK);
 
-use PAX::GuardManager;
-use PAX::NativeRunner;
 
 my $STATE;
 my $RUNTIME_JSON_DECODER;
@@ -43,22 +37,22 @@ my $INDICATOR_STATUS_ICONS = {
 };
 my $INDICATOR_PROMPT_STATUS_ICONS = {
     ok => {
-        yes     => '✅',
-        running => '✅',
-        secure  => '✅',
-        ok      => '✅',
-        clean   => '✅',
+        yes     => "\x{2705}",
+        running => "\x{2705}",
+        secure  => "\x{2705}",
+        ok      => "\x{2705}",
+        clean   => "\x{2705}",
     },
     error => {
-        wrong     => '🚨',
-        stopped   => '🚨',
-        paused    => '🚨',
-        insecure  => '🚨',
-        reloading => '🚨',
-        missing   => '🚨',
-        error     => '🚨',
-        dirty     => '🚨',
-        down      => '🚨',
+        wrong     => "\x{1F6A8}",
+        stopped   => "\x{1F6A8}",
+        paused    => "\x{1F6A8}",
+        insecure  => "\x{1F6A8}",
+        reloading => "\x{1F6A8}",
+        missing   => "\x{1F6A8}",
+        error     => "\x{1F6A8}",
+        dirty     => "\x{1F6A8}",
+        down      => "\x{1F6A8}",
     },
 };
 
@@ -72,6 +66,7 @@ sub _trace {
 sub _capture_system_command {
     my (@command) = @_;
     my $exit_code = -1;
+    require Capture::Tiny;
     my ($stdout, $stderr) = Capture::Tiny::capture {
         system @command;
         $exit_code = $? == -1 ? -1 : ($? >> 8);
@@ -157,8 +152,7 @@ sub _state {
     return $STATE if $STATE;
     my $manifest_path = $ENV{PAX_STANDALONE_MANIFEST_PATH} or die 'PAX_STANDALONE_MANIFEST_PATH not set';
     open my $fh, '<', $manifest_path or die "cannot read $manifest_path: $!";
-    local $/;
-    my $manifest = _runtime_json_decode(<$fh>);
+    my $manifest = do { local $/; _runtime_json_decode(<$fh>) };
     my $root = $ENV{PAX_STANDALONE_TMPDIR} or die 'PAX_STANDALONE_TMPDIR not set';
     my $app_namespace = _normalize_namespace($manifest->{app}{namespace} // '');
     if (!$app_namespace) {
@@ -187,7 +181,7 @@ sub _state {
         legacy_namespace => $legacy_namespace,
         compiled_packages => \%compiled_packages,
         app_env_prefix => undef,
-        native_runner => PAX::NativeRunner->new,
+        native_runner => undef,
         wrapped => {},
         namespace_aliases => {},
         by_region => \%by_region,
@@ -605,6 +599,8 @@ sub _run_standalone_managed_helper {
     local @ARGV = @helper_argv;
     local $0 = $path if defined $path && $path ne '';
     my $wrapped = "package main;\n#line 1 \"$path\"\n" . $source;
+    # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
+    utf8::downgrade($wrapped, 1);
     my $rv = eval $wrapped;
     die $@ if $@;
     return 0 if !defined $rv;
@@ -642,6 +638,7 @@ sub _install_pending_wrappers {
         *{$full} = sub {
             my @args = @_;
             if (_eligible_i64_args(\@args)) {
+                require PAX::GuardManager;
                 my $guard = PAX::GuardManager->new(
                     epochs => $state->{manifest}{runtime_epochs} // {},
                 )->validate_or_deopt({
@@ -654,7 +651,7 @@ sub _install_pending_wrappers {
                 if (($guard->{status} // '') eq 'native_allowed') {
                     my $probe = File::Spec->catfile($state->{root}, split m{/}, $meta->{executable_logical_path});
                     chmod 0700, $probe if -f $probe;
-                    my $result = $state->{native_runner}->run_i64_binary(
+                    my $result = _native_runner($state)->run_i64_binary(
                         path => $probe,
                         left => $args[0],
                         right => $args[1],
@@ -684,8 +681,7 @@ sub _load_compiled_unit {
     _trace("load unit " . (($unit->{require_path} // $unit->{logical_path} // 'unknown')));
     my $path = File::Spec->catfile($state->{root}, 'code', split m{/}, $unit->{logical_path});
     open my $fh, '<', $path or die "cannot read compiled unit $path: $!";
-    local $/;
-    my $record = _runtime_json_decode(<$fh>);
+    my $record = do { local $/; _runtime_json_decode(<$fh>) };
 
     if (($record->{residual_mode} // '') eq 'module') {
         _load_residual_module($unit, $record);
@@ -696,7 +692,7 @@ sub _load_compiled_unit {
         _apply_initializer($init);
     }
     for my $sub (@{ $record->{subs} // [] }) {
-        _install_compiled_sub($record->{package}, $sub);
+        _install_compiled_sub_lazily($record->{package}, $sub);
     }
     if (@{ $record->{unsupported_subs} // [] }) {
         _install_residual_stubs($unit, $record);
@@ -710,7 +706,8 @@ sub _ensure_virtual_source_file {
     my $path = File::Spec->catfile($state->{root}, 'code', split m{/}, $logical);
     return $path if -f $path;
     my $dir = dirname($path);
-    make_path($dir) if !-d $dir;
+    require File::Path;
+    File::Path::make_path($dir) if !-d $dir;
     open my $fh, '>', $path or die "cannot write virtual source file $path: $!";
     print {$fh} "# PAX compiled unit placeholder for ", ($unit->{require_path} // $unit->{logical_path} // 'unknown'), "\n1;\n";
     close $fh;
@@ -765,8 +762,7 @@ sub _run_entrypoint {
 sub _run_service_dispatch_unit {
     my ($entrypoint) = @_;
     open my $fh, '<', $entrypoint or die "cannot read service dispatch unit $entrypoint: $!";
-    local $/;
-    my $record = _runtime_json_decode(<$fh>);
+    my $record = do { local $/; _runtime_json_decode(<$fh>) };
 
     my $cmd = shift(@ARGV);
     $cmd = 'version' if !defined($cmd) || $cmd eq '';
@@ -820,33 +816,44 @@ sub _run_service_dispatch_unit {
 sub _run_cli_router_unit {
     my ($entrypoint) = @_;
     open my $fh, '<', $entrypoint or die "cannot read cli router unit $entrypoint: $!";
-    local $/;
-    my $record = _runtime_json_decode(<$fh>);
+    my $record = do { local $/; _runtime_json_decode(<$fh>) };
     my $path = _virtual_entrypoint_path($entrypoint);
     my $bootstrap = $record->{bootstrap_source};
     if (defined $bootstrap && $bootstrap ne '') {
         my $wrapped = "package main;\n#line 1 \"$path\"\n" . $bootstrap;
+        # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
+        utf8::downgrade($wrapped, 1);
         my $rv = eval $wrapped;
         die $@ if $@;
     }
 
+    my @usage_input;
+    if (defined $record->{usage_source} && $record->{usage_source} ne '') {
+        my $usage_path = $path . '.usage.pl';
+        if (!-f $usage_path && open my $uh, '>:raw', $usage_path) {
+            print {$uh} $record->{usage_source};
+            close $uh;
+        }
+        @usage_input = (-input => $usage_path) if -f $usage_path;
+    }
+
     my $cmd = shift @ARGV || '';
-    _code_for('main::_load_runtime_env')->() if _code_for('main::_load_runtime_env');
-    _code_for('main::_prime_command_result_env')->($cmd, @ARGV)
-        if $cmd ne '' && _code_for('main::_prime_command_result_env');
+    if (defined $record->{prelude_source} && $record->{prelude_source} ne '') {
+        my $prelude = "package main;\n#line 1 \"$path (prelude)\"\n" . $record->{prelude_source};
+        eval $prelude;
+        die $@ if $@;
+    }
+    else {
+        _code_for('main::_load_runtime_env')->() if _code_for('main::_load_runtime_env');
+        _code_for('main::_prime_command_result_env')->($cmd, @ARGV)
+            if $cmd ne '' && _code_for('main::_prime_command_result_env');
+    }
 
     if ($cmd eq '') {
-        main::pod2usage(
-            -exitval  => 1,
-            -verbose  => 99,
-            -sections => [qw(NAME SYNOPSIS)],
-        );
+        _router_usage($record, 'short', \@usage_input);
     }
     elsif ($cmd eq 'help' || $cmd eq '--help' || $cmd eq '-h') {
-        main::pod2usage(
-            -exitval => 0,
-            -verbose => 99,
-        );
+        _router_usage($record, 'help', \@usage_input);
     }
 
     if ($cmd eq 'version') {
@@ -879,10 +886,37 @@ sub _run_cli_router_unit {
 
     if ($cmd ne '') {
         my $suggest_class = $record->{suggest_class} || die "cli router missing suggest class\n";
+        _load_package_by_module_name($suggest_class);
         print STDERR $suggest_class->new()->unknown_command_message($cmd);
     }
 
+    _router_usage($record, 'short', \@usage_input);
+}
+
+# _router_usage($record, $form, \@usage_input)
+# Prints the CLI router usage text and exits. Replays the text rendered at build
+# time when the record carries it, so Pod::Usage is not loaded for help; falls
+# back to calling pod2usage when it does not.
+# Input: router record, 'short' or 'help', and optional pod2usage -input args.
+# Output: does not return.
+sub _router_usage {
+    my ($record, $form, $usage_input) = @_;
+    if (my $rendered = ($record->{usage_outputs} || {})->{$form}) {
+        for my $pair ([\*STDOUT, 'stdout'], [\*STDERR, 'stderr']) {
+            my ($fh, $key) = @$pair;
+            my $text = $rendered->{$key};
+            next if !defined $text || $text eq '';
+            utf8::downgrade($text, 1);
+            binmode($fh);
+            print {$fh} $text;
+        }
+        exit($rendered->{exit} // 0);
+    }
+    if ($form eq 'help') {
+        main::pod2usage(@$usage_input, -exitval => 0, -verbose => 99);
+    }
     main::pod2usage(
+        @$usage_input,
         -exitval  => 1,
         -verbose  => 99,
         -sections => [qw(NAME SYNOPSIS)],
@@ -892,12 +926,13 @@ sub _run_cli_router_unit {
 sub _run_dispatch_script_unit {
     my ($entrypoint) = @_;
     open my $fh, '<', $entrypoint or die "cannot read dispatch script unit $entrypoint: $!";
-    local $/;
-    my $record = _runtime_json_decode(<$fh>);
+    my $record = do { local $/; _runtime_json_decode(<$fh>) };
     my $path = _virtual_entrypoint_path($entrypoint);
     my $bootstrap = $record->{bootstrap_source};
     if (defined $bootstrap && $bootstrap ne '') {
         my $wrapped = "package main;\n#line 1 \"$path\"\n" . $bootstrap;
+        # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
+        utf8::downgrade($wrapped, 1);
         my $rv = eval $wrapped;
         die $@ if $@;
     }
@@ -961,8 +996,7 @@ sub _run_dispatch_action {
 sub _run_script_unit {
     my ($entrypoint) = @_;
     open my $fh, '<', $entrypoint or die "cannot read script unit $entrypoint: $!";
-    local $/;
-    my $record = _runtime_json_decode(<$fh>);
+    my $record = do { local $/; _runtime_json_decode(<$fh>) };
     my $source = $record->{script_source} // _script_source_from_code_units($entrypoint)
         // _source_path_to_script_source($entrypoint)
         // _script_source_from_residual_payload($entrypoint);
@@ -971,6 +1005,8 @@ sub _run_script_unit {
     $source = _apply_compiled_script_subs($source, $record->{compiled_subs} // []);
     my $path = _virtual_entrypoint_path($entrypoint);
     my $wrapped = "package main;\n#line 1 \"$path\"\n" . $source;
+    # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
+    utf8::downgrade($wrapped, 1);
     my $rv = eval $wrapped;
     die $@ if $@;
     return 0 if !defined($rv);
@@ -1005,6 +1041,7 @@ sub _runtime_json_decoder {
         $RUNTIME_JSON_DECODER_KIND = 'JSON::XS';
         return $RUNTIME_JSON_DECODER;
     }
+    require JSON::PP;
     $RUNTIME_JSON_DECODER = JSON::PP->new->utf8(1);
     $RUNTIME_JSON_DECODER_KIND = 'JSON::PP';
     return $RUNTIME_JSON_DECODER;
@@ -1119,26 +1156,561 @@ sub _perl_literal {
     return "'" . $text . "'";
 }
 
+# _native_runner($state)
+# Returns the native region runner, loading PAX::NativeRunner (and the process
+# helpers it imports) only when a native region is actually dispatched.
+# Input: runtime state hash. Output: PAX::NativeRunner object.
+sub _native_runner {
+    my ($state) = @_;
+    return $state->{native_runner} ||= do {
+        require PAX::NativeRunner;
+        PAX::NativeRunner->new;
+    };
+}
+
+# _install_compiled_sub_lazily($package, $sub)
+# Installs a stub that builds the real compiled handler on first call, because
+# most subs in a loaded unit are never called in one run and building each
+# handler up front dominated startup. Prototyped subs stay eager since their
+# prototype changes how callers are parsed. PAX_EAGER_SUBS=1 disables the stubs.
+# Input: target package name and compiled sub record. Output: none.
+sub _install_compiled_sub_lazily {
+    my ($package, $sub) = @_;
+    my $name = $sub->{name} // die 'compiled sub name missing';
+    return _install_compiled_sub($package, $sub)
+        if $ENV{PAX_EAGER_SUBS} || (defined $sub->{prototype} && $sub->{prototype} ne '');
+    my $full = $package . '::' . $name;
+    my ($real, $stub);
+    $stub = sub {
+        if (!$real) {
+            _install_compiled_sub($package, $sub);
+            no strict 'refs';
+            my $installed = *{$full}{CODE};
+            die "compiled sub op '" . ($sub->{op} // '') . "' did not install $full"
+                if !$installed || $installed == $stub;
+            $real = $installed;
+        }
+        goto &$real;
+    };
+    no strict 'refs';
+    no warnings 'redefine';
+    *{$full} = $stub;
+    return;
+}
+
+# _install_compiled_sub($package, $sub)
+# Installs one compiled sub record into its package by dispatching on $sub->{op}.
+# Input: target package name and the compiled sub record from a PCU unit.
+# Output: whatever the op handler returns; dies for an unknown op.
+# Op handlers are kept as text after __DATA__ and compiled on first use, because
+# parsing every handler on each launch dominated standalone startup time.
 sub _install_compiled_sub {
     my ($package, $sub) = @_;
     my $name = $sub->{name} // die 'compiled sub name missing';
     my $full = $package . '::' . $name;
-    my $impl;
-    if (($sub->{op} // '') eq 'return_literal') {
+    my $handler = _compiled_op_handler($sub->{op} // '')
+        or die "unsupported compiled sub op: " . ($sub->{op} // '');
+    return $handler->($package, $sub, $name, $full);
+}
+
+# Rewrite script-source subroutines with their compiled/native-aware variants
+# before the top-level script body is evaluated.
+sub _apply_compiled_script_subs {
+    my ($source, $subs) = @_;
+    return $source if !defined $source || $source eq '' || !$subs || !@$subs;
+    for my $sub (@$subs) {
+        next if (($sub->{op} // '') ne 'native_shape_sub');
+        my $full = $sub->{full_name} // '';
+        next if $full !~ /^main::([^:]+)\z/;
+        my $short = $1;
+        my $replacement = _compiled_script_sub_source($full, $short, $sub->{prototype}, $sub->{native_shape});
+        next if !defined $replacement || $replacement eq '';
+        my $original = _extract_sub_source_runtime($source, $short) or next;
+        $source =~ s/\Q$original\E/$replacement/s;
+    }
+    return $source;
+}
+
+# Render a compiled script sub back into source that the runtime can splice into
+# the packaged script body.
+sub _compiled_script_sub_source {
+    my ($full, $short, $prototype, $shape) = @_;
+    return if !defined $short || $short eq '' || ref($shape) ne 'HASH';
+    my $proto = defined $prototype ? $prototype : '';
+    my $args = '$PAX_ARG0';
+    $args .= ', $PAX_ARG1' if scalar(@{ $shape->{args} // [] }) > 1;
+    return sprintf(
+        "sub %s%s {\n    my (%s) = \@_;\n    return PAX::StandaloneRuntime::_run_native_shape_sub(%s, %s, \@_);\n}\n",
+        $short,
+        $proto || '',
+        $args,
+        _perl_literal($full),
+        _perl_literal(do { require JSON::PP; JSON::PP->new->canonical(1)->encode($shape) }),
+    );
+}
+
+# Extract the original subroutine source from the packaged script so runtime
+# rewriting has an exact source range to replace.
+sub _extract_sub_source_runtime {
+    my ($source, $sub_name) = @_;
+    return if $source !~ /\bsub\s+\Q$sub_name\E\b[^\{]*\{/g;
+    my $start = $-[0];
+    my $brace = index($source, '{', $+[0] - 1);
+    return if $brace < 0;
+    my $depth = 1;
+    my $i = $brace + 1;
+    while ($i < length($source)) {
+        my $char = substr($source, $i, 1);
+        $depth++ if $char eq '{';
+        $depth-- if $char eq '}';
+        if ($depth == 0) {
+            my $end = $i + 1;
+            while ($end < length($source) && substr($source, $end, 1) =~ /[ \t]/) {
+                $end++;
+            }
+            $end++ if $end < length($source) && substr($source, $end, 1) eq ';';
+            return substr($source, $start, $end - $start);
+        }
+        $i++;
+    }
+    return;
+}
+
+# Execute a compiled script sub through the packaged native-dispatch entry when
+# the runtime emitted a matching native artifact.
+sub _run_native_shape_sub {
+    my ($full, $shape_json, @args) = @_;
+    my $shape = ref($shape_json) eq 'HASH' ? $shape_json : _runtime_json_decode($shape_json);
+    my $expected = scalar @{ $shape->{args} // [] };
+    if ($expected && @args == $expected && _native_shape_args_are_i64(\@args)) {
+        my $result = _invoke_native_shape_runtime($full, $shape, \@args);
+        return $result->{value} if $result->{status} eq 'ok' && exists $result->{value};
+    }
+    return _interpret_native_shape($shape, \@args);
+}
+
+# Dispatch supported native-shape script subs through the runtime dispatcher and
+# fall back to interpretation when no packaged artifact is available.
+sub _invoke_native_shape_runtime {
+    my ($full, $shape, $args) = @_;
+    my $state = _state();
+    my $meta = $state->{by_region}{$full} || {};
+    return { status => 'fallback', reason => 'native region missing' } if !($meta->{executable_logical_path} // '');
+    my $probe = File::Spec->catfile($state->{root}, split m{/}, $meta->{executable_logical_path});
+    chmod 0700, $probe if -f $probe;
+    my $left = $args->[0];
+    my $right = @$args > 1 ? $args->[1] : 0;
+    return _native_runner($state)->run_i64_binary(
+        path => $probe,
+        left => $left,
+        right => $right,
+    );
+}
+
+# Confirm that the current call arguments fit the narrow integer ABI used by
+# packaged native script helpers.
+sub _native_shape_args_are_i64 {
+    my ($args) = @_;
+    for my $arg (@$args) {
+        return 0 if !defined $arg || $arg !~ /\A-?\d+\z/;
+    }
+    return 1;
+}
+
+# Mirror the supported native shapes in Perl so deopt or unsupported dispatch
+# can still run script-native candidates correctly.
+sub _interpret_native_shape {
+    my ($shape, $args) = @_;
+    my $kind = $shape->{kind} // '';
+    if ($kind eq 'i64_binary_leaf') {
+        my ($left, $right) = @$args;
+        my $op = $shape->{op} // '';
+        return $left + $right if $op eq 'add';
+        return $left - $right if $op eq 'subtract';
+        return $left * $right if $op eq 'multiply';
+        return $left > $right ? 1 : 0 if $op eq 'greater_than';
+    }
+    if ($kind eq 'i64_sum_loop') {
+        my ($limit) = @$args;
+        return 0 if !defined $limit || $limit <= 0;
+        my $sum = 0;
+        for (my $i = 1; $i <= $limit; $i++) {
+            $sum += $i;
+        }
+        return $sum;
+    }
+    if ($kind eq 'i64_masked_mix_accum_loop') {
+        my ($limit) = @$args;
+        return 0 if !defined $limit || $limit <= 0;
+        my $acc = 0;
+        for (my $i = 0; $i < $limit; $i++) {
+            $acc += (($i * 13) ^ ($i >> 3)) & 0xFFFF;
+        }
+        return $acc;
+    }
+    die "unsupported native shape kind: $kind";
+}
+
+# _install_sub_impl($package, $name, $prototype, $impl)
+# Installs one compiled handler under a package symbol, honoring any prototype.
+# Input: package, sub name, optional prototype string, code reference.
+# Output: none.
+sub _install_sub_impl {
+    my ($package, $name, $prototype, $impl) = @_;
+    my $full = $package . '::' . $name;
+    no strict 'refs';
+    no warnings 'redefine';
+    if (defined $prototype && $prototype ne '') {
+        my $impl_name = sprintf '__PAX_IMPL_%s_%d_%d', $name, $$, int(rand(1_000_000));
+        my $impl_full = $package . '::' . $impl_name;
+        *{$impl_full} = $impl;
+        my $code = "package $package; no warnings 'redefine'; sub $name $prototype { goto &$impl_full } 1;";
+        my $ok = eval $code;
+        die $@ if !$ok;
+        return;
+    }
+    *{$full} = $impl;
+    return;
+}
+
+# _install_residual_stubs($unit, $record)
+# Installs stubs for subs the compiler left as source, each loading its source on first call.
+# Input: code unit and its decoded PCU record.
+# Output: none.
+sub _install_residual_stubs {
+    my ($unit, $record) = @_;
+    for my $full (@{ $record->{unsupported_subs} // [] }) {
+        no strict 'refs';
+        no warnings 'redefine';
+        *{$full} = sub {
+            _load_residual_sub($unit, $record, $full);
+            my $cv = _code_for($full) or die "residual source did not define $full";
+            goto &$cv;
+        };
+    }
+}
+
+# _load_residual_sub($unit, $record, $full)
+# Compiles one residual sub from its stored source the first time it is called.
+# Input: code unit, PCU record, fully qualified sub name.
+# Output: true once the sub is defined.
+sub _load_residual_sub {
+    my ($unit, $record, $full) = @_;
+    my $state = _state();
+    my $key = $record->{require_path} || $unit->{logical_path} || $unit->{source_path} || '';
+    my $sub_key = $key . '::' . $full;
+    return if $state->{residual_loaded}{$sub_key};
+    if (($record->{residual_mode} // '') eq 'module') {
+        _load_residual_module($unit, $record);
+        my $cv = _code_for($full) or die "module residual source did not define $full";
+        $state->{residual_loaded}{$sub_key} = 1;
+        return 1;
+    }
+    _load_residual_bootstrap($unit, $record);
+    my $source = $record->{residual_sub_sources}{$full}
+        // die "residual sub source missing for $full";
+    my $path = _virtual_source_path($unit, $record);
+    my $wrapped = "package $record->{package};\nno strict;\nno warnings 'redefine';\n#line 1 \"$path\"\n" . $source;
+    local $SIG{__WARN__} = sub {
+        my ($warning) = @_;
+        return if defined $warning && $warning =~ /\ASubroutine .+ redefined at \Q$path\E line \d+\.\n\z/;
+        return if defined $warning && $warning =~ /\APrototype mismatch: sub .+ line \d+\.\n\z/;
+        warn $warning;
+    };
+    # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
+    utf8::downgrade($wrapped, 1);
+    my $rv = eval $wrapped;
+    die $@ if $@;
+    $state->{residual_loaded}{$sub_key} = 1;
+    return 1;
+}
+
+# _load_residual_module($unit, $record)
+# Evaluates a whole residual module source in place of its compiled ops.
+# Input: code unit and its decoded PCU record.
+# Output: value of the evaluated source.
+sub _load_residual_module {
+    my ($unit, $record) = @_;
+    my $state = _state();
+    my $key = $record->{require_path} || $unit->{logical_path} || $unit->{source_path} || '';
+    return if $state->{residual_bootstrap_loaded}{$key};
+    {
+        no strict 'refs';
+        my $stash = \%{ ($record->{package} // '') . '::' };
+        for my $name (
+            map { $_->{name} } @{ $record->{subs} // [] },
+            map { /::([^:]+)\z/ ? $1 : () } @{ $record->{unsupported_subs} // [] },
+        ) {
+            next if !$name;
+            delete $stash->{$name};
+        }
+    }
+    my $source = $record->{residual_source} // die "residual module source missing for $key";
+    my $path = _virtual_source_path($unit, $record);
+    my $wrapped = "no strict;\nno warnings 'redefine';\n#line 1 \"$path\"\n" . $source;
+    local $SIG{__WARN__} = sub {
+        my ($warning) = @_;
+        return if defined $warning && $warning =~ /\ASubroutine .+ redefined at \Q$path\E line \d+\.\n\z/;
+        return if defined $warning && $warning =~ /\APrototype mismatch: sub .+ line \d+\.\n\z/;
+        warn $warning;
+    };
+    # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
+    utf8::downgrade($wrapped, 1);
+    my $rv = eval $wrapped;
+    die $@ if $@;
+    $state->{residual_bootstrap_loaded}{$key} = 1;
+    return $rv;
+}
+
+# _load_residual_bootstrap($unit, $record)
+# Evaluates the top-level (non-sub) source of a hybrid unit once.
+# Input: code unit and its decoded PCU record.
+# Output: true.
+sub _load_residual_bootstrap {
+    my ($unit, $record) = @_;
+    my $state = _state();
+    my $key = $record->{require_path} || $unit->{logical_path} || $unit->{source_path} || '';
+    return if $state->{residual_bootstrap_loaded}{$key};
+    my $source = $record->{residual_bootstrap_source};
+    $state->{residual_bootstrap_loaded}{$key} = 1;
+    return 1 if !defined $source || $source eq '';
+    my $path = _virtual_source_path($unit, $record);
+    my $wrapped = "no strict;\nno warnings 'redefine';\n#line 1 \"$path\"\n" . $source;
+    local $SIG{__WARN__} = sub {
+        my ($warning) = @_;
+        return if defined $warning && $warning =~ /\ASubroutine .+ redefined at \Q$path\E line \d+\.\n\z/;
+        return if defined $warning && $warning =~ /\APrototype mismatch: sub .+ line \d+\.\n\z/;
+        warn $warning;
+    };
+    # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
+    utf8::downgrade($wrapped, 1);
+    my $rv = eval $wrapped;
+    die $@ if $@;
+    return 1;
+}
+
+# _code_for($full)
+# Looks up the code reference installed under a fully qualified sub name.
+# Input: fully qualified sub name.
+# Output: code reference or undef.
+sub _code_for {
+    my ($full) = @_;
+    no strict 'refs';
+    return *{$full}{CODE};
+}
+
+# _virtual_source_path($unit, $record)
+# Returns the placeholder source file that stands in for a compiled unit in %INC and #line directives.
+# Input: code unit and its record.
+# Output: file path string.
+sub _virtual_source_path {
+    my ($unit, $record) = @_;
+    return _ensure_virtual_source_file($unit);
+}
+
+# _virtual_entrypoint_path($entrypoint)
+# Returns the placeholder source file used as $0 and #line target for the entrypoint unit.
+# Input: entrypoint unit path.
+# Output: file path string.
+sub _virtual_entrypoint_path {
+    my ($entrypoint) = @_;
+    my $state = _state();
+    my $manifest = $state->{manifest} || {};
+    my $unit = {
+        logical_path => $manifest->{entrypoint}{logical_path} || $entrypoint,
+    };
+    return _ensure_virtual_source_file($unit);
+}
+
+# _render_simple_template_asset($path, $vars)
+# Renders a small embedded template asset by substituting [% name %] style variables.
+# Input: asset path and a hash reference of variables.
+# Output: rendered text, or undef when the asset is missing or empty.
+sub _render_simple_template_asset {
+    my ($path, $vars) = @_;
+    return if !$path || !-f $path;
+    open my $fh, '<', $path or return;
+    local $/;
+    my $template = <$fh>;
+    close $fh;
+    return if !defined $template || $template eq '';
+    $template =~ s/\[\%\s*([A-Za-z_][A-Za-z0-9_]*)\s*\%\]/defined $vars->{$1} ? $vars->{$1} : ''/ge;
+    return $template;
+}
+
+# _log_native_hit($region)
+# Appends a native-region dispatch to the PAX_STANDALONE_NATIVE_HIT_LOG file when configured.
+# Input: region id string.
+# Output: none.
+sub _log_native_hit {
+    my ($region) = @_;
+    my $path = $ENV{PAX_STANDALONE_NATIVE_HIT_LOG} or return;
+    open my $fh, '>>', $path or return;
+    print {$fh} $region, "\n";
+    close $fh;
+}
+
+my %COMPILED_OP_SOURCE;
+my %COMPILED_OP_HANDLER;
+my $TOKEN_MODULE_RE;
+
+# _compiled_op_handler($op)
+# Returns the compiled handler closure for one compiled-sub op, compiling its
+# source text from the __DATA__ section the first time the op is used.
+# Input: op name string. Output: code ref, or undef when the op is unknown.
+sub _compiled_op_handler {
+    my ($op) = @_;
+    return $COMPILED_OP_HANDLER{$op} if $COMPILED_OP_HANDLER{$op};
+    _load_compiled_op_sources() if !%COMPILED_OP_SOURCE;
+    my $body = $COMPILED_OP_SOURCE{$op};
+    return if !defined $body;
+    _require_modules_for_op_source($body);
+    # A named sub only closes over file lexicals it mentions, and the handler text
+    # below is compiled by string eval, so mention the ones handlers share.
+    my @shared_lexicals = (
+        \%RESULT_CHANNEL_FILE_HANDLE,
+        \%RESULT_CHANNEL_FILE_PATH,
+        \$INDICATOR_STATUS_ICONS,
+        \$INDICATOR_PROMPT_STATUS_ICONS,
+    );
+    my $package = __PACKAGE__;
+    my $code = eval "package $package;\nuse utf8;\nsub {\n    my (\$package, \$sub, \$name, \$full) = \@_;\n    my \$impl;\n#line 1 \"PAX::StandaloneRuntime op $op\"\n$body\n}";
+    die "cannot compile runtime op $op: $@" if !$code;
+    return $COMPILED_OP_HANDLER{$op} = $code;
+}
+
+# _require_modules_for_op_source($body)
+# Loads the modules an op handler names by qualified call, because the runtime
+# no longer imports them eagerly at startup.
+# Input: op handler source text. Output: none.
+sub _require_modules_for_op_source {
+    my ($body) = @_;
+    my %module_for_token = (
+        (map { $_ => $_ } qw(
+            Capture::Tiny Socket File::Path File::Temp JSON::PP PAX::NativeRunner
+            PAX::GuardManager IPC::Open3 Symbol Digest::MD5 Encode Fcntl File::Find
+            Getopt::Long IO::Socket POSIX Scalar::Util Time::HiRes
+        )),
+        make_path => 'File::Path', remove_tree => 'File::Path',
+        open3 => 'IPC::Open3', gensym => 'Symbol', md5_hex => 'Digest::MD5',
+        inet_aton => 'Socket', inet_ntoa => 'Socket',
+    );
+    my $token_re = $TOKEN_MODULE_RE ||= do {
+        my $alt = join '|', map { quotemeta } sort { length($b) <=> length($a) } keys %module_for_token;
+        qr/\b(?:($alt)\b|((?:un)?pack_sockaddr_\w+)|(LOCK_(?:EX|SH|UN|NB))|(O_(?:CREAT|EXCL|RDWR|WRONLY))|(SEEK_\w+))/;
+    };
+    my %modules;
+    while ($body =~ /$token_re/g) {
+        my $module = defined $1 ? $module_for_token{$1}
+            : defined $2 ? 'Socket'
+            : 'Fcntl';
+        $modules{$module} = 1;
+    }
+    for my $module (sort keys %modules) {
+        (my $file = "$module.pm") =~ s{::}{/}g;
+        require $file;
+    }
+    return;
+}
+
+# _load_compiled_op_sources()
+# Reads the __DATA__ section once and indexes op handler text by op name.
+# Input: none.
+# Output: none.
+sub _load_compiled_op_sources {
+    no strict 'refs';
+    my $fh = \*{ __PACKAGE__ . '::DATA' };
+    local $/;
+    my $text = <$fh>;
+    $text = '' if !defined $text;
+    my @parts = split /^#\@\@PAX_OP (.*)\n/m, $text;
+    shift @parts;
+    while (@parts) {
+        my ($ops, $body) = splice @parts, 0, 2;
+        $COMPILED_OP_SOURCE{$_} = $body for split ' ', $ops;
+    }
+    return;
+}
+
+1;
+
+=pod
+
+=head1 NAME
+
+PAX::StandaloneRuntime - embedded runtime loader for standalone binaries
+
+=head1 SYNOPSIS
+
+  use PAX::StandaloneRuntime;
+
+  my $result = PAX::StandaloneRuntime->run(...);
+
+=head1 DESCRIPTION
+
+Bootstraps extracted standalone payloads, configures the runtime environment, and dispatches entrypoints, helpers, and native fallbacks from a single binary.
+
+=head1 METHODS
+
+=head2 run, stash, hide, void, stop, params, stash, hide, void, stop, params
+
+These are the public entrypoints exposed by this module's current interface.
+
+=head1 PURPOSE
+
+This module exists to keep the embedded runtime loader for standalone binaries logic in one place so the CLI, build
+pipeline, and runtime can reuse the same behavior instead of duplicating it.
+
+=head1 WHY IT EXISTS
+
+PAX uses this module when it needs embedded runtime loader for standalone binaries. Keeping that behavior isolated here
+makes the surrounding compiler and packaging stages easier to reason about and
+safer to evolve.
+
+=head1 WHEN TO USE
+
+Edit this file when a change affects embedded runtime loader for standalone binaries, the data contract this module
+returns, or the conditions under which callers choose this path.
+
+=head1 HOW TO USE
+
+Load the module through the normal PAX call path, pass explicit arguments rather
+than ambient global state, and keep project-specific behavior out of this file
+so the implementation stays neutral across arbitrary Perl applications.
+
+=head1 WHAT USES IT
+
+This module is used by the PAX CLI, the build pipeline, standalone packaging,
+and the test suite paths that cover embedded runtime loader for standalone binaries.
+
+=head1 EXAMPLES
+
+Example 1:
+
+  perl -Ilib -MPAX::StandaloneRuntime -e 1
+
+Confirm that the module loads from a source checkout.
+
+Example 2:
+
+  prove -lr t
+
+Run the repository test suite after changing the behavior this module owns.
+
+=cut
+
+__DATA__
+#@@PAX_OP return_literal
         my $value = $sub->{value};
         $impl = sub { return $value };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'native_shape_sub') {
+#@@PAX_OP native_shape_sub
         my $shape = $sub->{native_shape} // {};
         $impl = sub {
             return _run_native_shape_sub($full, $shape, @_);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'global_eq_literal_bool') {
+#@@PAX_OP global_eq_literal_bool
         my $symbol = $sub->{symbol} // die 'compiled sub symbol missing';
         my $literal = $sub->{literal};
         $impl = sub {
@@ -1146,9 +1718,7 @@ sub _install_compiled_sub {
             return (defined ${$symbol} && ${$symbol} eq $literal) ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'command_chain_or_literal') {
+#@@PAX_OP command_chain_or_literal
         my @commands = @{ $sub->{commands} // [] };
         my $fallback = $sub->{fallback};
         $impl = sub {
@@ -1161,9 +1731,7 @@ sub _install_compiled_sub {
             return $fallback;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'normalize_shell_name') {
+#@@PAX_OP normalize_shell_name
         $impl = sub {
             my ($shell) = @_;
             no strict 'refs';
@@ -1177,9 +1745,7 @@ sub _install_compiled_sub {
             die "Unsupported shell '$shell'\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'native_shell_name') {
+#@@PAX_OP native_shell_name
         $impl = sub {
             my ($requested) = @_;
             no strict 'refs';
@@ -1198,9 +1764,7 @@ sub _install_compiled_sub {
             return 'sh';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'shell_command_argv') {
+#@@PAX_OP shell_command_argv
         $impl = sub {
             my ($command, %args) = @_;
             die "Missing shell command\n" if !defined $command;
@@ -1214,9 +1778,7 @@ sub _install_compiled_sub {
             die "Unsupported shell '$shell'\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'shell_quote_for') {
+#@@PAX_OP shell_quote_for
         $impl = sub {
             my ($shell, $value) = @_;
             no strict 'refs';
@@ -1231,9 +1793,7 @@ sub _install_compiled_sub {
             return "'$value'";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'has_shebang') {
+#@@PAX_OP has_shebang
         $impl = sub {
             my ($path) = @_;
             open my $fh, '<', $path or die "Unable to read $path: $!";
@@ -1242,9 +1802,7 @@ sub _install_compiled_sub {
             return defined $first && $first =~ /^#!/ ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'shebang_uses_perl') {
+#@@PAX_OP shebang_uses_perl
         $impl = sub {
             my ($path) = @_;
             open my $fh, '<', $path or die "Unable to read $path: $!";
@@ -1254,9 +1812,7 @@ sub _install_compiled_sub {
             return $first =~ /^#!.*\bperl(?:\s|\z)/ ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'path_candidates') {
+#@@PAX_OP path_candidates
         $impl = sub {
             my ($path) = @_;
             my @candidates = ($path);
@@ -1273,9 +1829,7 @@ sub _install_compiled_sub {
             return @candidates;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runnable_path_candidates') {
+#@@PAX_OP runnable_path_candidates
         $impl = sub {
             my ($path) = @_;
             no strict 'refs';
@@ -1289,9 +1843,7 @@ sub _install_compiled_sub {
             return grep { !$seen{$_}++ } @candidates;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'is_windows_runnable_candidate') {
+#@@PAX_OP is_windows_runnable_candidate
         $impl = sub {
             my ($path) = @_;
             no strict 'refs';
@@ -1304,9 +1856,7 @@ sub _install_compiled_sub {
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'command_in_path') {
+#@@PAX_OP command_in_path
         $impl = sub {
             my ($name) = @_;
             return if !defined $name || $name eq '';
@@ -1325,9 +1875,7 @@ sub _install_compiled_sub {
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'resolve_runnable_file') {
+#@@PAX_OP resolve_runnable_file
         $impl = sub {
             my ($path) = @_;
             return if !defined $path || $path eq '';
@@ -1343,9 +1891,7 @@ sub _install_compiled_sub {
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'is_runnable_file') {
+#@@PAX_OP is_runnable_file
         $impl = sub {
             my ($path) = @_;
             no strict 'refs';
@@ -1354,9 +1900,7 @@ sub _install_compiled_sub {
             return $resolved ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'command_argv_for_path') {
+#@@PAX_OP command_argv_for_path
     $impl = sub {
             my ($path) = @_;
             no strict 'refs';
@@ -1388,9 +1932,7 @@ sub _install_compiled_sub {
             return ($^X, $resolved);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'exec_go_source') {
+#@@PAX_OP exec_go_source
         $impl = sub {
             my ($path, @args) = @_;
             die "Missing Go source path\n" if !defined $path || $path eq '';
@@ -1399,9 +1941,7 @@ sub _install_compiled_sub {
             $exec_launcher->('go', 'run', $path, @args) or die "Unable to exec go run for $path: $!";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'java_main_class') {
+#@@PAX_OP java_main_class
         $impl = sub {
             my ($path) = @_;
             die "Missing Java source path\n" if !defined $path || $path eq '';
@@ -1427,9 +1967,7 @@ sub _install_compiled_sub {
             return $package_name eq '' ? $class : $package_name . '.' . $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'exec_java_source') {
+#@@PAX_OP exec_java_source
         $impl = sub {
             my ($path, @args) = @_;
             die "Missing Java source path\n" if !defined $path || $path eq '';
@@ -1453,9 +1991,7 @@ sub _install_compiled_sub {
             $exec_launcher->('java', '-cp', $build_root, $class, @args) or die "Unable to exec java for $path: $!";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'split_reverse_join') {
+#@@PAX_OP split_reverse_join
         my $split_pattern = $sub->{split_pattern} // '\\s+';
         my $joiner = defined $sub->{joiner} ? $sub->{joiner} : ' ';
         my $default = defined $sub->{default} ? $sub->{default} : '';
@@ -1466,33 +2002,25 @@ sub _install_compiled_sub {
             return join $joiner, reverse @parts;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'json_xs_encode_pretty') {
+#@@PAX_OP json_xs_encode_pretty
         $impl = sub {
             require JSON::XS;
             return JSON::XS->new->utf8->canonical->pretty->encode($_[0]);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'json_xs_decode') {
+#@@PAX_OP json_xs_decode
         $impl = sub {
             require JSON::XS;
             return JSON::XS->new->utf8->decode($_[0]);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'call_named_with_first_arg') {
+#@@PAX_OP call_named_with_first_arg
         my $target = $sub->{target} // die 'compiled sub target missing';
         $impl = sub {
             return _code_for($target)->($_[0]);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'call_named_with_first_arg_default') {
+#@@PAX_OP call_named_with_first_arg_default
         my $target = $sub->{target} // die 'compiled sub target missing';
         my $default = $sub->{default};
         $impl = sub {
@@ -1501,9 +2029,7 @@ sub _install_compiled_sub {
             return _code_for($target)->($arg);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'clear_package_hash_and_env') {
+#@@PAX_OP clear_package_hash_and_env
         my $hash_symbol = $sub->{hash_symbol} // die 'compiled sub hash symbol missing';
         my $env_key = $sub->{env_key} // die 'compiled sub env key missing';
         $impl = sub {
@@ -1513,9 +2039,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'hash_lookup_via_method_copy') {
+#@@PAX_OP hash_lookup_via_method_copy
         my $copy_method = $sub->{copy_method} // die 'compiled sub copy method missing';
         $impl = sub {
             my ($class, $key) = @_;
@@ -1525,17 +2049,13 @@ sub _install_compiled_sub {
             return $audit->{$key};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'return_method_call') {
+#@@PAX_OP return_method_call
         my $target = $sub->{target} // die 'compiled sub target missing';
         $impl = sub {
             return _code_for($target)->(@_);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'copy_package_hash_entries') {
+#@@PAX_OP copy_package_hash_entries
         my $load_method = $sub->{load_method} // die 'compiled sub load method missing';
         my $hash_symbol = $sub->{hash_symbol} // die 'compiled sub hash symbol missing';
         $impl = sub {
@@ -1552,9 +2072,7 @@ sub _install_compiled_sub {
             return \%copy;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'load_package_hash_from_env_json') {
+#@@PAX_OP load_package_hash_from_env_json
         my $hash_symbol = $sub->{hash_symbol} // die 'compiled sub hash symbol missing';
         my $env_key = $sub->{env_key} // die 'compiled sub env key missing';
         my $error_message = $sub->{error_message} // 'decoded payload must be a hash';
@@ -1575,9 +2093,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'sync_env_json_from_method') {
+#@@PAX_OP sync_env_json_from_method
         my $env_key = $sub->{env_key} // die 'compiled sub env key missing';
         my $copy_method = $sub->{copy_method} // die 'compiled sub copy method missing';
         $impl = sub {
@@ -1586,9 +2102,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'record_package_hash_entry_and_sync') {
+#@@PAX_OP record_package_hash_entry_and_sync
         my $missing_key_error = $sub->{missing_key_error} // 'missing key';
         my $missing_source_error = $sub->{missing_source_error} // 'missing source file';
         my $load_method = $sub->{load_method} // die 'compiled sub load method missing';
@@ -1608,9 +2122,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'content_md5') {
+#@@PAX_OP content_md5
         my $default = defined $sub->{default} ? $sub->{default} : '';
         my $bytes_method = $sub->{bytes_method} // die 'compiled sub bytes method missing';
         $impl = sub {
@@ -1620,18 +2132,14 @@ sub _install_compiled_sub {
             return Digest::MD5::md5_hex(_code_for($bytes_method)->($content));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'same_content_md5') {
+#@@PAX_OP same_content_md5
         my $target = $sub->{target} // die 'compiled sub target missing';
         $impl = sub {
             my ($left, $right) = @_;
             return _code_for($target)->($left) eq _code_for($target)->($right);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_matches_content_md5') {
+#@@PAX_OP file_matches_content_md5
         my $read_error = $sub->{read_error} // 'Unable to read %s: %s';
         my $close_error = $sub->{close_error} // 'Unable to close %s: %s';
         my $compare_method = $sub->{compare_method} // die 'compiled sub compare method missing';
@@ -1644,9 +2152,7 @@ sub _install_compiled_sub {
             return _code_for($compare_method)->($existing, $content);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'utf8_content_bytes') {
+#@@PAX_OP utf8_content_bytes
         $impl = sub {
             require Encode;
             my ($content) = @_;
@@ -1654,9 +2160,7 @@ sub _install_compiled_sub {
             return $content;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'configure_aliases_hash') {
+#@@PAX_OP configure_aliases_hash
         my $hash_symbol = $sub->{hash_symbol} // die 'compiled sub hash symbol missing';
         $impl = sub {
             my ($class, %args) = @_;
@@ -1665,9 +2169,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'read_with_aliases') {
+#@@PAX_OP read_with_aliases
         my $hash_symbol = $sub->{hash_symbol} // die 'compiled sub hash symbol missing';
         my $read_error = $sub->{read_error} // 'Unable to read %s: %s';
         $impl = sub {
@@ -1680,9 +2182,7 @@ sub _install_compiled_sub {
             return <$fh>;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'write_with_aliases') {
+#@@PAX_OP write_with_aliases
         my $hash_symbol = $sub->{hash_symbol} // die 'compiled sub hash symbol missing';
         my $missing_error = $sub->{missing_error} // 'Missing file path';
         my $write_error = $sub->{write_error} // 'Unable to write %s: %s';
@@ -1697,17 +2197,13 @@ sub _install_compiled_sub {
             return $file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'tiehandle_constructor') {
+#@@PAX_OP tiehandle_constructor
         $impl = sub {
             my ($class, %args) = @_;
             return bless { writer => $args{writer} || sub { } }, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'bless_args_hash') {
+#@@PAX_OP bless_args_hash
         my $slots = $sub->{slots} || [];
         $impl = sub {
             my ($class, %args) = @_;
@@ -1715,9 +2211,7 @@ sub _install_compiled_sub {
             return bless \%payload, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'bless_required_args_hash') {
+#@@PAX_OP bless_required_args_hash
         my $slots = $sub->{slots} || [];
         $impl = sub {
             my ($class, %args) = @_;
@@ -1730,17 +2224,13 @@ sub _install_compiled_sub {
             return bless \%payload, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'return_self_slot') {
+#@@PAX_OP return_self_slot
         my $slot = $sub->{slot} // die 'compiled sub slot missing';
         $impl = sub {
             return $_[0]{$slot};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cwd_catdir_literal') {
+#@@PAX_OP cwd_catdir_literal
         my $parts = $sub->{path_parts} || [];
         $impl = sub {
             require Cwd;
@@ -1748,9 +2238,7 @@ sub _install_compiled_sub {
             return File::Spec->catdir(Cwd::cwd(), @$parts);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'supported_update_script') {
+#@@PAX_OP supported_update_script
         $impl = sub {
             my ($self, $path) = @_;
             return 0 if !defined $path || $path eq '';
@@ -1759,17 +2247,13 @@ sub _install_compiled_sub {
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::Platform::is_runnable_file($path) ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runner_loop_names') {
+#@@PAX_OP runner_loop_names
         $impl = sub {
             my ($self) = @_;
             return map { $_->{name} } $self->{runner}->running_loops;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'stop_named_loops') {
+#@@PAX_OP stop_named_loops
         $impl = sub {
             my ($self, @names) = @_;
             for my $name (@names) {
@@ -1778,9 +2262,7 @@ sub _install_compiled_sub {
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'restart_wanted_collectors') {
+#@@PAX_OP restart_wanted_collectors
         $impl = sub {
             my ($self, @names) = @_;
             return if !@names;
@@ -1794,9 +2276,7 @@ sub _install_compiled_sub {
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'update_manager_run') {
+#@@PAX_OP update_manager_run
         my $updates_dir_method = $sub->{updates_dir_method} // die 'compiled sub updates_dir method missing';
         my $running_method = $sub->{running_method} // die 'compiled sub running method missing';
         my $stop_method = $sub->{stop_method} // die 'compiled sub stop method missing';
@@ -1842,9 +2322,7 @@ sub _install_compiled_sub {
             return \@results;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_resolver_providers') {
+#@@PAX_OP page_resolver_providers
         $impl = sub {
             my ($self) = @_;
             my @providers = (
@@ -1865,9 +2343,7 @@ sub _install_compiled_sub {
             return \@providers;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_resolver_list_pages') {
+#@@PAX_OP page_resolver_list_pages
         my $providers_method = $sub->{providers_method} // die 'compiled sub providers method missing';
         $impl = sub {
             my ($self) = @_;
@@ -1879,9 +2355,7 @@ sub _install_compiled_sub {
             return sort keys %ids;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_resolver_load_named_page') {
+#@@PAX_OP page_resolver_load_named_page
         my $missing_error = $sub->{missing_error} // 'Missing page id';
         my $provider_method = $sub->{provider_method} // die 'compiled sub provider method missing';
         $impl = sub {
@@ -1895,9 +2369,7 @@ sub _install_compiled_sub {
             return _code_for($provider_method)->($self, $id);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_resolver_load_provider_page') {
+#@@PAX_OP page_resolver_load_provider_page
         my $providers_method = $sub->{providers_method} // die 'compiled sub providers method missing';
         my $missing_error = $sub->{missing_error} // "Page '%s' not found";
         $impl = sub {
@@ -1954,18 +2426,14 @@ sub _install_compiled_sub {
             return $page;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'strftime_now') {
+#@@PAX_OP strftime_now
         my $format = $sub->{format} // '%Y-%m-%d %H:%M:%S';
         $impl = sub {
             require POSIX;
             return POSIX::strftime($format, localtime);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'prompt_indicator_parts') {
+#@@PAX_OP prompt_indicator_parts
         $impl = sub {
             my ($self, %args) = @_;
             my $mode = $args{mode} || 'compact';
@@ -1994,9 +2462,7 @@ sub _install_compiled_sub {
             return @indicator_parts;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'git_branch_for_project') {
+#@@PAX_OP git_branch_for_project
         my $restore_error = $sub->{restore_error} // 'Unable to restore cwd to %s: %s';
         $impl = sub {
             require Capture::Tiny;
@@ -2019,9 +2485,7 @@ sub _install_compiled_sub {
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'prompt_render') {
+#@@PAX_OP prompt_render
         my $indicator_method = $sub->{indicator_method} // die 'compiled sub indicator method missing';
         my $branch_method = $sub->{branch_method} // die 'compiled sub branch method missing';
         my $timestamp_method = $sub->{timestamp_method} // die 'compiled sub timestamp method missing';
@@ -2058,9 +2522,7 @@ sub _install_compiled_sub {
                 $branch_suffix;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'doctor_known_roots') {
+#@@PAX_OP doctor_known_roots
         $impl = sub {
             my ($self) = @_;
             require File::Spec;
@@ -2084,9 +2546,7 @@ sub _install_compiled_sub {
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'mode_octal_stat') {
+#@@PAX_OP mode_octal_stat
         $impl = sub {
             my ($path) = @_;
             my @stat = stat($path);
@@ -2094,9 +2554,7 @@ sub _install_compiled_sub {
             return sprintf '%04o', $stat[2] & 07777;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'doctor_permission_issue_for_path') {
+#@@PAX_OP doctor_permission_issue_for_path
         my $mode_method = $sub->{mode_method} // die 'compiled sub mode method missing';
         $impl = sub {
             my ($self, $path) = @_;
@@ -2114,9 +2572,7 @@ sub _install_compiled_sub {
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'doctor_hook_results') {
+#@@PAX_OP doctor_hook_results
         my $decode_error = $sub->{decode_error} // 'Doctor hook RESULT must decode to a hash';
         $impl = sub {
             return {} if !defined $ENV{RESULT} || $ENV{RESULT} eq '';
@@ -2125,9 +2581,7 @@ sub _install_compiled_sub {
             return $results;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'doctor_audit_root') {
+#@@PAX_OP doctor_audit_root
         my $missing_path_error = $sub->{missing_path_error} // 'Missing audit root path';
         my $missing_label_error = $sub->{missing_label_error} // 'Missing audit root label';
         my $chmod_error = $sub->{chmod_error} // 'Unable to chmod %s to %s: %s';
@@ -2173,9 +2627,7 @@ sub _install_compiled_sub {
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'doctor_audit_roots') {
+#@@PAX_OP doctor_audit_roots
         my $roots_method = $sub->{roots_method} // die 'compiled sub roots method missing';
         my $audit_method = $sub->{audit_method} // die 'compiled sub audit method missing';
         $impl = sub {
@@ -2189,9 +2641,7 @@ sub _install_compiled_sub {
             return @reports;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'doctor_run') {
+#@@PAX_OP doctor_run
         my $audit_roots_method = $sub->{audit_roots_method} // die 'compiled sub audit roots method missing';
         my $hook_results_method = $sub->{hook_results_method} // die 'compiled sub hook results method missing';
         $impl = sub {
@@ -2212,9 +2662,7 @@ sub _install_compiled_sub {
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'build_paths_registry') {
+#@@PAX_OP build_paths_registry
         $impl = sub {
             require Cwd;
             my $home = $ENV{HOME} || '';
@@ -2227,9 +2675,7 @@ sub _install_compiled_sub {
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cdr_payload') {
+#@@PAX_OP cdr_payload
         my $missing_paths_error = $sub->{missing_paths_error} // "Missing paths registry\n";
         my $type_error = $sub->{type_error} // "cdr args must be an array reference\n";
         $impl = sub {
@@ -2258,9 +2704,7 @@ sub _install_compiled_sub {
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cdr_directory_candidates') {
+#@@PAX_OP cdr_directory_candidates
         my $missing_paths_error = $sub->{missing_paths_error} // "Missing paths registry\n";
         my $type_error = $sub->{type_error} // "cdr completion terms must be an array reference\n";
         $impl = sub {
@@ -2285,9 +2729,7 @@ sub _install_compiled_sub {
             return sort @candidates;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cdr_initial_candidates') {
+#@@PAX_OP cdr_initial_candidates
         my $missing_paths_error = $sub->{missing_paths_error} // "Missing paths registry\n";
         my $type_error = $sub->{type_error} // "cdr completion include roots must be an array reference\n";
         my $directory_method = $sub->{directory_method} // die 'compiled sub directory method missing';
@@ -2310,9 +2752,7 @@ sub _install_compiled_sub {
             return sort grep { defined && $_ ne '' && !$seen{$_}++ } @candidates;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cdr_completion') {
+#@@PAX_OP cdr_completion
         my $missing_paths_error = $sub->{missing_paths_error} // "Missing paths registry\n";
         my $missing_words_error = $sub->{missing_words_error} // "Missing completion words\n";
         my $missing_index_error = $sub->{missing_index_error} // "Missing completion index\n";
@@ -2351,9 +2791,7 @@ sub _install_compiled_sub {
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'run_paths_command') {
+#@@PAX_OP run_paths_command
         my $missing_command_error = $sub->{missing_command_error} // "Missing command name\n";
         my $missing_args_error = $sub->{missing_args_error} // "Missing command arguments\n";
         my $type_error = $sub->{type_error} // "Command arguments must be an array reference\n";
@@ -2434,9 +2872,7 @@ sub _install_compiled_sub {
             die $usage_error;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'paths_normalize_add_arguments') {
+#@@PAX_OP paths_normalize_add_arguments
         $impl = sub {
             my (@argv) = @_;
             die "Usage: dashboard path add <name> <path>\n" if !@argv;
@@ -2450,9 +2886,7 @@ sub _install_compiled_sub {
             return ($name, $path);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'paths_normalize_delete_argument') {
+#@@PAX_OP paths_normalize_delete_argument
         $impl = sub {
             my (%args) = @_;
             my $paths  = $args{paths}  || die "Missing paths registry\n";
@@ -2478,9 +2912,7 @@ sub _install_compiled_sub {
             return File::Basename::basename($cwd);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'run_files_command') {
+#@@PAX_OP run_files_command
         my $missing_command_error = $sub->{missing_command_error} // "Missing command name\n";
         my $missing_args_error = $sub->{missing_args_error} // "Missing command arguments\n";
         my $type_error = $sub->{type_error} // "Command arguments must be an array reference\n";
@@ -2558,9 +2990,7 @@ sub _install_compiled_sub {
             die $usage_error;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_build_psgi_app') {
+#@@PAX_OP dancerapp_build_psgi_app
         my $backend_symbol = $sub->{backend_symbol} // die 'compiled sub backend symbol missing';
         my $app_package = $sub->{app_package} // $package;
         $impl = sub {
@@ -2577,18 +3007,14 @@ sub _install_compiled_sub {
             return $app_package->to_app;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_current_backend') {
+#@@PAX_OP dancerapp_current_backend
         my $backend_symbol = $sub->{backend_symbol} // die 'compiled sub backend symbol missing';
         $impl = sub {
             no strict 'refs';
             return ${$backend_symbol} || die 'Missing backend web app';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_request_headers') {
+#@@PAX_OP dancerapp_request_headers
         $impl = sub {
             return {
                 host => scalar(request->header('Host') // ''),
@@ -2596,9 +3022,7 @@ sub _install_compiled_sub {
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_request_args') {
+#@@PAX_OP dancerapp_request_args
         my $request_headers_method = $sub->{request_headers_method} // die 'compiled sub request headers method missing';
         $impl = sub {
             my $host = scalar(request->header('Host') // '');
@@ -2623,9 +3047,7 @@ sub _install_compiled_sub {
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_capture') {
+#@@PAX_OP dancerapp_capture
         $impl = sub {
             my ($index) = @_;
             my @parts = @_;
@@ -2634,18 +3056,14 @@ sub _install_compiled_sub {
             return $parts[$index];
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_disconnect_error') {
+#@@PAX_OP dancerapp_disconnect_error
         $impl = sub {
             my ($error) = @_;
             return 0 if !defined $error || $error eq '';
             return $error =~ /(broken pipe|client disconnected|connection reset|stream closed|connection aborted|write failed)/i ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_response_from_result') {
+#@@PAX_OP dancerapp_response_from_result
         my $current_backend_method = $sub->{current_backend_method} // die 'compiled sub current backend method missing';
         my $disconnect_method = $sub->{disconnect_method} // die 'compiled sub disconnect method missing';
         $impl = sub {
@@ -2687,9 +3105,7 @@ sub _install_compiled_sub {
             return $body;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_run_backend') {
+#@@PAX_OP dancerapp_run_backend
         my $current_backend_method = $sub->{current_backend_method} // die 'compiled sub current backend method missing';
         my $request_args_method = $sub->{request_args_method} // die 'compiled sub request args method missing';
         my $response_method = $sub->{response_method} // die 'compiled sub response method missing';
@@ -2708,9 +3124,7 @@ sub _install_compiled_sub {
             return _code_for($response_method)->($result);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'dancerapp_run_authorized') {
+#@@PAX_OP dancerapp_run_authorized
         my $current_backend_method = $sub->{current_backend_method} // die 'compiled sub current backend method missing';
         my $request_args_method = $sub->{request_args_method} // die 'compiled sub request args method missing';
         my $response_method = $sub->{response_method} // die 'compiled sub response method missing';
@@ -2735,9 +3149,7 @@ sub _install_compiled_sub {
             return _code_for($response_method)->($result);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_new') {
+#@@PAX_OP web_server_new
         my $generate_cert_method = $sub->{generate_cert_method} // die 'compiled sub generate-cert method missing';
         $impl = sub {
             my ($class, %args) = @_;
@@ -2765,9 +3177,7 @@ sub _install_compiled_sub {
             }, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_run') {
+#@@PAX_OP web_server_run
         my $start_daemon_method = $sub->{start_daemon_method} // die 'compiled sub start-daemon method missing';
         my $listening_url_method = $sub->{listening_url_method} // die 'compiled sub listening-url method missing';
         my $serve_daemon_method = $sub->{serve_daemon_method} // die 'compiled sub serve-daemon method missing';
@@ -2778,9 +3188,7 @@ sub _install_compiled_sub {
             return _code_for($serve_daemon_method)->($self, $daemon);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_listening_url') {
+#@@PAX_OP web_server_listening_url
         $impl = sub {
             my ($self, $daemon) = @_;
             return unless defined $daemon;
@@ -2790,9 +3198,7 @@ sub _install_compiled_sub {
             return sprintf '%s://%s:%s/', $scheme, $host, $port;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_serve_daemon') {
+#@@PAX_OP web_server_serve_daemon
         my $serve_ssl_method = $sub->{serve_ssl_method} // die 'compiled sub serve-ssl method missing';
         my $build_runner_method = $sub->{build_runner_method} // die 'compiled sub build-runner method missing';
         my $psgi_app_method = $sub->{psgi_app_method} // die 'compiled sub psgi-app method missing';
@@ -2805,9 +3211,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_psgi_app') {
+#@@PAX_OP web_server_psgi_app
         my $default_headers_method = $sub->{default_headers_method} // die 'compiled sub default-headers method missing';
         my $request_is_https_method = $sub->{request_is_https_method} // die 'compiled sub request-is-https method missing';
         my $redirect_response_method = $sub->{redirect_response_method} // die 'compiled sub redirect-response method missing';
@@ -2825,9 +3229,7 @@ sub _install_compiled_sub {
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_start_daemon') {
+#@@PAX_OP web_server_start_daemon
         $impl = sub {
             my ($self) = @_;
             my $socket = IO::Socket::INET->new(
@@ -2862,9 +3264,7 @@ sub _install_compiled_sub {
             return $ssl_daemon;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_serve_ssl_frontend') {
+#@@PAX_OP web_server_serve_ssl_frontend
         my $build_runner_method = $sub->{build_runner_method} // die 'compiled sub build-runner method missing';
         my $psgi_app_method = $sub->{psgi_app_method} // die 'compiled sub psgi-app method missing';
         my $stop_backend_method = $sub->{stop_backend_method} // die 'compiled sub stop-backend method missing';
@@ -2930,9 +3330,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_build_runner') {
+#@@PAX_OP web_server_build_runner
         my $ssl_cert_paths_method = $sub->{ssl_cert_paths_method} // die 'compiled sub ssl-cert-paths method missing';
         $impl = sub {
             my ($self, $daemon) = @_;
@@ -2960,9 +3358,7 @@ sub _install_compiled_sub {
             return $runner;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_handle_ssl_frontend_client') {
+#@@PAX_OP web_server_handle_ssl_frontend_client
         my $socket_looks_like_tls_method = $sub->{socket_looks_like_tls_method} // die 'compiled sub socket-looks-like-tls method missing';
         my $read_http_request_head_method = $sub->{read_http_request_head_method} // die 'compiled sub read-http-request-head method missing';
         my $request_host_from_head_method = $sub->{request_host_from_head_method} // die 'compiled sub request-host-from-head method missing';
@@ -2974,7 +3370,7 @@ sub _install_compiled_sub {
             my $client = $args{client} || die 'Missing frontend client socket';
             my $daemon = $args{daemon} || die 'Missing daemon descriptor';
             my $first = '';
-            my $peeked = recv($client, $first, 1, MSG_PEEK);
+            my $peeked = recv($client, $first, 1, Socket::MSG_PEEK());
             return 1 if !defined $peeked || !defined $first || $first eq '';
             if (_code_for($socket_looks_like_tls_method)->($first)) {
                 my $backend = IO::Socket::INET->new(
@@ -2996,9 +3392,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_proxy_streams') {
+#@@PAX_OP web_server_proxy_streams
         $impl = sub {
             my ($client, $backend) = @_;
             my $select = IO::Select->new($client, $backend);
@@ -3019,18 +3413,14 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_socket_looks_like_tls') {
+#@@PAX_OP web_server_socket_looks_like_tls
         $impl = sub {
             my ($byte) = @_;
             return 0 if !defined $byte || $byte eq '';
             return ord($byte) == 22 ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_read_http_request_head') {
+#@@PAX_OP web_server_read_http_request_head
         $impl = sub {
             my ($socket) = @_;
             my $head = '';
@@ -3045,9 +3435,7 @@ sub _install_compiled_sub {
             return $head;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_request_target_from_head') {
+#@@PAX_OP web_server_request_target_from_head
         $impl = sub {
             my ($head) = @_;
             return '/' if !defined $head || $head eq '';
@@ -3055,9 +3443,7 @@ sub _install_compiled_sub {
             return '/';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_request_host_from_head') {
+#@@PAX_OP web_server_request_host_from_head
         $impl = sub {
             my ($head, $daemon) = @_;
             if (defined $head && $head =~ /^Host:\s*([^\r\n]+)/im) {
@@ -3068,9 +3454,7 @@ sub _install_compiled_sub {
             return $port == 443 ? $host : $host . ':' . $port;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_http_redirect_response') {
+#@@PAX_OP web_server_http_redirect_response
         $impl = sub {
             my (%args) = @_;
             my $target = defined $args{target} && $args{target} ne '' ? $args{target} : '/';
@@ -3088,9 +3472,7 @@ sub _install_compiled_sub {
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_stop_ssl_backend') {
+#@@PAX_OP web_server_stop_ssl_backend
         $impl = sub {
             my ($pid) = @_;
             return 1 if !$pid;
@@ -3099,18 +3481,14 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_ssl_signal_handler') {
+#@@PAX_OP web_server_ssl_signal_handler
         my $signal_name = $sub->{signal_name} // die 'compiled sub signal name missing';
         my $handle_signal_method = $sub->{handle_signal_method} // die 'compiled sub handle-signal method missing';
         $impl = sub {
             return _code_for($handle_signal_method)->($signal_name);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_handle_ssl_signal') {
+#@@PAX_OP web_server_handle_ssl_signal
         my $stop_backend_method = $sub->{stop_backend_method} // die 'compiled sub stop-backend method missing';
         my $run_previous_method = $sub->{run_previous_method} // die 'compiled sub run-previous method missing';
         $impl = sub {
@@ -3119,9 +3497,7 @@ sub _install_compiled_sub {
             return _code_for($run_previous_method)->($__PAX_RUNTIME_LEGACY_NAMESPACE__::Web::Server::SSL_PREVIOUS_SIGNAL{$signal_name});
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_run_previous_signal') {
+#@@PAX_OP web_server_run_previous_signal
         my $default_term_method = $sub->{default_term_method} // die 'compiled sub default-term method missing';
         $impl = sub {
             my ($handler) = @_;
@@ -3134,17 +3510,13 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_signal_default_term') {
+#@@PAX_OP web_server_signal_default_term
         $impl = sub {
             kill 15, $$;
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_default_headers') {
+#@@PAX_OP web_server_default_headers
         $impl = sub {
             return {
                 'X-Frame-Options'         => 'DENY',
@@ -3155,9 +3527,7 @@ sub _install_compiled_sub {
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_request_is_https') {
+#@@PAX_OP web_server_request_is_https
         $impl = sub {
             my ($env) = @_;
             return 0 if ref($env) ne 'HASH';
@@ -3168,9 +3538,7 @@ sub _install_compiled_sub {
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_ssl_redirect_response') {
+#@@PAX_OP web_server_ssl_redirect_response
         my $redirect_location_method = $sub->{redirect_location_method} // die 'compiled sub redirect-location method missing';
         $impl = sub {
             my ($env) = @_;
@@ -3185,9 +3553,7 @@ sub _install_compiled_sub {
             ];
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_https_redirect_location') {
+#@@PAX_OP web_server_https_redirect_location
         $impl = sub {
             my ($env) = @_;
             my $host = defined $env->{HTTP_HOST} ? $env->{HTTP_HOST} : '';
@@ -3204,9 +3570,7 @@ sub _install_compiled_sub {
             return 'https://' . $host . $path . ($query ne '' ? '?' . $query : '');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_ssl_expected_subject_alt_names') {
+#@@PAX_OP web_server_ssl_expected_subject_alt_names
         my $normalize_method = $sub->{normalize_method} // die 'compiled sub normalize method missing';
         my $wildcard_method = $sub->{wildcard_method} // die 'compiled sub wildcard method missing';
         $impl = sub {
@@ -3227,9 +3591,7 @@ sub _install_compiled_sub {
             return @normalized;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_normalize_ssl_subject_alt_name') {
+#@@PAX_OP web_server_normalize_ssl_subject_alt_name
         $impl = sub {
             my ($name) = @_;
             return '' if !defined $name;
@@ -3241,9 +3603,7 @@ sub _install_compiled_sub {
             return lc $name;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_ssl_subject_alt_name_is_wildcard') {
+#@@PAX_OP web_server_ssl_subject_alt_name_is_wildcard
         $impl = sub {
             my ($name) = @_;
             return 1 if !defined $name || $name eq '';
@@ -3254,9 +3614,7 @@ sub _install_compiled_sub {
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_ssl_subject_alt_name_is_ip') {
+#@@PAX_OP web_server_ssl_subject_alt_name_is_ip
         $impl = sub {
             my ($name) = @_;
             return 0 if !defined $name || $name eq '';
@@ -3265,9 +3623,7 @@ sub _install_compiled_sub {
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_ssl_cert_has_expected_profile') {
+#@@PAX_OP web_server_ssl_cert_has_expected_profile
         my $expected_san_method = $sub->{expected_san_method} // die 'compiled sub expected-san method missing';
         my $is_ip_method = $sub->{is_ip_method} // die 'compiled sub is-ip method missing';
         $impl = sub {
@@ -3300,9 +3656,7 @@ sub _install_compiled_sub {
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_generate_self_signed_cert') {
+#@@PAX_OP web_server_generate_self_signed_cert
         my $expected_san_method = $sub->{expected_san_method} // die 'compiled sub expected-san method missing';
         my $cert_profile_method = $sub->{cert_profile_method} // die 'compiled sub cert-profile method missing';
         my $is_ip_method = $sub->{is_ip_method} // die 'compiled sub is-ip method missing';
@@ -3397,9 +3751,7 @@ OPENSSL_CONFIG
             return $cert_file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'web_server_get_ssl_cert_paths') {
+#@@PAX_OP web_server_get_ssl_cert_paths
         $impl = sub {
             my $home = $ENV{HOME} || die 'Missing HOME environment variable';
             my $cert_dir = File::Spec->catdir($home, '.developer-dashboard', 'certs');
@@ -3410,9 +3762,7 @@ OPENSSL_CONFIG
             return ($cert_file, $key_file);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_new') {
+#@@PAX_OP runtime_manager_new
         $impl = sub {
             my ($class, %args) = @_;
             my $config      = $args{config}      || die 'Missing config';
@@ -3429,9 +3779,7 @@ OPENSSL_CONFIG
             }, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_web_log') {
+#@@PAX_OP runtime_manager_web_log
         my $tail_text_method = $sub->{tail_text_method} // die 'compiled sub tail-text method missing';
         my $follow_log_file_method = $sub->{follow_log_file_method} // die 'compiled sub follow-log-file method missing';
         $impl = sub {
@@ -3453,9 +3801,7 @@ OPENSSL_CONFIG
             return '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_tail_text') {
+#@@PAX_OP runtime_manager_tail_text
         $impl = sub {
             my ($self, $text, $lines) = @_;
             return '' if !defined $text || $text eq '';
@@ -3470,9 +3816,7 @@ OPENSSL_CONFIG
             return $tail;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_follow_log_file') {
+#@@PAX_OP runtime_manager_follow_log_file
         $impl = sub {
             my ($self, %args) = @_;
             my $file = $args{file} || die 'Missing log file';
@@ -3499,9 +3843,7 @@ OPENSSL_CONFIG
             }
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_web_state') {
+#@@PAX_OP runtime_manager_web_state
         $impl = sub {
             my ($self) = @_;
             my $file = $self->{files}->web_state;
@@ -3511,9 +3853,7 @@ OPENSSL_CONFIG
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_decode(scalar <$fh>);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_shutdown_web') {
+#@@PAX_OP runtime_manager_shutdown_web
         my $web_state_method = $sub->{web_state_method} // die 'compiled sub web-state method missing';
         my $write_web_state_method = $sub->{write_web_state_method} // die 'compiled sub write-web-state method missing';
         $impl = sub {
@@ -3534,9 +3874,7 @@ OPENSSL_CONFIG
             exit 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_write_web_state') {
+#@@PAX_OP runtime_manager_write_web_state
         $impl = sub {
             my ($self, $data) = @_;
             my $payload = $data ? $data : {};
@@ -3551,9 +3889,7 @@ OPENSSL_CONFIG
             return $payload;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_cleanup_web_files') {
+#@@PAX_OP runtime_manager_cleanup_web_files
         $impl = sub {
             my ($self) = @_;
             $self->{files}->remove('web_pid');
@@ -3561,17 +3897,13 @@ OPENSSL_CONFIG
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_web_process_title') {
+#@@PAX_OP runtime_manager_web_process_title
         $impl = sub {
             my ($self, $host, $port) = @_;
             return "dashboard web: $host:$port";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_portable_signal') {
+#@@PAX_OP runtime_manager_portable_signal
         $impl = sub {
             my ($signal) = @_;
             die 'Missing signal name' if !defined $signal || $signal eq '';
@@ -3582,9 +3914,7 @@ OPENSSL_CONFIG
             return $signal_number{$name};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_send_signal') {
+#@@PAX_OP runtime_manager_send_signal
         my $portable_signal_method = $sub->{portable_signal_method} // die 'compiled sub portable-signal method missing';
         $impl = sub {
             my ($self, $signal, @pids) = @_;
@@ -3594,9 +3924,7 @@ OPENSSL_CONFIG
             return kill $portable_signal, @targets;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_proc_owned_by_current_user') {
+#@@PAX_OP runtime_manager_proc_owned_by_current_user
         $impl = sub {
             my ($self, $proc) = @_;
             return 0 if !$proc || !$proc->{pid};
@@ -3604,18 +3932,14 @@ OPENSSL_CONFIG
             return ($proc->{uid} + 0) == ($< + 0) ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_find_legacy_web_processes') {
+#@@PAX_OP runtime_manager_find_legacy_web_processes
         my $find_web_processes_method = $sub->{find_web_processes_method} // die 'compiled sub find-web-processes method missing';
         $impl = sub {
             my ($self) = @_;
             return grep { $_->{args} !~ /^dashboard web:/ } _code_for($find_web_processes_method)->($self);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_looks_like_web_process') {
+#@@PAX_OP runtime_manager_looks_like_web_process
         $impl = sub {
             my ($self, $proc) = @_;
             return 0 if !$proc || !$proc->{pid} || !$proc->{args};
@@ -3627,9 +3951,7 @@ OPENSSL_CONFIG
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_ps_processes') {
+#@@PAX_OP runtime_manager_ps_processes
         $impl = sub {
             my ($self) = @_;
             my ($stdout, $stderr, $exit_code) = _capture_system_command('ps', '-eo', 'pid=,uid=,args=');
@@ -3647,9 +3969,7 @@ OPENSSL_CONFIG
             return @procs;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_find_processes_by_prefix') {
+#@@PAX_OP runtime_manager_find_processes_by_prefix
         my $proc_owned_method = $sub->{proc_owned_method} // die 'compiled sub proc-owned method missing';
         my $ps_processes_method = $sub->{ps_processes_method} // die 'compiled sub ps-processes method missing';
         $impl = sub {
@@ -3660,9 +3980,7 @@ OPENSSL_CONFIG
             } _code_for($ps_processes_method)->($self);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_find_web_processes') {
+#@@PAX_OP runtime_manager_find_web_processes
         my $ps_processes_method = $sub->{ps_processes_method} // die 'compiled sub ps-processes method missing';
         my $proc_owned_method = $sub->{proc_owned_method} // die 'compiled sub proc-owned method missing';
         my $looks_like_web_process_method = $sub->{looks_like_web_process_method} // die 'compiled sub looks-like-web-process method missing';
@@ -3680,9 +3998,7 @@ OPENSSL_CONFIG
             return @seen;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_is_managed_web') {
+#@@PAX_OP runtime_manager_is_managed_web
         my $read_env_marker_method = $sub->{read_env_marker_method} // die 'compiled sub read-env-marker method missing';
         my $read_title_method = $sub->{read_title_method} // die 'compiled sub read-title method missing';
         $impl = sub {
@@ -3695,9 +4011,7 @@ OPENSSL_CONFIG
             return $title =~ /^dashboard web:/ ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_pkill_perl') {
+#@@PAX_OP runtime_manager_pkill_perl
         my $ps_processes_method = $sub->{ps_processes_method} // die 'compiled sub ps-processes method missing';
         my $proc_owned_method = $sub->{proc_owned_method} // die 'compiled sub proc-owned method missing';
         my $send_signal_method = $sub->{send_signal_method} // die 'compiled sub send-signal method missing';
@@ -3716,9 +4030,7 @@ OPENSSL_CONFIG
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_managed_listener_pids_for_port') {
+#@@PAX_OP runtime_manager_managed_listener_pids_for_port
         my $is_managed_web_method = $sub->{is_managed_web_method} // die 'compiled sub is-managed-web method missing';
         my $listener_pids_for_port_method = $sub->{listener_pids_for_port_method} // die 'compiled sub listener-pids-for-port method missing';
         $impl = sub {
@@ -3726,9 +4038,7 @@ OPENSSL_CONFIG
             return grep { _code_for($is_managed_web_method)->($self, $_) } _code_for($listener_pids_for_port_method)->($self, $port);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_listener_pids_for_port') {
+#@@PAX_OP runtime_manager_listener_pids_for_port
         my $listener_pids_for_port_via_proc_method = $sub->{listener_pids_for_port_via_proc_method} // die 'compiled sub listener-pids-for-port-via-proc method missing';
         $impl = sub {
             my ($self, $port) = @_;
@@ -3746,9 +4056,7 @@ OPENSSL_CONFIG
             return @pids;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_listener_pids_for_port_via_proc') {
+#@@PAX_OP runtime_manager_listener_pids_for_port_via_proc
         my $listener_socket_inodes_for_port_method = $sub->{listener_socket_inodes_for_port_method} // die 'compiled sub listener-socket-inodes-for-port method missing';
         my $process_pids_for_socket_inodes_method = $sub->{process_pids_for_socket_inodes_method} // die 'compiled sub process-pids-for-socket-inodes method missing';
         $impl = sub {
@@ -3758,9 +4066,7 @@ OPENSSL_CONFIG
             return _code_for($process_pids_for_socket_inodes_method)->($self, \%inode);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_listener_socket_inodes_for_port') {
+#@@PAX_OP runtime_manager_listener_socket_inodes_for_port
         my $listener_socket_table_paths_method = $sub->{listener_socket_table_paths_method} // die 'compiled sub listener-socket-table-paths method missing';
         $impl = sub {
             my ($self, $port) = @_;
@@ -3788,9 +4094,7 @@ OPENSSL_CONFIG
             return @inodes;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_process_pids_for_socket_inodes') {
+#@@PAX_OP runtime_manager_process_pids_for_socket_inodes
         my $process_fd_paths_method = $sub->{process_fd_paths_method} // die 'compiled sub process-fd-paths method missing';
         $impl = sub {
             my ($self, $inode_lookup) = @_;
@@ -3809,9 +4113,7 @@ OPENSSL_CONFIG
             return @pids;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_start_collectors') {
+#@@PAX_OP runtime_manager_start_collectors
         my $progress_emit_method = $sub->{progress_emit_method} // die 'compiled sub progress-emit method missing';
         my $collector_runtime_ready_method = $sub->{collector_runtime_ready_method} // die 'compiled sub collector-runtime-ready method missing';
         $impl = sub {
@@ -3864,9 +4166,7 @@ OPENSSL_CONFIG
             return @started;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_stop_collectors') {
+#@@PAX_OP runtime_manager_stop_collectors
         my $progress_emit_method = $sub->{progress_emit_method} // die 'compiled sub progress-emit method missing';
         my $find_processes_by_prefix_method = $sub->{find_processes_by_prefix_method} // die 'compiled sub find-processes-by-prefix method missing';
         my $send_signal_method = $sub->{send_signal_method} // die 'compiled sub send-signal method missing';
@@ -3900,9 +4200,7 @@ OPENSSL_CONFIG
             return @names;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_stop_all') {
+#@@PAX_OP runtime_manager_stop_all
         my $stop_web_method = $sub->{stop_web_method} // die 'compiled sub stop-web method missing';
         my $stop_collectors_method = $sub->{stop_collectors_method} // die 'compiled sub stop-collectors method missing';
         $impl = sub {
@@ -3913,9 +4211,7 @@ OPENSSL_CONFIG
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_stop_progress_tasks') {
+#@@PAX_OP runtime_manager_stop_progress_tasks
         $impl = sub {
             my ($self) = @_;
             my @tasks = ({
@@ -3931,9 +4227,7 @@ OPENSSL_CONFIG
             return \@tasks;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_restart_progress_tasks') {
+#@@PAX_OP runtime_manager_restart_progress_tasks
         my $stop_progress_tasks_method = $sub->{stop_progress_tasks_method} // die 'compiled sub stop-progress-tasks method missing';
         $impl = sub {
             my ($self) = @_;
@@ -3955,9 +4249,7 @@ OPENSSL_CONFIG
             return \@tasks;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_serve_all') {
+#@@PAX_OP runtime_manager_serve_all
         my $start_collectors_method = $sub->{start_collectors_method} // die 'compiled sub start-collectors method missing';
         my $start_web_method = $sub->{start_web_method} // die 'compiled sub start-web method missing';
         my $stop_collectors_method = $sub->{stop_collectors_method} // die 'compiled sub stop-collectors method missing';
@@ -4013,9 +4305,7 @@ OPENSSL_CONFIG
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_restart_all') {
+#@@PAX_OP runtime_manager_restart_all
         my $stop_all_method = $sub->{stop_all_method} // die 'compiled sub stop-all method missing';
         my $start_collectors_method = $sub->{start_collectors_method} // die 'compiled sub start-collectors method missing';
         my $restart_web_with_retry_method = $sub->{restart_web_with_retry_method} // die 'compiled sub restart-web-with-retry method missing';
@@ -4043,19 +4333,13 @@ OPENSSL_CONFIG
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_listener_socket_table_paths') {
+#@@PAX_OP runtime_manager_listener_socket_table_paths
         $impl = sub { return ('/proc/net/tcp', '/proc/net/tcp6') };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_process_fd_paths') {
+#@@PAX_OP runtime_manager_process_fd_paths
         $impl = sub { return glob('/proc/[0-9]*/fd/*') };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_wait_for_port_release') {
+#@@PAX_OP runtime_manager_wait_for_port_release
         my $listener_pids_for_port_method = $sub->{listener_pids_for_port_method} // die 'compiled sub listener-pids-for-port method missing';
         $impl = sub {
             my ($self, $port) = @_;
@@ -4067,9 +4351,7 @@ OPENSSL_CONFIG
             return !scalar _code_for($listener_pids_for_port_method)->($self, $port);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_progress_emit') {
+#@@PAX_OP runtime_manager_progress_emit
         $impl = sub {
             my ($self, $progress, $event) = @_;
             return 1 if !$progress || ref($progress) ne 'CODE';
@@ -4077,9 +4359,7 @@ OPENSSL_CONFIG
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_runtime_stability_polls') {
+#@@PAX_OP runtime_manager_runtime_stability_polls
         $impl = sub {
             my $override = $ENV{DEVELOPER_DASHBOARD_RUNTIME_STABILITY_POLLS};
             return $override if defined $override && $override =~ /^\d+$/ && $override > 0;
@@ -4088,23 +4368,17 @@ OPENSSL_CONFIG
             return 100;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_runtime_confirmation_polls') {
+#@@PAX_OP runtime_manager_runtime_confirmation_polls
         $impl = sub {
             my $override = $ENV{DEVELOPER_DASHBOARD_RUNTIME_CONFIRMATION_POLLS};
             return $override if defined $override && $override =~ /^\d+$/ && $override > 0;
             return 3;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_runtime_poll_interval') {
+#@@PAX_OP runtime_manager_runtime_poll_interval
         $impl = sub { return 0.1 };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_port_accepting_connections') {
+#@@PAX_OP runtime_manager_port_accepting_connections
         $impl = sub {
             my ($self, $port) = @_;
             return 0 if !defined $port || $port !~ /^\d+$/ || $port < 1;
@@ -4119,9 +4393,7 @@ OPENSSL_CONFIG
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'runtime_manager_read_process_title') {
+#@@PAX_OP runtime_manager_read_process_title
         $impl = sub {
             my ($self, $pid) = @_;
             my $proc = "/proc/$pid/cmdline";
@@ -4142,9 +4414,7 @@ OPENSSL_CONFIG
             return $stdout;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_system_context') {
+#@@PAX_OP page_runtime_system_context
         $impl = sub {
             my ($self, %args) = @_;
             return {
@@ -4154,14 +4424,10 @@ OPENSSL_CONFIG
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_noop_writer') {
+#@@PAX_OP page_runtime_noop_writer
         $impl = sub { return '' };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_stream_disconnect_error') {
+#@@PAX_OP page_runtime_stream_disconnect_error
         $impl = sub {
             my ($self, $error) = @_;
             return 1 if !defined $error || $error eq '';
@@ -4169,22 +4435,16 @@ OPENSSL_CONFIG
             return $error =~ /(broken pipe|client disconnected|connection reset|stream closed|connection aborted|write failed|closed handle)/i ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_stream_sysread') {
+#@@PAX_OP page_runtime_stream_sysread
         $impl = sub {
             my ($self, $fh, $chunk_ref) = @_;
             return sysread($fh, ${$chunk_ref}, 8192);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_saved_ajax_inline_env_limit') {
+#@@PAX_OP page_runtime_saved_ajax_inline_env_limit
         $impl = sub { return 131_072 };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_cleanup_saved_ajax_temp_files') {
+#@@PAX_OP page_runtime_cleanup_saved_ajax_temp_files
         $impl = sub {
             my ($self, @paths) = @_;
             for my $path (@paths) {
@@ -4195,9 +4455,7 @@ OPENSSL_CONFIG
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_normalize_saved_ajax_singleton') {
+#@@PAX_OP page_runtime_normalize_saved_ajax_singleton
         $impl = sub {
             my ($self, $singleton) = @_;
             return '' if !defined $singleton || $singleton eq '';
@@ -4205,9 +4463,7 @@ OPENSSL_CONFIG
             return $singleton;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_kill_saved_ajax_singleton') {
+#@@PAX_OP page_runtime_kill_saved_ajax_singleton
         my $quote_pattern_method = $sub->{quote_pattern_method} // die 'compiled sub quote-pattern method missing';
         $impl = sub {
             my ($self, $singleton) = @_;
@@ -4217,18 +4473,14 @@ OPENSSL_CONFIG
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_quote_process_pattern_literal') {
+#@@PAX_OP page_runtime_quote_process_pattern_literal
         $impl = sub {
             my ($self, $text) = @_;
             $text =~ s/([\\.^$|(){}\[\]*+?])/\\$1/g;
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_query_string_from_params') {
+#@@PAX_OP page_runtime_query_string_from_params
         $impl = sub {
             my ($params) = @_;
             return '' if ref($params) ne 'HASH' || !%{$params};
@@ -4239,9 +4491,7 @@ OPENSSL_CONFIG
                 } sort keys %{$params};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_legacy_quote') {
+#@@PAX_OP page_runtime_legacy_quote
         $impl = sub {
             my ($text) = @_;
             $text =~ s/\\/\\\\/g;
@@ -4249,9 +4499,7 @@ OPENSSL_CONFIG
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_legacy_value') {
+#@@PAX_OP page_runtime_legacy_value
         my $quote_method = $sub->{quote_method} // die 'compiled sub quote method missing';
         my $value_method = $sub->{value_method} // die 'compiled sub value method missing';
         $impl = sub {
@@ -4266,9 +4514,7 @@ OPENSSL_CONFIG
             return $value =~ /\A-?\d+(?:\.\d+)?\z/ ? $value : "'" . _code_for($quote_method)->($value) . "'";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_value_text') {
+#@@PAX_OP page_runtime_value_text
         my $legacy_value_method = $sub->{legacy_value_method} // die 'compiled sub legacy-value method missing';
         $impl = sub {
             my ($self, $value) = @_;
@@ -4277,9 +4523,7 @@ OPENSSL_CONFIG
             return _code_for($legacy_value_method)->($value);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_saved_ajax_command') {
+#@@PAX_OP page_runtime_saved_ajax_command
         my $perl_wrapper_method = $sub->{perl_wrapper_method} // die 'compiled sub perl-wrapper method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -4294,9 +4538,7 @@ OPENSSL_CONFIG
             return ($^X, '-e', _code_for($perl_wrapper_method)->($self), $path);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_saved_ajax_env') {
+#@@PAX_OP page_runtime_saved_ajax_env
         my $query_string_method = $sub->{query_string_method} // die 'compiled sub query-string method missing';
         my $normalize_singleton_method = $sub->{normalize_singleton_method} // die 'compiled sub normalize-singleton method missing';
         my $inline_env_limit_method = $sub->{inline_env_limit_method} // die 'compiled sub inline-env-limit method missing';
@@ -4340,9 +4582,7 @@ OPENSSL_CONFIG
             return %env;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_local_perl_env') {
+#@@PAX_OP page_runtime_local_perl_env
         $impl = sub {
             my ($self) = @_;
             my $paths = $self->{paths} || return ();
@@ -4356,9 +4596,7 @@ OPENSSL_CONFIG
             return (PERL5LIB => join($path_sep, @perl5lib));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_saved_ajax_temp_file') {
+#@@PAX_OP page_runtime_saved_ajax_temp_file
         $impl = sub {
             my (%args) = @_;
             my ($fh, $path) = File::Temp::tempfile(
@@ -4372,9 +4610,7 @@ OPENSSL_CONFIG
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_drain_saved_ajax_ready_handle') {
+#@@PAX_OP page_runtime_drain_saved_ajax_ready_handle
         my $noop_writer_method = $sub->{noop_writer_method} // die 'compiled sub noop-writer method missing';
         my $stream_sysread_method = $sub->{stream_sysread_method} // die 'compiled sub stream-sysread method missing';
         $impl = sub {
@@ -4409,9 +4645,7 @@ OPENSSL_CONFIG
             return defined $continued ? $continued : 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_close_saved_ajax_streams') {
+#@@PAX_OP page_runtime_close_saved_ajax_streams
         $impl = sub {
             my ($self, $select, @handles) = @_;
             if ($select && eval { $select->can('handles') }) {
@@ -4429,9 +4663,7 @@ OPENSSL_CONFIG
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_terminate_saved_ajax_process') {
+#@@PAX_OP page_runtime_terminate_saved_ajax_process
         $impl = sub {
             my ($self, $pid) = @_;
             return 1 if !$pid;
@@ -4445,9 +4677,7 @@ OPENSSL_CONFIG
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_ajax_stash') {
+#@@PAX_OP page_runtime_ajax_stash
         $impl = sub {
             my ($input) = @_;
             die "no input" if !defined $input;
@@ -4458,9 +4688,7 @@ OPENSSL_CONFIG
             return $__PAX_RUNTIME_LEGACY_NAMESPACE__::PageRuntime::AJAX_STASH->{$input};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_ajax_hide') {
+#@@PAX_OP page_runtime_ajax_hide
         my $stash_method = $sub->{stash_method} // die 'compiled sub stash method missing';
         $impl = sub {
             my ($input) = @_;
@@ -4468,9 +4696,7 @@ OPENSSL_CONFIG
             return "__DD_HIDE__";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_ajax_void') {
+#@@PAX_OP page_runtime_ajax_void
         my $stash_method = $sub->{stash_method} // die 'compiled sub stash method missing';
         $impl = sub {
             my ($input) = @_;
@@ -4478,24 +4704,18 @@ OPENSSL_CONFIG
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_ajax_stop') {
+#@@PAX_OP page_runtime_ajax_stop
         $impl = sub {
             my ($message) = @_;
             die defined $message ? $message : '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_ajax_params') {
+#@@PAX_OP page_runtime_ajax_params
         $impl = sub {
             return $__PAX_RUNTIME_LEGACY_NAMESPACE__::PageRuntime::AJAX_PARAMS;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_code_header') {
+#@@PAX_OP page_runtime_code_header
         $impl = sub {
             my ($self, $state) = @_;
             $state ||= {};
@@ -4510,9 +4730,7 @@ OPENSSL_CONFIG
             return $header;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_destroy_sandpit') {
+#@@PAX_OP page_runtime_destroy_sandpit
         $impl = sub {
             my ($self, $sandpit) = @_;
             return if ref($sandpit) ne 'HASH' || !$sandpit->{package};
@@ -4522,9 +4740,7 @@ OPENSSL_CONFIG
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_saved_ajax_perl_wrapper') {
+#@@PAX_OP page_runtime_saved_ajax_perl_wrapper
         $impl = sub {
             return <<'PERL';
 use strict;
@@ -4601,17 +4817,13 @@ die $@ if $@;
 PERL
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_sandpit_add_error') {
+#@@PAX_OP page_runtime_sandpit_add_error
         $impl = sub {
             no strict 'refs';
             push @{"${package}::errors"}, grep { defined $_ && $_ ne '' } @_;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_sandpit_errors') {
+#@@PAX_OP page_runtime_sandpit_errors
         $impl = sub {
             no strict 'refs';
             my @copy = @{"${package}::errors"};
@@ -4619,9 +4831,7 @@ PERL
             return @copy;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_sandpit_initial_context') {
+#@@PAX_OP page_runtime_sandpit_initial_context
         $impl = sub {
             my ($class, $next_stash, $next_runtime) = @_;
             no strict 'refs';
@@ -4631,9 +4841,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_sandpit_run_code') {
+#@@PAX_OP page_runtime_sandpit_run_code
         my $add_error_method = $sub->{add_error_method} // die 'compiled sub add-error method missing';
         $impl = sub {
             my ($class, $code) = @_;
@@ -4642,9 +4850,7 @@ PERL
             return @result;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_new_sandpit') {
+#@@PAX_OP page_runtime_new_sandpit
         $impl = sub {
             my ($self, %args) = @_;
             my $package_name = sprintf '__PAX_RUNTIME_LEGACY_NAMESPACE__::Sandpit::%d::%d::%d', $$, time, ++$__PAX_RUNTIME_LEGACY_NAMESPACE__::PageRuntime::SANDPIT_SEQ;
@@ -4728,9 +4934,7 @@ PERL
             return { package => $package_name };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_run_single_block') {
+#@@PAX_OP page_runtime_run_single_block
         my $new_sandpit_method = $sub->{new_sandpit_method} // die 'compiled sub new-sandpit method missing';
         my $code_header_method = $sub->{code_header_method} // die 'compiled sub code-header method missing';
         my $destroy_sandpit_method = $sub->{destroy_sandpit_method} // die 'compiled sub destroy-sandpit method missing';
@@ -4781,9 +4985,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_stream_code_block') {
+#@@PAX_OP page_runtime_stream_code_block
         my $noop_writer_method = $sub->{noop_writer_method} // die 'compiled sub noop-writer method missing';
         my $new_sandpit_method = $sub->{new_sandpit_method} // die 'compiled sub new-sandpit method missing';
         my $code_header_method = $sub->{code_header_method} // die 'compiled sub code-header method missing';
@@ -4844,9 +5046,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_stream_saved_ajax_file') {
+#@@PAX_OP page_runtime_stream_saved_ajax_file
         my $noop_writer_method = $sub->{noop_writer_method} // die 'compiled sub noop-writer method missing';
         my $normalize_singleton_method = $sub->{normalize_singleton_method} // die 'compiled sub normalize-singleton method missing';
         my $kill_singleton_method = $sub->{kill_singleton_method} // die 'compiled sub kill-singleton method missing';
@@ -4932,9 +5132,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_run_code_blocks') {
+#@@PAX_OP page_runtime_run_code_blocks
         my $new_sandpit_method = $sub->{new_sandpit_method} // die 'compiled sub new-sandpit method missing';
         my $run_single_block_method = $sub->{run_single_block_method} // die 'compiled sub run-single-block method missing';
         my $value_text_method = $sub->{value_text_method} // die 'compiled sub value-text method missing';
@@ -5009,9 +5207,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_render_templates') {
+#@@PAX_OP page_runtime_render_templates
         my $system_context_method = $sub->{system_context_method} // die 'compiled sub system-context method missing';
         my $run_single_block_method = $sub->{run_single_block_method} // die 'compiled sub run-single-block method missing';
         $impl = sub {
@@ -5087,9 +5283,7 @@ PERL
             }
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_runtime_prepare_page') {
+#@@PAX_OP page_runtime_prepare_page
         my $run_code_blocks_method = $sub->{run_code_blocks_method} // die 'compiled sub run-code-blocks method missing';
         my $render_templates_method = $sub->{render_templates_method} // die 'compiled sub render-templates method missing';
         $impl = sub {
@@ -5114,9 +5308,7 @@ PERL
             return $page;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_temp_file_kind') {
+#@@PAX_OP housekeeper_temp_file_kind
         $impl = sub {
             my ($self, $entry) = @_;
             return ('ajax-temp-file', 'ajax_temp_files') if $entry =~ /\Adeveloper-dashboard-ajax-/;
@@ -5124,9 +5316,7 @@ PERL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_collector_rotation') {
+#@@PAX_OP housekeeper_collector_rotation
         $impl = sub {
             my ($self, $job) = @_;
             my %rotation;
@@ -5139,9 +5329,7 @@ PERL
             return \%rotation;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_path_old_enough') {
+#@@PAX_OP housekeeper_path_old_enough
         $impl = sub {
             my ($self, $path, $min_age_seconds) = @_;
             my @stat = stat($path);
@@ -5149,9 +5337,7 @@ PERL
             return (time - $stat[9]) >= $min_age_seconds ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_only_missing_tree_errors') {
+#@@PAX_OP housekeeper_only_missing_tree_errors
         $impl = sub {
             my ($self, $errors) = @_;
             return 1 if ref($errors) ne 'ARRAY' || !@{$errors};
@@ -5162,9 +5348,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_read_state_metadata') {
+#@@PAX_OP housekeeper_read_state_metadata
         $impl = sub {
             my ($self, $dir) = @_;
             my $file = File::Spec->catfile($dir, 'runtime.json');
@@ -5178,9 +5362,7 @@ PERL
             return $data;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_remove_tree') {
+#@@PAX_OP housekeeper_remove_tree
         my $missing_errors_method = $sub->{missing_errors_method} // die 'compiled sub missing-errors method missing';
         $impl = sub {
             my ($self, $path, $kind) = @_;
@@ -5195,17 +5377,13 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_collector_store') {
+#@@PAX_OP housekeeper_collector_store
         $impl = sub {
             my ($self) = @_;
             return $self->{collector_store} ||= __PAX_RUNTIME_LEGACY_NAMESPACE__::Collector->new(paths => $self->{paths});
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_config') {
+#@@PAX_OP housekeeper_config
         $impl = sub {
             my ($self) = @_;
             return $self->{config} ||= __PAX_RUNTIME_LEGACY_NAMESPACE__::Config->new(
@@ -5214,9 +5392,7 @@ PERL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_state_root_has_live_collectors') {
+#@@PAX_OP housekeeper_state_root_has_live_collectors
         $impl = sub {
             my ($self, $dir) = @_;
             my $collectors_root = File::Spec->catdir($dir, 'collectors');
@@ -5241,9 +5417,7 @@ PERL
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_state_root_is_stale') {
+#@@PAX_OP housekeeper_state_root_is_stale
         my $old_enough_method = $sub->{old_enough_method} // die 'compiled sub old-enough method missing';
         my $live_collectors_method = $sub->{live_collectors_method} // die 'compiled sub live-collectors method missing';
         my $read_metadata_method = $sub->{read_metadata_method} // die 'compiled sub read-metadata method missing';
@@ -5260,9 +5434,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_cleanup_state_roots') {
+#@@PAX_OP housekeeper_cleanup_state_roots
         my $stale_method = $sub->{stale_method} // die 'compiled sub stale method missing';
         my $remove_tree_method = $sub->{remove_tree_method} // die 'compiled sub remove-tree method missing';
         $impl = sub {
@@ -5285,9 +5457,7 @@ PERL
             return @removed;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_cleanup_temp_files') {
+#@@PAX_OP housekeeper_cleanup_temp_files
         my $temp_file_kind_method = $sub->{temp_file_kind_method} // die 'compiled sub temp-file-kind method missing';
         my $old_enough_method = $sub->{old_enough_method} // die 'compiled sub old-enough method missing';
         $impl = sub {
@@ -5314,9 +5484,7 @@ PERL
             return @removed;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_rotate_collector_logs') {
+#@@PAX_OP housekeeper_rotate_collector_logs
         my $config_method = $sub->{config_method} // die 'compiled sub config method missing';
         my $collector_rotation_method = $sub->{collector_rotation_method} // die 'compiled sub collector-rotation method missing';
         my $collector_store_method = $sub->{collector_store_method} // die 'compiled sub collector-store method missing';
@@ -5339,9 +5507,7 @@ PERL
             return @rotated;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'housekeeper_run') {
+#@@PAX_OP housekeeper_run
         my $cleanup_state_roots_method = $sub->{cleanup_state_roots_method} // die 'compiled sub cleanup-state-roots method missing';
         my $cleanup_temp_files_method = $sub->{cleanup_temp_files_method} // die 'compiled sub cleanup-temp-files method missing';
         my $rotate_collector_logs_method = $sub->{rotate_collector_logs_method} // die 'compiled sub rotate-collector-logs method missing';
@@ -5370,9 +5536,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_configure') {
+#@@PAX_OP folder_configure
         my $paths_symbol = $sub->{paths_symbol} // die 'compiled sub paths symbol missing';
         my $aliases_symbol = $sub->{aliases_symbol} // die 'compiled sub aliases symbol missing';
         my $config_aliases_symbol = $sub->{config_aliases_symbol} // die 'compiled sub config aliases symbol missing';
@@ -5387,46 +5551,34 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_home') {
+#@@PAX_OP folder_home
         $impl = sub { return $ENV{HOME} || '' };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_tmp') {
+#@@PAX_OP folder_tmp
         $impl = sub { return File::Spec->tmpdir };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_runtime_root') {
+#@@PAX_OP folder_runtime_root
         my $paths_method = $sub->{paths_method} // die 'compiled sub paths method missing';
         $impl = sub {
             my $paths = _code_for($paths_method)->();
             return $paths && $paths->can('runtime_root') ? $paths->runtime_root : '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_dashboards_root') {
+#@@PAX_OP folder_dashboards_root
         my $paths_method = $sub->{paths_method} // die 'compiled sub paths method missing';
         $impl = sub {
             my $paths = _code_for($paths_method)->();
             return $paths && $paths->can('dashboards_root') ? $paths->dashboards_root : '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_config_root') {
+#@@PAX_OP folder_config_root
         my $paths_method = $sub->{paths_method} // die 'compiled sub paths method missing';
         $impl = sub {
             my $paths = _code_for($paths_method)->();
             return $paths && $paths->can('config_root') ? $paths->config_root : '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_all_paths') {
+#@@PAX_OP folder_all_paths
         my $paths_method = $sub->{paths_method} // die 'compiled sub paths method missing';
         my $load_aliases_method = $sub->{load_aliases_method} // die 'compiled sub load-aliases method missing';
         $impl = sub {
@@ -5436,18 +5588,14 @@ PERL
             return $paths->all_paths;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_postman') {
+#@@PAX_OP folder_postman
         $impl = sub {
             my $dir = File::Spec->catdir(__PACKAGE__->configs(), 'postman');
             File::Path::make_path($dir) if $dir ne '' && !-d $dir;
             return $dir;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_paths_obj') {
+#@@PAX_OP folder_paths_obj
         my $paths_symbol = $sub->{paths_symbol} // die 'compiled sub paths symbol missing';
         $impl = sub {
             no strict 'refs';
@@ -5463,9 +5611,7 @@ PERL
             return ${$paths_symbol};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_load_configured_aliases') {
+#@@PAX_OP folder_load_configured_aliases
         my $paths_symbol = $sub->{paths_symbol} // die 'compiled sub paths symbol missing';
         my $config_aliases_symbol = $sub->{config_aliases_symbol} // die 'compiled sub config aliases symbol missing';
         my $config_key_symbol = $sub->{config_key_symbol} // die 'compiled sub config key symbol missing';
@@ -5482,9 +5628,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_resolve_path') {
+#@@PAX_OP folder_resolve_path
         my $paths_method = $sub->{paths_method} // die 'compiled sub paths method missing';
         my $load_aliases_method = $sub->{load_aliases_method} // die 'compiled sub load aliases method missing';
         my $aliases_symbol = $sub->{aliases_symbol} // die 'compiled sub aliases symbol missing';
@@ -5514,9 +5658,7 @@ PERL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_autoload') {
+#@@PAX_OP folder_autoload
         my $autoload_symbol = $sub->{autoload_symbol} // die 'compiled sub autoload symbol missing';
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
@@ -5532,9 +5674,7 @@ PERL
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_cd') {
+#@@PAX_OP folder_cd
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
             my ($class, $where, $code) = @_;
@@ -5554,21 +5694,15 @@ PERL
             return $result;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_helper_names') {
+#@@PAX_OP internal_cli_helper_names
         my $names = $sub->{names} || [];
         $impl = sub { return @{$names}; };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_helper_aliases') {
+#@@PAX_OP internal_cli_helper_aliases
         my $aliases = $sub->{aliases} || {};
         $impl = sub { return { %{$aliases} }; };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_canonical_helper_name') {
+#@@PAX_OP internal_cli_canonical_helper_name
         my $helper_names_method = $sub->{helper_names_method} // die 'compiled sub helper-names method missing';
         my $helper_aliases_method = $sub->{helper_aliases_method} // die 'compiled sub helper-aliases method missing';
         $impl = sub {
@@ -5580,34 +5714,26 @@ PERL
             return $aliases->{$name} || '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_helper_parent_root') {
+#@@PAX_OP internal_cli_helper_parent_root
         $impl = sub {
             my ($paths) = @_;
             return File::Spec->catdir($paths->home_runtime_root, 'cli');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_helper_install_root') {
+#@@PAX_OP internal_cli_helper_install_root
         my $parent_root_method = $sub->{parent_root_method} // die 'compiled sub parent-root method missing';
         $impl = sub {
             my ($paths) = @_;
             return File::Spec->catdir(_code_for($parent_root_method)->($paths), 'dd');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_managed_helper_marker') {
+#@@PAX_OP internal_cli_managed_helper_marker
         $impl = sub {
             my ($name) = @_;
             return "# developer-dashboard-managed-helper: $name";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_repo_private_cli_root') {
+#@@PAX_OP internal_cli_repo_private_cli_root
         $impl = sub {
             return File::Spec->catdir(
                 File::Basename::dirname(__FILE__),
@@ -5619,9 +5745,7 @@ PERL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_shared_private_cli_root') {
+#@@PAX_OP internal_cli_shared_private_cli_root
         my $dist_name = $sub->{dist_name} // die 'compiled sub dist name missing';
         $impl = sub {
             my $path = _share_dist_private_cli_dir($dist_name);
@@ -5629,9 +5753,7 @@ PERL
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_helper_asset_path') {
+#@@PAX_OP internal_cli_helper_asset_path
         my $repo_root_method = $sub->{repo_root_method} // die 'compiled sub repo-root method missing';
         my $shared_root_method = $sub->{shared_root_method} // die 'compiled sub shared-root method missing';
         $impl = sub {
@@ -5641,9 +5763,7 @@ PERL
             return File::Spec->catfile(_code_for($shared_root_method)->(), $name);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_helper_path') {
+#@@PAX_OP internal_cli_helper_path
         my $canonical_method = $sub->{canonical_method} // die 'compiled sub canonical method missing';
         my $install_root_method = $sub->{install_root_method} // die 'compiled sub install-root method missing';
         $impl = sub {
@@ -5654,9 +5774,7 @@ PERL
             return File::Spec->catfile(_code_for($install_root_method)->($paths), $name);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_helper_content') {
+#@@PAX_OP internal_cli_helper_content
         my $canonical_method = $sub->{canonical_method} // die 'compiled sub canonical method missing';
         my $asset_path_method = $sub->{asset_path_method} // die 'compiled sub asset-path method missing';
         $impl = sub {
@@ -5673,9 +5791,7 @@ PERL
             return $content;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_managed_helper_content') {
+#@@PAX_OP internal_cli_managed_helper_content
         my $helper_content_method = $sub->{helper_content_method} // die 'compiled sub helper-content method missing';
         my $marker_method = $sub->{marker_method} // die 'compiled sub marker method missing';
         $impl = sub {
@@ -5690,9 +5806,7 @@ PERL
             return $marker . $content;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_is_dashboard_managed_helper') {
+#@@PAX_OP internal_cli_is_dashboard_managed_helper
         my $marker_method = $sub->{marker_method} // die 'compiled sub marker method missing';
         $impl = sub {
             my ($content, $name) = @_;
@@ -5709,9 +5823,7 @@ PERL
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_stage_managed_helper') {
+#@@PAX_OP internal_cli_stage_managed_helper
         my $managed_content_method = $sub->{managed_content_method} // die 'compiled sub managed-content method missing';
         my $managed_check_method = $sub->{managed_check_method} // die 'compiled sub managed-check method missing';
         $impl = sub {
@@ -5725,6 +5837,11 @@ PERL
                 my $existing = do { local $/; <$existing_fh> };
                 close $existing_fh or die "Unable to close $target: $!";
                 return 0 if !_code_for($managed_check_method)->($existing, $name);
+                my $seed_sync_package = '__PAX_RUNTIME_LEGACY_NAMESPACE__::SeedSync';
+                my $seed_sync_path = $seed_sync_package;
+                $seed_sync_path =~ s{::}{/}g;
+                $seed_sync_path .= '.pm';
+                _load_compiled_require($seed_sync_path) || require $seed_sync_path;
                 return 0 if __PAX_RUNTIME_LEGACY_NAMESPACE__::SeedSync::same_content_md5($existing, $content);
             }
             open my $fh, '>:raw', $target or die "Unable to write $target: $!";
@@ -5733,9 +5850,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_remove_retired_managed_helper') {
+#@@PAX_OP internal_cli_remove_retired_managed_helper
         my $install_root_method = $sub->{install_root_method} // die 'compiled sub install-root method missing';
         my $managed_check_method = $sub->{managed_check_method} // die 'compiled sub managed-check method missing';
         $impl = sub {
@@ -5753,9 +5868,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'internal_cli_ensure_helpers') {
+#@@PAX_OP internal_cli_ensure_helpers
         my $parent_root_method = $sub->{parent_root_method} // die 'compiled sub parent-root method missing';
         my $install_root_method = $sub->{install_root_method} // die 'compiled sub install-root method missing';
         my $stage_method = $sub->{stage_method} // die 'compiled sub stage method missing';
@@ -5782,9 +5895,7 @@ PERL
             return \@written;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_expand_env_path') {
+#@@PAX_OP docker_compose_expand_env_path
         $impl = sub {
             my ($self, $path) = @_;
             return $path if !defined $path || $path eq '';
@@ -5793,34 +5904,26 @@ PERL
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_config_root') {
+#@@PAX_OP docker_compose_config_root
         $impl = sub {
             my ($self) = @_;
             return File::Spec->catdir($self->{paths}->config_root, 'docker');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_home_config_root') {
+#@@PAX_OP docker_compose_home_config_root
         $impl = sub {
             my ($self) = @_;
             return File::Spec->catdir($self->{paths}->home_runtime_root, 'config', 'docker');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_discover_base_files') {
+#@@PAX_OP docker_compose_discover_base_files
         my $candidates = $sub->{candidates} || [];
         $impl = sub {
             my ($self, $root) = @_;
             return grep { -f $_ } map { File::Spec->catfile($root, $_) } @{$candidates};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_service_toggle_root') {
+#@@PAX_OP docker_compose_service_toggle_root
         $impl = sub {
             my ($self, %args) = @_;
             my @layers = $self->{paths}->runtime_layers;
@@ -5831,9 +5934,7 @@ PERL
                 : File::Spec->catdir($runtime_root, 'docker');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_service_disabled_marker_path') {
+#@@PAX_OP docker_compose_service_disabled_marker_path
         my $toggle_root_method = $sub->{toggle_root_method} // die 'compiled sub toggle-root method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -5842,9 +5943,7 @@ PERL
             return File::Spec->catfile($root, $service, 'disabled.yml');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_service_lookup_roots') {
+#@@PAX_OP docker_compose_service_lookup_roots
         $impl = sub {
             my ($self, %args) = @_;
             my $service = $args{service} || return;
@@ -5874,9 +5973,7 @@ PERL
             return @roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_service_folder_is_disabled') {
+#@@PAX_OP docker_compose_service_folder_is_disabled
         my $lookup_roots_method = $sub->{lookup_roots_method} // die 'compiled sub lookup-roots method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -5893,9 +5990,7 @@ PERL
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_discover_service_names') {
+#@@PAX_OP docker_compose_discover_service_names
         my $lookup_roots_method = $sub->{lookup_roots_method} // die 'compiled sub lookup-roots method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -5915,9 +6010,7 @@ PERL
             return sort keys %names;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_discover_enabled_services') {
+#@@PAX_OP docker_compose_discover_enabled_services
         my $discover_names_method = $sub->{discover_names_method} // die 'compiled sub discover-names method missing';
         my $service_disabled_method = $sub->{service_disabled_method} // die 'compiled sub service-disabled method missing';
         $impl = sub {
@@ -5926,9 +6019,7 @@ PERL
             return grep { !_code_for($service_disabled_method)->($self, project_root => $args{project_root}, service => $_) } @services;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_infer_services_from_args') {
+#@@PAX_OP docker_compose_infer_services_from_args
         my $discover_names_method = $sub->{discover_names_method} // die 'compiled sub discover-names method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -5948,9 +6039,7 @@ PERL
             return @services;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_discover_service_files') {
+#@@PAX_OP docker_compose_discover_service_files
         my $service_disabled_method = $sub->{service_disabled_method} // die 'compiled sub service-disabled method missing';
         my $lookup_roots_method = $sub->{lookup_roots_method} // die 'compiled sub lookup-roots method missing';
         $impl = sub {
@@ -5976,9 +6065,7 @@ PERL
             return @files;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_resolve') {
+#@@PAX_OP docker_compose_resolve
         my $base_files_method = $sub->{base_files_method} // die 'compiled sub base-files method missing';
         my $infer_services_method = $sub->{infer_services_method} // die 'compiled sub infer-services method missing';
         my $discover_enabled_method = $sub->{discover_enabled_method} // die 'compiled sub discover-enabled method missing';
@@ -6074,9 +6161,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_disable_service') {
+#@@PAX_OP docker_compose_disable_service
         my $disabled_marker_method = $sub->{disabled_marker_method} // die 'compiled sub disabled-marker method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -6090,9 +6175,7 @@ PERL
             return { action => 'disable', disabled => 1, marker => $marker, service => $service };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_enable_service') {
+#@@PAX_OP docker_compose_enable_service
         my $disabled_marker_method = $sub->{disabled_marker_method} // die 'compiled sub disabled-marker method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -6102,9 +6185,7 @@ PERL
             return { action => 'enable', disabled => 0, marker => $marker, service => $service };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_list_services') {
+#@@PAX_OP docker_compose_list_services
         my $discover_names_method = $sub->{discover_names_method} // die 'compiled sub discover-names method missing';
         my $service_disabled_method = $sub->{service_disabled_method} // die 'compiled sub service-disabled method missing';
         my $disabled_marker_method = $sub->{disabled_marker_method} // die 'compiled sub disabled-marker method missing';
@@ -6130,9 +6211,7 @@ PERL
             return \@listed;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'docker_compose_run') {
+#@@PAX_OP docker_compose_run
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -6149,9 +6228,7 @@ PERL
             return { %{$resolved}, stdout => $stdout, stderr => $stderr, exit_code => $exit_code };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_run_command') {
+#@@PAX_OP query_run_command
         my $split_args_method = $sub->{split_args_method} // die 'compiled sub split-args method missing';
         my $read_input_method = $sub->{read_input_method} // die 'compiled sub read-input method missing';
         my $parse_input_method = $sub->{parse_input_method} // die 'compiled sub parse-input method missing';
@@ -6170,9 +6247,7 @@ PERL
             _code_for($command_exit_method)->(0);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_split_args') {
+#@@PAX_OP query_split_args
         $impl = sub {
             my (@argv) = @_;
             my $file = '';
@@ -6188,9 +6263,7 @@ PERL
             return ($path, $file);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_read_input') {
+#@@PAX_OP query_read_input
         $impl = sub {
             my ($file) = @_;
             if ($file) {
@@ -6202,9 +6275,7 @@ PERL
             return scalar <STDIN>;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_parse_input') {
+#@@PAX_OP query_parse_input
         my $parse_java_properties_method = $sub->{parse_java_properties_method} // die 'compiled sub parse-java-properties method missing';
         my $parse_ini_method = $sub->{parse_ini_method} // die 'compiled sub parse-ini method missing';
         my $parse_csv_method = $sub->{parse_csv_method} // die 'compiled sub parse-csv method missing';
@@ -6223,9 +6294,7 @@ PERL
             die "Unsupported data query command '$command'\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_extract_path') {
+#@@PAX_OP query_extract_path
         $impl = sub {
             my ($data, $path) = @_;
             return $data if !defined $path || $path eq '' || $path eq '$d' || $path eq '.';
@@ -6255,9 +6324,7 @@ PERL
             return $value;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_path_uses_expression') {
+#@@PAX_OP query_path_uses_expression
         $impl = sub {
             my ($path) = @_;
             return 0 if !defined $path || $path eq '' || $path eq '$d' || $path eq '.';
@@ -6265,9 +6332,7 @@ PERL
             return index($path, '$d') >= 0 ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_select_value') {
+#@@PAX_OP query_select_value
         my $path_expression_method = $sub->{path_expression_method} // die 'compiled sub path-expression method missing';
         my $evaluate_expression_method = $sub->{evaluate_expression_method} // die 'compiled sub evaluate-expression method missing';
         my $extract_path_method = $sub->{extract_path_method} // die 'compiled sub extract-path method missing';
@@ -6278,9 +6343,7 @@ PERL
             return _code_for($extract_path_method)->($data, $path);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_evaluate_expression') {
+#@@PAX_OP query_evaluate_expression
         my $expression_prefers_list_method = $sub->{expression_prefers_list_method} // die 'compiled sub expression-prefers-list method missing';
         $impl = sub {
             my ($data, $expr) = @_;
@@ -6304,9 +6367,7 @@ PERL_EVAL
             return [];
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_expression_prefers_list') {
+#@@PAX_OP query_expression_prefers_list
         $impl = sub {
             my ($expr) = @_;
             return 0 if !defined $expr || $expr =~ /^\s*scalar\b/;
@@ -6314,9 +6375,7 @@ PERL_EVAL
             return $expr =~ /\b(?:sort|map|grep|keys|values)\b/ ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_print_value') {
+#@@PAX_OP query_print_value
         $impl = sub {
             my ($value) = @_;
             if (ref($value)) {
@@ -6328,9 +6387,7 @@ PERL_EVAL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_parse_java_properties') {
+#@@PAX_OP query_parse_java_properties
         my $unescape_method = $sub->{unescape_method} // die 'compiled sub unescape method missing';
         $impl = sub {
             my ($text) = @_;
@@ -6357,9 +6414,7 @@ PERL_EVAL
             return \%props;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_unescape_properties') {
+#@@PAX_OP query_unescape_properties
         $impl = sub {
             my ($text) = @_;
             $text =~ s/\\t/\t/g;
@@ -6370,9 +6425,7 @@ PERL_EVAL
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_parse_ini') {
+#@@PAX_OP query_parse_ini
         $impl = sub {
             my ($text) = @_;
             my %ini;
@@ -6398,9 +6451,7 @@ PERL_EVAL
             return \%ini;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_parse_csv') {
+#@@PAX_OP query_parse_csv
         $impl = sub {
             my ($text) = @_;
             my @rows;
@@ -6414,9 +6465,7 @@ PERL_EVAL
             return \@rows;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_parse_xml') {
+#@@PAX_OP query_parse_xml
         my $xml_tree_method = $sub->{xml_tree_method} // die 'compiled sub xml-tree method missing';
         $impl = sub {
             my ($text) = @_;
@@ -6425,9 +6474,7 @@ PERL_EVAL
             return _code_for($xml_tree_method)->($tree);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_xml_tree_to_data') {
+#@@PAX_OP query_xml_tree_to_data
         my $xml_element_method = $sub->{xml_element_method} // die 'compiled sub xml-element method missing';
         $impl = sub {
             my ($tree) = @_;
@@ -6436,9 +6483,7 @@ PERL_EVAL
             return { $root_name => _code_for($xml_element_method)->($root_children) };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_xml_element_payload') {
+#@@PAX_OP query_xml_element_payload
         $impl = sub {
             my ($children) = @_;
             die 'XML element payload must be an array reference' if ref($children) ne 'ARRAY';
@@ -6475,29 +6520,21 @@ PERL_EVAL
             return \%node;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'query_command_exit') {
+#@@PAX_OP query_command_exit
         $impl = sub {
             my ($code) = @_;
             exit $code;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_api_dashboard_page') {
+#@@PAX_OP seeded_pages_api_dashboard_page
         my $page_from_asset_method = $sub->{page_from_asset_method} // die 'compiled sub page-from-asset method missing';
         $impl = sub { return _code_for($page_from_asset_method)->('api-dashboard.page'); };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_sql_dashboard_page') {
+#@@PAX_OP seeded_pages_sql_dashboard_page
         my $page_from_asset_method = $sub->{page_from_asset_method} // die 'compiled sub page-from-asset method missing';
         $impl = sub { return _code_for($page_from_asset_method)->('sql-dashboard.page'); };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_page_for_id') {
+#@@PAX_OP seeded_pages_page_for_id
         my $asset_filename_method = $sub->{asset_filename_method} // die 'compiled sub asset-filename method missing';
         my $page_from_asset_method = $sub->{page_from_asset_method} // die 'compiled sub page-from-asset method missing';
         $impl = sub {
@@ -6506,18 +6543,14 @@ PERL_EVAL
             return _code_for($page_from_asset_method)->($filename);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_manifest_path') {
+#@@PAX_OP seeded_pages_manifest_path
         $impl = sub {
             my (%args) = @_;
             my $paths = $args{paths} || die 'Missing paths registry';
             return File::Spec->catfile($paths->config_root, 'seeded-pages.json');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_known_managed_page_md5s') {
+#@@PAX_OP seeded_pages_known_managed_page_md5s
         my $asset_filename_method = $sub->{asset_filename_method} // die 'compiled sub asset-filename method missing';
         my $seeded_instruction_method = $sub->{seeded_instruction_method} // die 'compiled sub instruction method missing';
         my $legacy_map = $sub->{legacy_map} || {};
@@ -6532,9 +6565,7 @@ PERL_EVAL
             return grep { defined $_ && $_ ne '' && !$seen{$_}++ } @md5s;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_is_known_managed_page_md5') {
+#@@PAX_OP seeded_pages_is_known_managed_page_md5
         my $known_md5s_method = $sub->{known_md5s_method} // die 'compiled sub known-md5s method missing';
         $impl = sub {
             my (%args) = @_;
@@ -6545,9 +6576,7 @@ PERL_EVAL
             return $matches ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_page_from_asset') {
+#@@PAX_OP seeded_pages_page_from_asset
         my $instruction_method = $sub->{instruction_method} // die 'compiled sub instruction method missing';
         my $page_class = $sub->{page_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument';
         $impl = sub {
@@ -6557,9 +6586,7 @@ PERL_EVAL
             return $page_class->from_instruction($instruction);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_instruction') {
+#@@PAX_OP seeded_pages_instruction
         my $asset_path_method = $sub->{asset_path_method} // die 'compiled sub asset-path method missing';
         $impl = sub {
             my ($filename) = @_;
@@ -6571,9 +6598,7 @@ PERL_EVAL
             return $instruction;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_asset_filename') {
+#@@PAX_OP seeded_pages_asset_filename
         my $id_to_asset = $sub->{id_to_asset} || {};
         $impl = sub {
             my ($id) = @_;
@@ -6581,9 +6606,7 @@ PERL_EVAL
             return $id_to_asset->{$id};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_asset_path') {
+#@@PAX_OP seeded_pages_asset_path
         my $repo_root_method = $sub->{repo_root_method} // die 'compiled sub repo-root method missing';
         my $shared_root_method = $sub->{shared_root_method} // die 'compiled sub shared-root method missing';
         $impl = sub {
@@ -6594,9 +6617,7 @@ PERL_EVAL
             return File::Spec->catfile(_code_for($shared_root_method)->(), $filename);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_repo_root') {
+#@@PAX_OP seeded_pages_repo_root
         $impl = sub {
             return File::Spec->catdir(
                 File::Basename::dirname(__FILE__),
@@ -6609,16 +6630,12 @@ PERL_EVAL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_shared_root') {
+#@@PAX_OP seeded_pages_shared_root
         $impl = sub {
             return File::Spec->catdir(File::ShareDir::dist_dir('Developer-Dashboard'), 'seeded-pages');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_read_manifest') {
+#@@PAX_OP seeded_pages_read_manifest
         my $manifest_path_method = $sub->{manifest_path_method} // die 'compiled sub manifest-path method missing';
         $impl = sub {
             my (%args) = @_;
@@ -6633,9 +6650,7 @@ PERL_EVAL
             return $manifest;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_write_manifest') {
+#@@PAX_OP seeded_pages_write_manifest
         my $manifest_path_method = $sub->{manifest_path_method} // die 'compiled sub manifest-path method missing';
         $impl = sub {
             my (%args) = @_;
@@ -6651,9 +6666,7 @@ PERL_EVAL
             return $manifest_path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_record_manifest_md5') {
+#@@PAX_OP seeded_pages_record_manifest_md5
         my $read_manifest_method = $sub->{read_manifest_method} // die 'compiled sub read-manifest method missing';
         my $asset_filename_method = $sub->{asset_filename_method} // die 'compiled sub asset-filename method missing';
         my $write_manifest_method = $sub->{write_manifest_method} // die 'compiled sub write-manifest method missing';
@@ -6668,9 +6681,7 @@ PERL_EVAL
             return $md5;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_manifest_md5_matches') {
+#@@PAX_OP seeded_pages_manifest_md5_matches
         my $read_manifest_method = $sub->{read_manifest_method} // die 'compiled sub read-manifest method missing';
         $impl = sub {
             my (%args) = @_;
@@ -6683,9 +6694,7 @@ PERL_EVAL
             return $recorded eq $md5 ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'seeded_pages_ensure_seeded_page') {
+#@@PAX_OP seeded_pages_ensure_seeded_page
         my $record_manifest_method = $sub->{record_manifest_method} // die 'compiled sub record-manifest method missing';
         my $manifest_matches_method = $sub->{manifest_matches_method} // die 'compiled sub manifest-matches method missing';
         my $known_md5_method = $sub->{known_md5_method} // die 'compiled sub known-md5 method missing';
@@ -6728,9 +6737,7 @@ PERL_EVAL
             return 'preserved';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_ls') {
+#@@PAX_OP folder_ls
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
             my ($class, $where) = @_;
@@ -6752,9 +6759,7 @@ PERL_EVAL
             return sort { $b->{type} cmp $a->{type} || $a->{NAME} cmp $b->{NAME} } @items;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'folder_locate') {
+#@@PAX_OP folder_locate
         my $paths_method = $sub->{paths_method} // die 'compiled sub paths method missing';
         $impl = sub {
             my ($class, @parts) = @_;
@@ -6785,9 +6790,7 @@ PERL_EVAL
             return grep { !$seen{$_}++ } sort @found;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'progress_status_prefix') {
+#@@PAX_OP progress_status_prefix
         $impl = sub {
             my ($self, $status) = @_;
             return '[OK]' if defined $status && $status eq 'done';
@@ -6796,9 +6799,7 @@ PERL_EVAL
             return '[ ]';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'progress_colorize') {
+#@@PAX_OP progress_colorize
         $impl = sub {
             my ($self, $text, $status) = @_;
             return $text if !$self->{color};
@@ -6808,9 +6809,7 @@ PERL_EVAL
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'progress_render_text') {
+#@@PAX_OP progress_render_text
         my $prefix_method = $sub->{prefix_method} // die 'compiled sub prefix method missing';
         my $colorize_method = $sub->{colorize_method} // die 'compiled sub colorize method missing';
         $impl = sub {
@@ -6824,9 +6823,7 @@ PERL_EVAL
             return join("\n", @lines) . "\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'progress_render') {
+#@@PAX_OP progress_render
         my $render_text_method = $sub->{render_text_method} // die 'compiled sub render_text method missing';
         $impl = sub {
             my ($self) = @_;
@@ -6843,9 +6840,7 @@ PERL_EVAL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'progress_update') {
+#@@PAX_OP progress_update
         my $render_method = $sub->{render_method} // die 'compiled sub render method missing';
         $impl = sub {
             my ($self, $event) = @_;
@@ -6858,9 +6853,7 @@ PERL_EVAL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'progress_callback') {
+#@@PAX_OP progress_callback
         my $update_method = $sub->{update_method} // die 'compiled sub update method missing';
         $impl = sub {
             my ($self) = @_;
@@ -6870,9 +6863,7 @@ PERL_EVAL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'progress_finish') {
+#@@PAX_OP progress_finish
         $impl = sub {
             my ($self) = @_;
             return 1 if !$self->{dynamic} || !$self->{rendered};
@@ -6881,9 +6872,7 @@ PERL_EVAL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'progress_new') {
+#@@PAX_OP progress_new
         my $tasks_type_error = $sub->{tasks_type_error} // 'Progress tasks must be an array reference';
         my $missing_id_error = $sub->{missing_id_error} // 'Progress task missing id';
         my $render_method = $sub->{render_method} // die 'compiled sub render method missing';
@@ -6915,18 +6904,14 @@ PERL_EVAL
             return $self;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_now_iso8601') {
+#@@PAX_OP action_now_iso8601
         $impl = sub {
             require POSIX;
             my @t = gmtime();
             return POSIX::strftime('%Y-%m-%dT%H:%M:%SZ', @t);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_is_trusted') {
+#@@PAX_OP action_is_trusted
         $impl = sub {
             my ($self, %args) = @_;
             my $page = $args{page};
@@ -6943,9 +6928,7 @@ PERL_EVAL
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_run_builtin') {
+#@@PAX_OP action_run_builtin
         $impl = sub {
             my ($self, %args) = @_;
             my $action = $args{action};
@@ -6981,9 +6964,7 @@ PERL_EVAL
             die "Unsupported builtin action '$id'\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_encode_payload') {
+#@@PAX_OP action_encode_payload
         $impl = sub {
             require Digest::SHA;
             my ($self, %args) = @_;
@@ -7010,9 +6991,7 @@ PERL_EVAL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_decode_payload') {
+#@@PAX_OP action_decode_payload
         $impl = sub {
             my ($self, $token) = @_;
             my $payload = __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_decode(
@@ -7022,9 +7001,7 @@ PERL_EVAL
             return $payload;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_run_encoded') {
+#@@PAX_OP action_run_encoded
         my $decode_method = $sub->{decode_method} // die 'compiled sub decode method missing';
         my $page_class = $sub->{page_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument';
         my $run_page_action_method = $sub->{run_page_action_method} // die 'compiled sub run_page_action method missing';
@@ -7041,9 +7018,7 @@ PERL_EVAL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_run_page_action') {
+#@@PAX_OP action_run_page_action
         my $builtin_method = $sub->{builtin_method} // die 'compiled sub builtin method missing';
         my $trust_method = $sub->{trust_method} // die 'compiled sub trust method missing';
         my $command_method = $sub->{command_method} // die 'compiled sub command method missing';
@@ -7077,9 +7052,7 @@ PERL_EVAL
             die "Unsupported action kind '$kind'\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_run_command_action') {
+#@@PAX_OP action_run_command_action
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
         my $run_command_method = $sub->{run_command_method} // die 'compiled sub run_command method missing';
         $impl = sub {
@@ -7128,9 +7101,7 @@ PERL_EVAL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'action_run_command') {
+#@@PAX_OP action_run_command
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
         $impl = sub {
             require Capture::Tiny;
@@ -7175,9 +7146,7 @@ PERL_EVAL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'utc_iso8601_after') {
+#@@PAX_OP utc_iso8601_after
         $impl = sub {
             require POSIX;
             my ($seconds) = @_;
@@ -7186,9 +7155,7 @@ PERL_EVAL
             return POSIX::strftime('%Y-%m-%dT%H:%M:%SZ', @t);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'utc_iso8601_to_epoch') {
+#@@PAX_OP utc_iso8601_to_epoch
         $impl = sub {
             my ($text) = @_;
             return 0 if !defined $text || $text !~ /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z\z/;
@@ -7196,9 +7163,7 @@ PERL_EVAL
             return Time::Local::timegm($6, $5, $4, $3, $2 - 1, $1);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'iso8601_to_epoch_with_zone') {
+#@@PAX_OP iso8601_to_epoch_with_zone
         $impl = sub {
             my ($self, $timestamp) = @_;
             my ( $year, $month, $day, $hour, $minute, $second, $zone ) =
@@ -7214,18 +7179,14 @@ PERL_EVAL
             return Time::Local::timegm($second, $minute, $hour, $day, $month - 1, $year) - $offset_seconds;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'text_with_trailing_newline') {
+#@@PAX_OP text_with_trailing_newline
         $impl = sub {
             my ($text) = @_;
             $text = '' if !defined $text;
             return $text =~ /\n\z/ ? $text : $text . "\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'fs_slurp') {
+#@@PAX_OP fs_slurp
         $impl = sub {
             my ($file) = @_;
             return '' if !-f $file;
@@ -7234,9 +7195,7 @@ PERL_EVAL
             return scalar <$fh>;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'fs_atomic_write_text') {
+#@@PAX_OP fs_atomic_write_text
         $impl = sub {
             my ($self, $file, $text) = @_;
             my $tmp = "$file.pending";
@@ -7250,27 +7209,21 @@ PERL_EVAL
             return $file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'fs_atomic_write_json') {
+#@@PAX_OP fs_atomic_write_json
         my $write_text_method = $sub->{write_text_method} // die 'compiled sub write-text method missing';
         $impl = sub {
             my ($self, $file, $data) = @_;
             return _code_for($write_text_method)->($self, $file, __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_encode($data));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'local_iso8601_now') {
+#@@PAX_OP local_iso8601_now
         $impl = sub {
             require POSIX;
             my @t = localtime();
             return POSIX::strftime('%Y-%m-%dT%H:%M:%S%z', @t);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_new_from_all_folders') {
+#@@PAX_OP collector_new_from_all_folders
         $impl = sub {
             my ($class) = @_;
             require __PAX_RUNTIME_LEGACY_NAMESPACE__::PathRegistry;
@@ -7279,9 +7232,7 @@ PERL_EVAL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_paths') {
+#@@PAX_OP collector_paths
         $impl = sub {
             my ($self, $collector_name) = @_;
             my $dir = $self->{paths}->collector_dir($collector_name);
@@ -7297,9 +7248,7 @@ PERL_EVAL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_write_job') {
+#@@PAX_OP collector_write_job
         my $collector_paths_method = $sub->{collector_paths_method} // die 'compiled sub collector-paths method missing';
         my $write_json_method = $sub->{write_json_method} // die 'compiled sub write-json method missing';
         $impl = sub {
@@ -7308,17 +7257,13 @@ PERL_EVAL
             return _code_for($write_json_method)->($self, $paths->{job}, $job);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_file_candidates') {
+#@@PAX_OP collector_file_candidates
         $impl = sub {
             my ($self, $collector_name, $filename) = @_;
             return map { File::Spec->catfile($_, $collector_name, $filename) } $self->{paths}->collectors_roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_read_job') {
+#@@PAX_OP collector_read_job
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file-candidates method missing';
         $impl = sub {
             my ($self, $collector_name) = @_;
@@ -7331,9 +7276,7 @@ PERL_EVAL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_read_status') {
+#@@PAX_OP collector_read_status
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file-candidates method missing';
         $impl = sub {
             my ($self, $collector_name) = @_;
@@ -7348,9 +7291,7 @@ PERL_EVAL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_first_existing_text_file') {
+#@@PAX_OP collector_first_existing_text_file
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file-candidates method missing';
         my $slurp_method = $sub->{slurp_method} // die 'compiled sub slurp method missing';
         $impl = sub {
@@ -7361,9 +7302,7 @@ PERL_EVAL
             return '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_read_output') {
+#@@PAX_OP collector_read_output
         my $first_text_method = $sub->{first_text_method} // die 'compiled sub first-text method missing';
         $impl = sub {
             my ($self, $collector_name) = @_;
@@ -7377,9 +7316,7 @@ PERL_EVAL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_exists') {
+#@@PAX_OP collector_exists
         $impl = sub {
             my ($self, $collector_name) = @_;
             die 'Missing collector name' if !defined $collector_name || $collector_name eq '';
@@ -7389,9 +7326,7 @@ PERL_EVAL
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_log_payload_present') {
+#@@PAX_OP collector_log_payload_present
         $impl = sub {
             my ($self, $status, $output) = @_;
             return 1 if grep { defined && $_ ne '' } map { $output->{$_} } qw(stdout stderr combined last_run);
@@ -7399,9 +7334,7 @@ PERL_EVAL
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_format_log_entry') {
+#@@PAX_OP collector_format_log_entry
         my $trailing_newline_method = $sub->{trailing_newline_method} // die 'compiled sub trailing-newline method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -7425,9 +7358,7 @@ PERL_EVAL
             return join '', @chunks;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_append_log_entry') {
+#@@PAX_OP collector_append_log_entry
         my $collector_paths_method = $sub->{collector_paths_method} // die 'compiled sub collector-paths method missing';
         my $format_method = $sub->{format_method} // die 'compiled sub format method missing';
         $impl = sub {
@@ -7452,9 +7383,7 @@ PERL_EVAL
             return $paths->{log};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_write_result') {
+#@@PAX_OP collector_write_result
         my $collector_paths_method = $sub->{collector_paths_method} // die 'compiled sub collector-paths method missing';
         my $read_status_method = $sub->{read_status_method} // die 'compiled sub read-status method missing';
         my $write_text_method = $sub->{write_text_method} // die 'compiled sub write-text method missing';
@@ -7503,9 +7432,7 @@ PERL_EVAL
             return $written;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_write_status') {
+#@@PAX_OP collector_write_status
         my $collector_paths_method = $sub->{collector_paths_method} // die 'compiled sub collector-paths method missing';
         my $read_status_method = $sub->{read_status_method} // die 'compiled sub read-status method missing';
         my $write_json_method = $sub->{write_json_method} // die 'compiled sub write-json method missing';
@@ -7522,9 +7449,7 @@ PERL_EVAL
             return _code_for($write_json_method)->($self, $paths->{status}, \%merged);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_render_latest_log_entry') {
+#@@PAX_OP collector_render_latest_log_entry
         my $exists_method = $sub->{exists_method} // die 'compiled sub exists method missing';
         my $read_status_method = $sub->{read_status_method} // die 'compiled sub read-status method missing';
         my $read_output_method = $sub->{read_output_method} // die 'compiled sub read-output method missing';
@@ -7548,9 +7473,7 @@ PERL_EVAL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_read_log') {
+#@@PAX_OP collector_read_log
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file-candidates method missing';
         my $slurp_method = $sub->{slurp_method} // die 'compiled sub slurp method missing';
         my $render_method = $sub->{render_method} // die 'compiled sub render method missing';
@@ -7563,9 +7486,7 @@ PERL_EVAL
             return _code_for($render_method)->($self, $collector_name);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_inspect') {
+#@@PAX_OP collector_inspect
         my $read_job_method = $sub->{read_job_method} // die 'compiled sub read-job method missing';
         my $read_output_method = $sub->{read_output_method} // die 'compiled sub read-output method missing';
         my $read_status_method = $sub->{read_status_method} // die 'compiled sub read-status method missing';
@@ -7578,9 +7499,7 @@ PERL_EVAL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_list') {
+#@@PAX_OP collector_list
         my $read_status_method = $sub->{read_status_method} // die 'compiled sub read-status method missing';
         $impl = sub {
             my ($self) = @_;
@@ -7599,9 +7518,7 @@ PERL_EVAL
             return sort { $a->{name} cmp $b->{name} } values %items;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_normalize_rotation') {
+#@@PAX_OP collector_normalize_rotation
         $impl = sub {
             my ($self, $collector_name, $rotation) = @_;
             return {} if !defined $rotation;
@@ -7631,9 +7548,7 @@ PERL_EVAL
             return \%normalized;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_rotation_retention_seconds') {
+#@@PAX_OP collector_rotation_retention_seconds
         $impl = sub {
             my ($self, $rotation) = @_;
             my %seconds_per_unit = (
@@ -7652,18 +7567,14 @@ PERL_EVAL
             return $seconds;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_split_log_entries') {
+#@@PAX_OP collector_split_log_entries
         $impl = sub {
             my ($self, $text) = @_;
             return () if !defined $text || $text eq '';
             return grep { defined && $_ ne '' } split /(?=^=== collector )/m, $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_entry_timestamp_epoch') {
+#@@PAX_OP collector_entry_timestamp_epoch
         my $to_epoch_method = $sub->{to_epoch_method} // die 'compiled sub to-epoch method missing';
         $impl = sub {
             my ($self, $collector_name, $entry) = @_;
@@ -7672,9 +7583,7 @@ PERL_EVAL
             return _code_for($to_epoch_method)->($self, $timestamp);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_trim_log_by_age') {
+#@@PAX_OP collector_trim_log_by_age
         my $split_method = $sub->{split_method} // die 'compiled sub split method missing';
         my $entry_epoch_method = $sub->{entry_epoch_method} // die 'compiled sub entry-epoch method missing';
         $impl = sub {
@@ -7691,9 +7600,7 @@ PERL_EVAL
             return join '', @kept;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_trim_log_by_lines') {
+#@@PAX_OP collector_trim_log_by_lines
         $impl = sub {
             my ($self, $text, $lines) = @_;
             return $text if $text eq '';
@@ -7705,9 +7612,7 @@ PERL_EVAL
             return join("\n", @parts) . ($has_trailing_newline ? "\n" : '');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_apply_log_rotation') {
+#@@PAX_OP collector_apply_log_rotation
         my $retention_method = $sub->{retention_method} // die 'compiled sub retention method missing';
         my $trim_age_method = $sub->{trim_age_method} // die 'compiled sub trim-age method missing';
         my $trim_lines_method = $sub->{trim_lines_method} // die 'compiled sub trim-lines method missing';
@@ -7730,9 +7635,7 @@ PERL_EVAL
             return $rotated;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_rotate_log') {
+#@@PAX_OP collector_rotate_log
         my $normalize_method = $sub->{normalize_method} // die 'compiled sub normalize method missing';
         my $collector_paths_method = $sub->{collector_paths_method} // die 'compiled sub collector-paths method missing';
         my $slurp_method = $sub->{slurp_method} // die 'compiled sub slurp method missing';
@@ -7765,9 +7668,7 @@ PERL_EVAL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_new') {
+#@@PAX_OP config_new
         $impl = sub {
             my ($class, %args) = @_;
             my $files = $args{files} || die 'Missing file registry';
@@ -7779,25 +7680,19 @@ PERL_EVAL
             }, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_global_config_file') {
+#@@PAX_OP config_global_config_file
         $impl = sub {
             my ($self) = @_;
             return File::Spec->catfile($self->{paths}->config_root, 'config.json');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_global_config_files') {
+#@@PAX_OP config_global_config_files
         $impl = sub {
             my ($self) = @_;
             return map { File::Spec->catfile($_, 'config.json') } $self->{paths}->config_roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_merge_named_hash_item') {
+#@@PAX_OP config_merge_named_hash_item
         my $merge_hashes_method = $sub->{merge_hashes_method} // die 'compiled sub merge-hashes method missing';
         $impl = sub {
             my ($self, $left, $right) = @_;
@@ -7805,9 +7700,7 @@ PERL_EVAL
             return _code_for($merge_hashes_method)->($self, $left, $right);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_merge_named_hash_array') {
+#@@PAX_OP config_merge_named_hash_array
         my $merge_item_method = $sub->{merge_item_method} // die 'compiled sub merge-item method missing';
         $impl = sub {
             my ($self, $left, $right, $identity_key) = @_;
@@ -7836,9 +7729,7 @@ PERL_EVAL
             return \@merged;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_merge_hashes') {
+#@@PAX_OP config_merge_hashes
         my $merge_named_array_method = $sub->{merge_named_array_method} // die 'compiled sub merge-named-array method missing';
         $impl = sub {
             my ($self, $left, $right) = @_;
@@ -7865,9 +7756,7 @@ PERL_EVAL
             return \%merged;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_load_global') {
+#@@PAX_OP config_load_global
         my $global_files_method = $sub->{global_files_method} // die 'compiled sub global-files method missing';
         my $skill_fragments_method = $sub->{skill_fragments_method} // die 'compiled sub skill-fragments method missing';
         my $merge_hashes_method = $sub->{merge_hashes_method} // die 'compiled sub merge-hashes method missing';
@@ -7886,9 +7775,7 @@ PERL_EVAL
             return $merged;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_save_global') {
+#@@PAX_OP config_save_global
         my $file_method = $sub->{file_method} // die 'compiled sub file method missing';
         $impl = sub {
             my ($self, $config) = @_;
@@ -7900,9 +7787,7 @@ PERL_EVAL
             return $file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_load_writable_global') {
+#@@PAX_OP config_load_writable_global
         my $file_method = $sub->{file_method} // die 'compiled sub file method missing';
         $impl = sub {
             my ($self) = @_;
@@ -7913,9 +7798,7 @@ PERL_EVAL
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_decode(<$fh>);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_save_global_defaults') {
+#@@PAX_OP config_save_global_defaults
         my $load_writable_method = $sub->{load_writable_method} // die 'compiled sub load-writable method missing';
         my $merge_hashes_method = $sub->{merge_hashes_method} // die 'compiled sub merge-hashes method missing';
         my $save_global_method = $sub->{save_global_method} // die 'compiled sub save-global method missing';
@@ -7927,9 +7810,7 @@ PERL_EVAL
             return _code_for($save_global_method)->($self, $merged);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_ensure_global_file') {
+#@@PAX_OP config_ensure_global_file
         my $file_method = $sub->{file_method} // die 'compiled sub file method missing';
         my $save_global_method = $sub->{save_global_method} // die 'compiled sub save-global method missing';
         $impl = sub {
@@ -7939,9 +7820,7 @@ PERL_EVAL
             return _code_for($save_global_method)->($self, {});
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_load_repo') {
+#@@PAX_OP config_load_repo
         $impl = sub {
             my ($self) = @_;
             $self->{repo_root} = $self->{paths}->current_project_root if !$self->{repo_root};
@@ -7953,9 +7832,7 @@ PERL_EVAL
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_decode(<$fh>);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_merged') {
+#@@PAX_OP config_merged
         my $load_global_method = $sub->{load_global_method} // die 'compiled sub load-global method missing';
         my $load_repo_method = $sub->{load_repo_method} // die 'compiled sub load-repo method missing';
         my $merge_hashes_method = $sub->{merge_hashes_method} // die 'compiled sub merge-hashes method missing';
@@ -7966,9 +7843,7 @@ PERL_EVAL
             return _code_for($merge_hashes_method)->($self, $global, $repo);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_builtin_collectors') {
+#@@PAX_OP config_builtin_collectors
         $impl = sub {
             return [
                 {
@@ -7989,9 +7864,7 @@ PERL
             ];
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_skill_config_entries') {
+#@@PAX_OP config_skill_config_entries
         my $dispatcher_class = $sub->{dispatcher_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::SkillDispatcher';
         $impl = sub {
             my ($self) = @_;
@@ -8012,9 +7885,7 @@ PERL
             return @entries;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_skill_config_fragments') {
+#@@PAX_OP config_skill_config_fragments
         my $entries_method = $sub->{entries_method} // die 'compiled sub entries method missing';
         $impl = sub {
             my ($self) = @_;
@@ -8026,9 +7897,7 @@ PERL
             return @fragments;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_skill_collectors') {
+#@@PAX_OP config_skill_collectors
         my $entries_method = $sub->{entries_method} // die 'compiled sub entries method missing';
         $impl = sub {
             my ($self) = @_;
@@ -8053,9 +7922,7 @@ PERL
             return @jobs;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_collectors') {
+#@@PAX_OP config_collectors
         my $merged_method = $sub->{merged_method} // die 'compiled sub merged method missing';
         my $builtin_collectors_method = $sub->{builtin_collectors_method} // die 'compiled sub builtin-collectors method missing';
         my $merge_named_array_method = $sub->{merge_named_array_method} // die 'compiled sub merge-named-array method missing';
@@ -8075,9 +7942,7 @@ PERL
             return \@jobs;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_normalize_home_path') {
+#@@PAX_OP config_normalize_home_path
         $impl = sub {
             my ($self, $path) = @_;
             return $path if !defined $path || $path eq '';
@@ -8089,9 +7954,7 @@ PERL
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_expand_config_path') {
+#@@PAX_OP config_expand_config_path
         $impl = sub {
             my ($self, $path) = @_;
             return $path if !defined $path || $path eq '';
@@ -8102,9 +7965,7 @@ PERL
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_expand_path_aliases') {
+#@@PAX_OP config_expand_path_aliases
         my $expand_config_path_method = $sub->{expand_config_path_method} // die 'compiled sub expand-config-path method missing';
         $impl = sub {
             my ($self, $aliases) = @_;
@@ -8115,9 +7976,7 @@ PERL
             return \%expanded;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_path_aliases') {
+#@@PAX_OP config_path_aliases
         my $merged_method = $sub->{merged_method} // die 'compiled sub merged method missing';
         my $expand_aliases_method = $sub->{expand_aliases_method} // die 'compiled sub expand-aliases method missing';
         my $key = $sub->{key} // die 'compiled sub alias key missing';
@@ -8128,9 +7987,7 @@ PERL
             return _code_for($expand_aliases_method)->($self, $cfg->{$key});
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_global_aliases') {
+#@@PAX_OP config_global_aliases
         my $load_global_method = $sub->{load_global_method} // die 'compiled sub load-global method missing';
         my $expand_aliases_method = $sub->{expand_aliases_method} // die 'compiled sub expand-aliases method missing';
         my $key = $sub->{key} // die 'compiled sub alias key missing';
@@ -8141,9 +7998,7 @@ PERL
             return _code_for($expand_aliases_method)->($self, $cfg->{$key});
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_web_workers') {
+#@@PAX_OP config_web_workers
         my $merged_method = $sub->{merged_method} // die 'compiled sub merged method missing';
         $impl = sub {
             my ($self) = @_;
@@ -8155,9 +8010,7 @@ PERL
             return $workers + 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_normalize_ssl_subject_alt_names') {
+#@@PAX_OP config_normalize_ssl_subject_alt_names
         $impl = sub {
             my ($self, $names) = @_;
             return [] if ref($names) ne 'ARRAY';
@@ -8173,9 +8026,7 @@ PERL
             return \@normalized;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_save_global_web_workers') {
+#@@PAX_OP config_save_global_web_workers
         my $load_writable_method = $sub->{load_writable_method} // die 'compiled sub load-writable method missing';
         my $save_global_method = $sub->{save_global_method} // die 'compiled sub save-global method missing';
         $impl = sub {
@@ -8189,9 +8040,7 @@ PERL
             return { workers => $workers + 0 };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_web_settings') {
+#@@PAX_OP config_web_settings
         my $merged_method = $sub->{merged_method} // die 'compiled sub merged method missing';
         my $normalize_san_method = $sub->{normalize_san_method} // die 'compiled sub normalize-san method missing';
         $impl = sub {
@@ -8209,9 +8058,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_save_global_web_settings') {
+#@@PAX_OP config_save_global_web_settings
         my $load_writable_method = $sub->{load_writable_method} // die 'compiled sub load-writable method missing';
         my $save_global_method = $sub->{save_global_method} // die 'compiled sub save-global method missing';
         my $normalize_san_method = $sub->{normalize_san_method} // die 'compiled sub normalize-san method missing';
@@ -8253,9 +8100,7 @@ PERL
             return $result;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_save_global_alias') {
+#@@PAX_OP config_save_global_alias
         my $alias_key = $sub->{alias_key} // die 'compiled sub alias-key missing';
         my $kind = $sub->{kind} // 'path';
         my $load_writable_method = $sub->{load_writable_method} // die 'compiled sub load-writable method missing';
@@ -8277,9 +8122,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_remove_global_alias') {
+#@@PAX_OP config_remove_global_alias
         my $alias_key = $sub->{alias_key} // die 'compiled sub alias-key missing';
         my $kind = $sub->{kind} // 'path';
         my $load_writable_method = $sub->{load_writable_method} // die 'compiled sub load-writable method missing';
@@ -8297,9 +8140,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_docker_config') {
+#@@PAX_OP config_docker_config
         my $merged_method = $sub->{merged_method} // die 'compiled sub merged method missing';
         $impl = sub {
             my ($self) = @_;
@@ -8308,9 +8149,7 @@ PERL
             return { %{ $cfg->{docker} } };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'config_providers') {
+#@@PAX_OP config_providers
         my $merged_method = $sub->{merged_method} // die 'compiled sub merged method missing';
         $impl = sub {
             my ($self) = @_;
@@ -8320,9 +8159,7 @@ PERL
             return \@providers;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_new') {
+#@@PAX_OP skill_dispatcher_new
         my $skill_manager_class = $sub->{skill_manager_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::SkillManager';
         $impl = sub {
             my ($class, %args) = @_;
@@ -8330,9 +8167,7 @@ PERL
             return bless { manager => $manager }, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_arrayref_or_empty') {
+#@@PAX_OP skill_dispatcher_arrayref_or_empty
         $impl = sub {
             my ($self, $value) = @_;
             return $value if ref($value) eq 'ARRAY';
@@ -8341,9 +8176,7 @@ PERL
             return $empty;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_hashref_or_empty') {
+#@@PAX_OP skill_dispatcher_hashref_or_empty
         $impl = sub {
             my ($self, $value) = @_;
             return $value if ref($value) eq 'HASH';
@@ -8352,17 +8185,13 @@ PERL
             return $empty;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_defined_or_default') {
+#@@PAX_OP skill_dispatcher_defined_or_default
         $impl = sub {
             my ($self, $value, $default) = @_;
             return defined $value ? $value : $default;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_merge_array_items_by_identity') {
+#@@PAX_OP skill_dispatcher_merge_array_items_by_identity
         my $arrayref_or_empty_method = $sub->{arrayref_or_empty_method} // die 'compiled sub arrayref method missing';
         $impl = sub {
             my ($self, $left_items, $right_items, $field) = @_;
@@ -8393,9 +8222,7 @@ PERL
             return \@combined;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_skill_layers') {
+#@@PAX_OP skill_dispatcher_skill_layers
         $impl = sub {
             my ($self, $skill_name, %args) = @_;
             return () if !$skill_name;
@@ -8405,18 +8232,14 @@ PERL
             return ($skill_path);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_skill_lookup_roots') {
+#@@PAX_OP skill_dispatcher_skill_lookup_roots
         my $skill_layers_method = $sub->{skill_layers_method} // die 'compiled sub skill-layers method missing';
         $impl = sub {
             my ($self, $skill_name, %args) = @_;
             return reverse _code_for($skill_layers_method)->($self, $skill_name, %args);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_command_root_specs') {
+#@@PAX_OP skill_dispatcher_command_root_specs
         $impl = sub {
             my ($self, $segments) = @_;
             my @segments = @{ $segments || [] };
@@ -8434,9 +8257,7 @@ PERL
             return @specs;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_nested_skill_path') {
+#@@PAX_OP skill_dispatcher_nested_skill_path
         $impl = sub {
             my ($self, $skill_path, $nested_segments) = @_;
             my @segments = @{ $nested_segments || [] };
@@ -8448,9 +8269,7 @@ PERL
             return File::Spec->catdir(@parts);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_page_location') {
+#@@PAX_OP skill_dispatcher_page_location
         my $skill_lookup_roots_method = $sub->{skill_lookup_roots_method} // die 'compiled sub skill-lookup-roots method missing';
         $impl = sub {
             my ($self, $skill_name, $route_id) = @_;
@@ -8462,9 +8281,7 @@ PERL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_skill_bookmark_entries') {
+#@@PAX_OP skill_dispatcher_skill_bookmark_entries
         my $skill_lookup_roots_method = $sub->{skill_lookup_roots_method} // die 'compiled sub skill-lookup-roots method missing';
         $impl = sub {
             my ($self, $skill_name) = @_;
@@ -8486,9 +8303,7 @@ PERL
             return sort keys %entries;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_skill_nav_route_ids') {
+#@@PAX_OP skill_dispatcher_skill_nav_route_ids
         my $skill_lookup_roots_method = $sub->{skill_lookup_roots_method} // die 'compiled sub skill-lookup-roots method missing';
         $impl = sub {
             my ($self, $skill_name) = @_;
@@ -8508,9 +8323,7 @@ PERL
             return %routes;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_merge_skill_hashes') {
+#@@PAX_OP skill_dispatcher_merge_skill_hashes
         my $merge_array_items_method = $sub->{merge_array_items_method} // die 'compiled sub merge-array-items method missing';
         $impl = sub {
             my ($self, $left, $right) = @_;
@@ -8537,9 +8350,7 @@ PERL
             return \%merged;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_get_skill_config') {
+#@@PAX_OP skill_dispatcher_get_skill_config
         my $skill_layers_method = $sub->{skill_layers_method} // die 'compiled sub skill-layers method missing';
         my $merge_skill_hashes_method = $sub->{merge_skill_hashes_method} // die 'compiled sub merge-skill-hashes method missing';
         $impl = sub {
@@ -8561,9 +8372,7 @@ PERL
             return $merged;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_config_fragment') {
+#@@PAX_OP skill_dispatcher_config_fragment
         my $get_skill_config_method = $sub->{get_skill_config_method} // die 'compiled sub get-skill-config method missing';
         $impl = sub {
             my ($self, $skill_name) = @_;
@@ -8573,18 +8382,14 @@ PERL
             return { '_' . $skill_name => $config };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_get_skill_path') {
+#@@PAX_OP skill_dispatcher_get_skill_path
         $impl = sub {
             my ($self, $skill_name) = @_;
             return if !$skill_name;
             return $self->{manager}->get_skill_path($skill_name);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_command_spec') {
+#@@PAX_OP skill_dispatcher_command_spec
         my $command_root_specs_method = $sub->{command_root_specs_method} // die 'compiled sub command-root-specs method missing';
         my $skill_layers_method = $sub->{skill_layers_method} // die 'compiled sub skill-layers method missing';
         my $nested_skill_path_method = $sub->{nested_skill_path_method} // die 'compiled sub nested-skill-path method missing';
@@ -8620,9 +8425,7 @@ PERL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_command_path') {
+#@@PAX_OP skill_dispatcher_command_path
         my $command_spec_method = $sub->{command_spec_method} // die 'compiled sub command-spec method missing';
         $impl = sub {
             my ($self, $skill_name, $command) = @_;
@@ -8631,9 +8434,7 @@ PERL
             return $command_spec ? $command_spec->{cmd_path} : undef;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_command_spec_public') {
+#@@PAX_OP skill_dispatcher_command_spec_public
         my $command_spec_method = $sub->{command_spec_method} // die 'compiled sub command-spec method missing';
         $impl = sub {
             my ($self, $skill_name, $command) = @_;
@@ -8641,9 +8442,7 @@ PERL
             return _code_for($command_spec_method)->($self, $skill_name, $command);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_command_hook_paths') {
+#@@PAX_OP skill_dispatcher_command_hook_paths
         my $command_spec_method = $sub->{command_spec_method} // die 'compiled sub command-spec method missing';
         $impl = sub {
             my ($self, $skill_name, $command) = @_;
@@ -8667,9 +8466,7 @@ PERL
             return @hooks;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_append_error_text') {
+#@@PAX_OP collector_runner_append_error_text
         $impl = sub {
             my ($self, $stderr, $error) = @_;
             $stderr = '' if !defined $stderr;
@@ -8679,9 +8476,7 @@ PERL
             return $stderr . $error . "\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_new') {
+#@@PAX_OP collector_runner_new
         $impl = sub {
             my ($class, %args) = @_;
             my $collectors = $args{collectors} || die 'Missing collector store';
@@ -8695,9 +8490,7 @@ PERL
             }, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_run_once') {
+#@@PAX_OP collector_runner_run_once
         my $collector_source_method = $sub->{collector_source_method} // die 'compiled sub collector-source method missing';
         my $run_job_method = $sub->{run_job_method} // die 'compiled sub run-job method missing';
         my $materialize_indicator_state_method = $sub->{materialize_indicator_state_method} // die 'compiled sub materialize-indicator-state method missing';
@@ -8785,9 +8578,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_materialize_indicator_state') {
+#@@PAX_OP collector_runner_materialize_indicator_state
         my $render_icon_template_method = $sub->{render_icon_template_method} // die 'compiled sub render-icon-template method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -8805,9 +8596,7 @@ PERL
             return \%materialized;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_render_indicator_icon_template') {
+#@@PAX_OP collector_runner_render_indicator_icon_template
         my $indicator_template_vars_method = $sub->{indicator_template_vars_method} // die 'compiled sub indicator-template-vars method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -8825,9 +8614,7 @@ PERL
             return $rendered;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_indicator_template_vars') {
+#@@PAX_OP collector_runner_indicator_template_vars
         $impl = sub {
             my ($self, %args) = @_;
             my $collector_name = $args{collector_name} || die 'Missing collector name';
@@ -8845,9 +8632,7 @@ PERL
             return \%vars;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_source') {
+#@@PAX_OP collector_runner_source
         $impl = sub {
             my ($self, $job) = @_;
             return ('command', $job->{command}) if defined $job->{command} && $job->{command} ne '';
@@ -8856,9 +8641,7 @@ PERL
             die "Collector '$job_name' missing command or code";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_run_job') {
+#@@PAX_OP collector_runner_run_job
         my $run_command_method = $sub->{run_command_method} // die 'compiled sub run-command method missing';
         my $run_code_method = $sub->{run_code_method} // die 'compiled sub run-code method missing';
         $impl = sub {
@@ -8869,9 +8652,7 @@ PERL
             die "Unknown collector mode '$mode'";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_start_loop') {
+#@@PAX_OP collector_runner_start_loop
         my $pidfile_method = $sub->{pidfile_method} // die 'compiled sub pidfile method missing';
         my $process_title_method = $sub->{process_title_method} // die 'compiled sub process-title method missing';
         my $is_managed_loop_method = $sub->{is_managed_loop_method} // die 'compiled sub is-managed-loop method missing';
@@ -8934,14 +8715,10 @@ PERL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_fork_process') {
+#@@PAX_OP collector_runner_fork_process
         $impl = sub { return fork(); };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_run_loop_child') {
+#@@PAX_OP collector_runner_run_loop_child
         my $process_title_method = $sub->{process_title_method} // die 'compiled sub process-title method missing';
         my $scrub_coverage_method = $sub->{scrub_coverage_method} // die 'compiled sub scrub-coverage method missing';
         my $write_loop_state_method = $sub->{write_loop_state_method} // die 'compiled sub write-loop-state method missing';
@@ -9009,9 +8786,7 @@ PERL
             }
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_stop_loop') {
+#@@PAX_OP collector_runner_stop_loop
         my $pidfile_method = $sub->{pidfile_method} // die 'compiled sub pidfile method missing';
         my $is_managed_loop_method = $sub->{is_managed_loop_method} // die 'compiled sub is-managed-loop method missing';
         my $cleanup_loop_files_method = $sub->{cleanup_loop_files_method} // die 'compiled sub cleanup-loop-files method missing';
@@ -9034,9 +8809,7 @@ PERL
             return $pid;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_running_loops') {
+#@@PAX_OP collector_runner_running_loops
         my $is_managed_loop_method = $sub->{is_managed_loop_method} // die 'compiled sub is-managed-loop method missing';
         my $cleanup_loop_files_method = $sub->{cleanup_loop_files_method} // die 'compiled sub cleanup-loop-files method missing';
         my $loop_state_method = $sub->{loop_state_method} // die 'compiled sub loop-state method missing';
@@ -9064,14 +8837,10 @@ PERL
             return @running;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_sort_loop_names') {
+#@@PAX_OP collector_runner_sort_loop_names
         $impl = sub { return $a->{name} cmp $b->{name}; };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_loop_state') {
+#@@PAX_OP collector_runner_loop_state
         my $statefile_method = $sub->{statefile_method} // die 'compiled sub statefile method missing';
         $impl = sub {
             my ($self, $name) = @_;
@@ -9082,33 +8851,25 @@ PERL
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_decode(scalar <$fh>);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_pidfile') {
+#@@PAX_OP collector_runner_pidfile
         $impl = sub {
             my ($self, $name) = @_;
             return File::Spec->catfile($self->{paths}->collectors_root, "$name.pid");
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_statefile') {
+#@@PAX_OP collector_runner_statefile
         $impl = sub {
             my ($self, $name) = @_;
             return File::Spec->catfile($self->{paths}->collector_dir($name), 'loop.json');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_process_title') {
+#@@PAX_OP collector_runner_process_title
         $impl = sub {
             my ($self, $name) = @_;
             return "dashboard collector: $name";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_read_proc_file') {
+#@@PAX_OP collector_runner_read_proc_file
         $impl = sub {
             my ($self, $file) = @_;
             return if !-r $file;
@@ -9117,9 +8878,7 @@ PERL
             return scalar <$fh>;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_read_process_env_marker') {
+#@@PAX_OP collector_runner_read_process_env_marker
         $impl = sub {
             my ($self, $pid, $key) = @_;
             my $proc = "/proc/$pid/environ";
@@ -9135,9 +8894,7 @@ PERL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_read_process_title') {
+#@@PAX_OP collector_runner_read_process_title
         my $read_proc_method = $sub->{read_proc_method} // die 'compiled sub read-proc method missing';
         $impl = sub {
             my ($self, $pid) = @_;
@@ -9155,9 +8912,7 @@ PERL
             return $title;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_is_managed_loop') {
+#@@PAX_OP collector_runner_is_managed_loop
         my $read_env_marker_method = $sub->{read_env_marker_method} // die 'compiled sub read-env-marker method missing';
         my $read_title_method = $sub->{read_title_method} // die 'compiled sub read-title method missing';
         my $process_title_method = $sub->{process_title_method} // die 'compiled sub process-title method missing';
@@ -9171,9 +8926,7 @@ PERL
             return $title eq _code_for($process_title_method)->($self, $name) ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_write_loop_state') {
+#@@PAX_OP collector_runner_write_loop_state
         my $statefile_method = $sub->{statefile_method} // die 'compiled sub statefile method missing';
         my $loop_state_method = $sub->{loop_state_method} // die 'compiled sub loop-state method missing';
         $impl = sub {
@@ -9191,9 +8944,7 @@ PERL
             return \%state;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_cleanup_loop_files') {
+#@@PAX_OP collector_runner_cleanup_loop_files
         my $pidfile_method = $sub->{pidfile_method} // die 'compiled sub pidfile method missing';
         my $statefile_method = $sub->{statefile_method} // die 'compiled sub statefile method missing';
         $impl = sub {
@@ -9205,9 +8956,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_scrub_coverage_environment') {
+#@@PAX_OP collector_runner_scrub_coverage_environment
         my $coverage_active_method = $sub->{coverage_active_method} // die 'compiled sub coverage-active method missing';
         $impl = sub {
             my ($self) = @_;
@@ -9216,18 +8965,14 @@ PERL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_coverage_instrumentation_active') {
+#@@PAX_OP collector_runner_coverage_instrumentation_active
         $impl = sub {
             my ($self) = @_;
             my $perl5opt = join ' ', grep { defined && $_ ne '' } @ENV{qw(PERL5OPT HARNESS_PERL_SWITCHES)};
             return $perl5opt =~ /Devel::Cover/ ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_job_is_due') {
+#@@PAX_OP collector_runner_job_is_due
         my $cron_due_method = $sub->{cron_due_method} // die 'compiled sub cron-due method missing';
         $impl = sub {
             my ($self, $job, $name) = @_;
@@ -9237,9 +8982,7 @@ PERL
             return _code_for($cron_due_method)->($self, $job->{cron}, $name);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_cron_match') {
+#@@PAX_OP collector_runner_cron_match
         $impl = sub {
             my ($spec, $value) = @_;
             return 1 if !defined $spec || $spec eq '*' || $spec eq '';
@@ -9255,9 +8998,7 @@ PERL
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_cron_due') {
+#@@PAX_OP collector_runner_cron_due
         my $loop_state_method = $sub->{loop_state_method} // die 'compiled sub loop-state method missing';
         my $write_loop_state_method = $sub->{write_loop_state_method} // die 'compiled sub write-loop-state method missing';
         my $cron_match_method = $sub->{cron_match_method} // die 'compiled sub cron-match method missing';
@@ -9280,9 +9021,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_run_command') {
+#@@PAX_OP collector_runner_run_command
         $impl = sub {
             my ($self, %args) = @_;
             my $cmd = $args{source};
@@ -9313,9 +9052,7 @@ PERL
             return ($stdout, $stderr, $exit_code, $timed_out);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_run_code') {
+#@@PAX_OP collector_runner_run_code
         $impl = sub {
             my ($self, %args) = @_;
             my $code = $args{source};
@@ -9349,9 +9086,7 @@ PERL
             return ($stdout, $stderr, $exit_code, $timed_out);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_shutdown_loop') {
+#@@PAX_OP collector_runner_shutdown_loop
         my $write_loop_state_method = $sub->{write_loop_state_method} // die 'compiled sub write-loop-state method missing';
         my $process_title_method = $sub->{process_title_method} // die 'compiled sub process-title method missing';
         my $cleanup_loop_files_method = $sub->{cleanup_loop_files_method} // die 'compiled sub cleanup-loop-files method missing';
@@ -9369,9 +9104,7 @@ PERL
             exit 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'collector_runner_signal_stop') {
+#@@PAX_OP collector_runner_signal_stop
         $impl = sub {
             $__PAX_RUNTIME_LEGACY_NAMESPACE__::CollectorRunner::SIGNAL_RUNNER->_shutdown_loop(
                 $__PAX_RUNTIME_LEGACY_NAMESPACE__::CollectorRunner::SIGNAL_LOOP_NAME,
@@ -9379,9 +9112,7 @@ PERL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_dispatch') {
+#@@PAX_OP skill_dispatcher_dispatch
         my $command_spec_method = $sub->{command_spec_method} // die 'compiled sub command-spec method missing';
         my $execute_hooks_method = $sub->{execute_hooks_method} // die 'compiled sub execute-hooks method missing';
         my $skill_layers_method = $sub->{skill_layers_method} // die 'compiled sub skill-layers method missing';
@@ -9432,9 +9163,7 @@ PERL
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_exec_command') {
+#@@PAX_OP skill_dispatcher_exec_command
         my $command_spec_method = $sub->{command_spec_method} // die 'compiled sub command-spec method missing';
         my $execute_hooks_streaming_method = $sub->{execute_hooks_streaming_method} // die 'compiled sub execute-hooks-streaming method missing';
         my $skill_layers_method = $sub->{skill_layers_method} // die 'compiled sub skill-layers method missing';
@@ -9476,9 +9205,7 @@ PERL
             return _code_for($exec_resolved_method)->($self, $cmd_path, \@command, \@args);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_execute_hooks') {
+#@@PAX_OP skill_dispatcher_execute_hooks
         my $command_spec_method = $sub->{command_spec_method} // die 'compiled sub command-spec method missing';
         my $skill_layers_method = $sub->{skill_layers_method} // die 'compiled sub skill-layers method missing';
         my $skill_env_method = $sub->{skill_env_method} // die 'compiled sub skill-env method missing';
@@ -9537,9 +9264,7 @@ PERL
             return \%payload;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_execute_hooks_streaming') {
+#@@PAX_OP skill_dispatcher_execute_hooks_streaming
         my $arrayref_or_empty_method = $sub->{arrayref_or_empty_method} // die 'compiled sub arrayref-or-empty method missing';
         my $skill_env_method = $sub->{skill_env_method} // die 'compiled sub skill-env method missing';
         my $run_child_streaming_method = $sub->{run_child_streaming_method} // die 'compiled sub child-streaming method missing';
@@ -9600,9 +9325,7 @@ PERL
             return \%payload;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_run_child_command_streaming') {
+#@@PAX_OP skill_dispatcher_run_child_command_streaming
         my $arrayref_or_empty_method = $sub->{arrayref_or_empty_method} // die 'compiled sub arrayref-or-empty method missing';
         my $hashref_or_empty_method = $sub->{hashref_or_empty_method} // die 'compiled sub hashref-or-empty method missing';
         my $defined_or_default_method = $sub->{defined_or_default_method} // die 'compiled sub defined-or-default method missing';
@@ -9669,9 +9392,7 @@ PERL
             return { stdout => $stdout_text, stderr => $stderr_text, exit_code => $? >> 8 };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_exec_resolved_command') {
+#@@PAX_OP skill_dispatcher_exec_resolved_command
         my $arrayref_or_empty_method = $sub->{arrayref_or_empty_method} // die 'compiled sub arrayref-or-empty method missing';
         my $exec_replacement_method = $sub->{exec_replacement_method} // die 'compiled sub exec-replacement method missing';
         $impl = sub {
@@ -9684,9 +9405,7 @@ PERL
             }
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_exec_replacement') {
+#@@PAX_OP skill_dispatcher_exec_replacement
         $impl = sub {
             my ($self, $command, $args) = @_;
             my @command = @{ ref($command) eq 'ARRAY' ? $command : [] };
@@ -9697,9 +9416,7 @@ PERL
             }
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_route_response') {
+#@@PAX_OP skill_dispatcher_route_response
         my $skill_layers_method = $sub->{skill_layers_method} // die 'compiled sub skill-layers method missing';
         my $bookmark_entries_method = $sub->{bookmark_entries_method} // die 'compiled sub bookmark entries method missing';
         my $page_response_method = $sub->{page_response_method} // die 'compiled sub page response method missing';
@@ -9726,9 +9443,7 @@ PERL
             return _code_for($page_response_method)->(%args, skill_name => $skill_name, route_id => $route_id);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_skill_nav_pages') {
+#@@PAX_OP skill_dispatcher_skill_nav_pages
         my $route_ids_method = $sub->{route_ids_method} // die 'compiled sub route ids method missing';
         my $load_skill_page_method = $sub->{load_skill_page_method} // die 'compiled sub load skill page method missing';
         $impl = sub {
@@ -9743,9 +9458,7 @@ PERL
             return \@pages;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_all_skill_nav_pages') {
+#@@PAX_OP skill_dispatcher_all_skill_nav_pages
         my $skill_nav_pages_method = $sub->{skill_nav_pages_method} // die 'compiled sub skill-nav-pages method missing';
         $impl = sub {
             my ($self) = @_;
@@ -9758,9 +9471,7 @@ PERL
             return \@pages;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_skill_page_response') {
+#@@PAX_OP skill_dispatcher_skill_page_response
         my $load_skill_page_method = $sub->{load_skill_page_method} // die 'compiled sub load skill page method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -9787,9 +9498,7 @@ PERL
             return $app->_page_response($page, 'render');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_load_skill_page') {
+#@@PAX_OP skill_dispatcher_load_skill_page
         my $page_location_method = $sub->{page_location_method} // die 'compiled sub page-location method missing';
         my $page_class = $sub->{page_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument';
         $impl = sub {
@@ -9821,9 +9530,7 @@ PERL
             return $page;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skill_dispatcher_skill_env') {
+#@@PAX_OP skill_dispatcher_skill_env
         $impl = sub {
             my ($self, %args) = @_;
             my $skill_path = $args{skill_path} || die 'Missing skill path';
@@ -9859,25 +9566,19 @@ PERL
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'session_file_path') {
+#@@PAX_OP session_file_path
         $impl = sub {
             my ($self, $session_id) = @_;
             return File::Spec->catfile($self->{paths}->sessions_root, "$session_id.json");
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'session_file_candidates') {
+#@@PAX_OP session_file_candidates
         $impl = sub {
             my ($self, $session_id) = @_;
             return map { File::Spec->catfile($_, "$session_id.json") } $self->{paths}->sessions_roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'session_create') {
+#@@PAX_OP session_create
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
         my $after_method = $sub->{after_method} // die 'compiled sub after method missing';
         my $file_method = $sub->{file_method} // die 'compiled sub file method missing';
@@ -9905,9 +9606,7 @@ PERL
             return $record;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'session_get') {
+#@@PAX_OP session_get
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file candidates method missing';
         $impl = sub {
             my ($self, $session_id) = @_;
@@ -9921,9 +9620,7 @@ PERL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'session_delete') {
+#@@PAX_OP session_delete
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file candidates method missing';
         $impl = sub {
             my ($self, $session_id) = @_;
@@ -9932,9 +9629,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'session_from_cookie') {
+#@@PAX_OP session_from_cookie
         my $get_method = $sub->{get_method} // die 'compiled sub get method missing';
         my $delete_method = $sub->{delete_method} // die 'compiled sub delete method missing';
         my $to_epoch_method = $sub->{to_epoch_method} // die 'compiled sub to_epoch method missing';
@@ -9958,9 +9653,7 @@ PERL
             return $session;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_user_file_path') {
+#@@PAX_OP auth_user_file_path
         $impl = sub {
             my ($self, $username) = @_;
             my $safe = $username;
@@ -9968,9 +9661,7 @@ PERL
             return File::Spec->catfile($self->{paths}->users_root, "$safe.json");
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_user_file_candidates') {
+#@@PAX_OP auth_user_file_candidates
         $impl = sub {
             my ($self, $username) = @_;
             my $safe = $username;
@@ -9978,18 +9669,14 @@ PERL
             return map { File::Spec->catfile($_, "$safe.json") } $self->{paths}->users_roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_password_hash') {
+#@@PAX_OP auth_password_hash
         $impl = sub {
             require Digest::SHA;
             my ($self, $username, $password, $salt) = @_;
             return Digest::SHA::sha256_hex(join ':', $salt, $username, $password);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_add_user') {
+#@@PAX_OP auth_add_user
         my $file_method = $sub->{file_method} // die 'compiled sub file method missing';
         my $hash_method = $sub->{hash_method} // die 'compiled sub hash method missing';
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
@@ -10019,9 +9706,7 @@ PERL
             return $record;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_get_user') {
+#@@PAX_OP auth_get_user
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file candidates method missing';
         $impl = sub {
             my ($self, $username) = @_;
@@ -10034,9 +9719,7 @@ PERL
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_verify_user') {
+#@@PAX_OP auth_verify_user
         my $get_method = $sub->{get_method} // die 'compiled sub get method missing';
         my $hash_method = $sub->{hash_method} // die 'compiled sub hash method missing';
         $impl = sub {
@@ -10049,9 +9732,7 @@ PERL
             return $user;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_list_users') {
+#@@PAX_OP auth_list_users
         my $get_method = $sub->{get_method} // die 'compiled sub get method missing';
         $impl = sub {
             my ($self) = @_;
@@ -10069,9 +9750,7 @@ PERL
             return sort { $a->{username} cmp $b->{username} } values %users;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_remove_user') {
+#@@PAX_OP auth_remove_user
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file candidates method missing';
         $impl = sub {
             my ($self, $username) = @_;
@@ -10079,9 +9758,7 @@ PERL
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_helper_users_enabled') {
+#@@PAX_OP auth_helper_users_enabled
         my $list_method = $sub->{list_method} // die 'compiled sub list method missing';
         $impl = sub {
             my ($self) = @_;
@@ -10089,9 +9766,7 @@ PERL
             return @users ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_canonical_host') {
+#@@PAX_OP auth_canonical_host
         $impl = sub {
             my ($self, $host) = @_;
             return if !defined $host;
@@ -10107,9 +9782,7 @@ PERL
             return lc $host;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_canonical_ip') {
+#@@PAX_OP auth_canonical_ip
         $impl = sub {
             my ($self, $value) = @_;
             return '' if !defined $value;
@@ -10126,9 +9799,7 @@ PERL
             return lc $value;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_ip_is_loopback') {
+#@@PAX_OP auth_ip_is_loopback
         $impl = sub {
             my ($self, $ip) = @_;
             return 0 if !defined $ip || $ip eq '';
@@ -10137,9 +9808,7 @@ PERL
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_resolve_host_ips') {
+#@@PAX_OP auth_resolve_host_ips
         my $canonical_ip_method = $sub->{canonical_ip_method} // die 'compiled sub canonical ip method missing';
         $impl = sub {
             my ($self, $host) = @_;
@@ -10169,9 +9838,7 @@ PERL
             return @ips;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_host_resolves_only_to_loopback') {
+#@@PAX_OP auth_host_resolves_only_to_loopback
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         my $loopback_method = $sub->{loopback_method} // die 'compiled sub loopback method missing';
         $impl = sub {
@@ -10182,9 +9849,7 @@ PERL
             return !grep { !_code_for($loopback_method)->($self, $_) } @ips;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_request_is_loopback_admin') {
+#@@PAX_OP auth_request_is_loopback_admin
         my $canonical_host_method = $sub->{canonical_host_method} // die 'compiled sub canonical host method missing';
         my $loopback_method = $sub->{loopback_method} // die 'compiled sub loopback method missing';
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
@@ -10202,9 +9867,7 @@ PERL
             return _code_for($resolve_method)->($self, $host);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_trust_tier') {
+#@@PAX_OP auth_trust_tier
         my $canonical_ip_method = $sub->{canonical_ip_method} // die 'compiled sub canonical ip method missing';
         my $canonical_host_method = $sub->{canonical_host_method} // die 'compiled sub canonical host method missing';
         my $loopback_admin_method = $sub->{loopback_admin_method} // die 'compiled sub loopback admin method missing';
@@ -10221,9 +9884,7 @@ PERL
             return 'helper';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'auth_login_page') {
+#@@PAX_OP auth_login_page
         $impl = sub {
             my ($self, %args) = @_;
             my $message = $args{message} || 'Helper access requires login.';
@@ -10268,20 +9929,16 @@ PERL
 HTML
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_current') {
+#@@PAX_OP result_current
         $impl = sub {
-            my $json = _result_channel_json('RESULT', 'RESULT_FILE');
+            my $json = _code_for($package . '::_channel_json')->('RESULT', 'RESULT_FILE');
             return {} if !defined $json || $json eq '';
             my $data = JSON::XS::decode_json($json);
             die 'RESULT must decode to a hash' if ref($data) ne 'HASH';
             return $data;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_set_current') {
+#@@PAX_OP result_set_current
         my $clear_method = $sub->{clear_method} // die 'compiled sub clear method missing';
         my $set_channel_method = $sub->{set_channel_method} // die 'compiled sub set channel method missing';
         $impl = sub {
@@ -10291,29 +9948,23 @@ HTML
             return _code_for($set_channel_method)->('RESULT', 'RESULT_FILE', $data, %args);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_clear_current') {
+#@@PAX_OP result_clear_current
         my $clear_channel_method = $sub->{clear_channel_method} // die 'compiled sub clear channel method missing';
         $impl = sub {
             return _code_for($clear_channel_method)->('RESULT', 'RESULT_FILE');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_last_result') {
+#@@PAX_OP result_last_result
         $impl = sub {
             shift if @_ && defined $_[0] && !ref($_[0]) && $_[0] eq $package;
-            my $json = _result_channel_json('LAST_RESULT', 'LAST_RESULT_FILE');
+            my $json = _code_for($package . '::_channel_json')->('LAST_RESULT', 'LAST_RESULT_FILE');
             return if !defined $json || $json eq '';
             my $data = JSON::XS::decode_json($json);
             die 'LAST_RESULT must decode to a hash' if ref($data) ne 'HASH';
             return $data;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_set_last_result') {
+#@@PAX_OP result_set_last_result
         my $clear_method = $sub->{clear_method} // die 'compiled sub clear method missing';
         my $set_channel_method = $sub->{set_channel_method} // die 'compiled sub set channel method missing';
         $impl = sub {
@@ -10324,18 +9975,14 @@ HTML
             return _code_for($set_channel_method)->('LAST_RESULT', 'LAST_RESULT_FILE', $data, %args);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_clear_last_result') {
+#@@PAX_OP result_clear_last_result
         my $clear_channel_method = $sub->{clear_channel_method} // die 'compiled sub clear channel method missing';
         $impl = sub {
             shift if @_ && defined $_[0] && !ref($_[0]) && $_[0] eq $package;
             return _code_for($clear_channel_method)->('LAST_RESULT', 'LAST_RESULT_FILE');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_stop_requested') {
+#@@PAX_OP result_stop_requested
         $impl = sub {
             shift if @_ && defined $_[0] && !ref($_[0]) && $_[0] eq $package;
             my ($value) = @_;
@@ -10351,17 +9998,13 @@ HTML
             return $stderr =~ /\[\[STOP\]\]/ ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_names') {
+#@@PAX_OP result_names
         my $current_method = $sub->{current_method} // die 'compiled sub current method missing';
         $impl = sub {
             return sort keys %{ _code_for($current_method)->() };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_has') {
+#@@PAX_OP result_has
         my $current_method = $sub->{current_method} // die 'compiled sub current method missing';
         $impl = sub {
             my ($name) = @_;
@@ -10369,9 +10012,7 @@ HTML
             return exists _code_for($current_method)->()->{$name} ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_entry') {
+#@@PAX_OP result_entry
         my $current_method = $sub->{current_method} // die 'compiled sub current method missing';
         $impl = sub {
             my ($name) = @_;
@@ -10380,9 +10021,7 @@ HTML
             return $data->{$name};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_stdout' || ($sub->{op} // '') eq 'result_stderr') {
+#@@PAX_OP result_stdout result_stderr
         my $entry_method = $sub->{entry_method} // die 'compiled sub entry method missing';
         my $field = ($sub->{op} // '') eq 'result_stdout' ? 'stdout' : 'stderr';
         $impl = sub {
@@ -10392,9 +10031,7 @@ HTML
             return $entry->{$field};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_exit_code') {
+#@@PAX_OP result_exit_code
         my $entry_method = $sub->{entry_method} // die 'compiled sub entry method missing';
         $impl = sub {
             my ($name) = @_;
@@ -10403,18 +10040,14 @@ HTML
             return $entry->{exit_code};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_last_name') {
+#@@PAX_OP result_last_name
         my $names_method = $sub->{names_method} // die 'compiled sub names method missing';
         $impl = sub {
             my @names = _code_for($names_method)->();
             return $names[-1];
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_last_entry') {
+#@@PAX_OP result_last_entry
         my $last_name_method = $sub->{last_name_method} // die 'compiled sub last name method missing';
         my $entry_method = $sub->{entry_method} // die 'compiled sub entry method missing';
         $impl = sub {
@@ -10422,9 +10055,7 @@ HTML
             return _code_for($entry_method)->($entry_name);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_report') {
+#@@PAX_OP result_report
         my $names_method = $sub->{names_method} // die 'compiled sub names method missing';
         my $command_name_method = $sub->{command_name_method} // die 'compiled sub command name method missing';
         my $exit_code_method = $sub->{exit_code_method} // die 'compiled sub exit code method missing';
@@ -10451,17 +10082,13 @@ HTML
             return Encode::encode('UTF-8', join("\n", @lines) . "\n");
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_current_json') {
+#@@PAX_OP result_current_json
         my $channel_json_method = $sub->{channel_json_method} // die 'compiled sub channel json method missing';
         $impl = sub {
             return _code_for($channel_json_method)->('RESULT', 'RESULT_FILE');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_max_inline_bytes') {
+#@@PAX_OP result_max_inline_bytes
         $impl = sub {
             my (%args) = @_;
             return $args{max_inline_bytes}
@@ -10472,9 +10099,7 @@ HTML
             return 65536;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_open_channel_file') {
+#@@PAX_OP result_open_channel_file
         $impl = sub {
             require Fcntl;
             require File::Temp;
@@ -10489,9 +10114,7 @@ HTML
             return ($fh, $fd_path);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_channel_json') {
+#@@PAX_OP result_channel_json
         $impl = sub {
             my ($env_name, $file_env_name) = @_;
             my $json = $ENV{$env_name};
@@ -10505,9 +10128,7 @@ HTML
             return defined $file_json ? $file_json : '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_set_channel') {
+#@@PAX_OP result_set_channel
         my $max_inline_method = $sub->{max_inline_method} // die 'compiled sub max inline method missing';
         my $open_channel_method = $sub->{open_channel_method} // die 'compiled sub open channel method missing';
         my $clear_channel_file_method = $sub->{clear_channel_file_method} // die 'compiled sub clear channel file method missing';
@@ -10532,9 +10153,7 @@ HTML
             return 'file';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_clear_channel') {
+#@@PAX_OP result_clear_channel
         my $clear_channel_file_method = $sub->{clear_channel_file_method} // die 'compiled sub clear channel file method missing';
         $impl = sub {
             my ($env_name, $file_env_name) = @_;
@@ -10544,9 +10163,7 @@ HTML
             return '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_clear_channel_file') {
+#@@PAX_OP result_clear_channel_file
         $impl = sub {
             my ($file_env_name) = @_;
             return if !$RESULT_CHANNEL_FILE_HANDLE{$file_env_name};
@@ -10556,9 +10173,7 @@ HTML
             delete $RESULT_CHANNEL_FILE_PATH{$file_env_name};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'result_command_name') {
+#@@PAX_OP result_command_name
         $impl = sub {
             my $fallback = _app_command_name();
             $fallback = 'pax' if $fallback !~ /\S/;
@@ -10577,9 +10192,7 @@ HTML
             return $fallback;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_normalized_page_id') {
+#@@PAX_OP page_store_normalized_page_id
         $impl = sub {
             my ($self, $id) = @_;
             $id = '' if !defined $id;
@@ -10590,9 +10203,7 @@ HTML
             return $id;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_page_file') {
+#@@PAX_OP page_store_page_file
         my $normalize_method = $sub->{normalize_method} // die 'compiled sub normalize method missing';
         $impl = sub {
             my ($self, $id) = @_;
@@ -10600,9 +10211,7 @@ HTML
             return File::Spec->catfile($self->{paths}->dashboards_root, _code_for($normalize_method)->($self, $id));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_file_candidates') {
+#@@PAX_OP page_store_file_candidates
         my $normalize_method = $sub->{normalize_method} // die 'compiled sub normalize method missing';
         $impl = sub {
             my ($self, $id) = @_;
@@ -10610,9 +10219,7 @@ HTML
             return map { File::Spec->catfile($_, $normalized) } $self->{paths}->dashboards_roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_existing_page_file') {
+#@@PAX_OP page_store_existing_page_file
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file candidates method missing';
         $impl = sub {
             my ($self, $id) = @_;
@@ -10622,9 +10229,7 @@ HTML
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_load_transient_page') {
+#@@PAX_OP page_store_load_transient_page
         my $page_class = $sub->{page_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument';
         $impl = sub {
             my ($self, $token) = @_;
@@ -10634,9 +10239,7 @@ HTML
             return $page;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_encode_page') {
+#@@PAX_OP page_store_encode_page
         my $page_class = $sub->{page_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument';
         $impl = sub {
             my ($self, $page) = @_;
@@ -10649,9 +10252,7 @@ HTML
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::Codec::encode_payload($page->canonical_instruction);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_token_url') {
+#@@PAX_OP page_store_token_url
         my $encode_method = $sub->{encode_method} // die 'compiled sub encode method missing';
         my $prefix = $sub->{prefix} // '/?token=';
         $impl = sub {
@@ -10659,9 +10260,7 @@ HTML
             return $prefix . URI::Escape::uri_escape(_code_for($encode_method)->($self, $page));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_looks_like_raw_nav_fragment') {
+#@@PAX_OP page_store_looks_like_raw_nav_fragment
         $impl = sub {
             my ($self, $instruction) = @_;
             return 0 if !defined $instruction || $instruction eq '';
@@ -10670,9 +10269,7 @@ HTML
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_normalize_legacy_icon_markup') {
+#@@PAX_OP page_store_normalize_legacy_icon_markup
         $impl = sub {
             my ($self, $text) = @_;
             return '' if !defined $text;
@@ -10682,9 +10279,7 @@ HTML
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_read_saved_instruction') {
+#@@PAX_OP page_store_read_saved_instruction
         my $normalize_method = $sub->{normalize_method} // die 'compiled sub normalize method missing';
         $impl = sub {
             my ($self, $file) = @_;
@@ -10698,9 +10293,7 @@ HTML
             return _code_for($normalize_method)->($self, $text);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_raw_nav_fragment_page') {
+#@@PAX_OP page_store_raw_nav_fragment_page
         my $page_class = $sub->{page_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument';
         $impl = sub {
             my ($self, %args) = @_;
@@ -10714,9 +10307,7 @@ HTML
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_load_page_file') {
+#@@PAX_OP page_store_load_page_file
         my $read_method = $sub->{read_method} // die 'compiled sub read method missing';
         my $looks_like_method = $sub->{looks_like_method} // die 'compiled sub looks-like method missing';
         my $raw_nav_method = $sub->{raw_nav_method} // die 'compiled sub raw nav method missing';
@@ -10733,9 +10324,7 @@ HTML
             die($@ || "Unable to load bookmark file $file");
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_read_saved_entry') {
+#@@PAX_OP page_store_read_saved_entry
         my $existing_method = $sub->{existing_method} // die 'compiled sub existing method missing';
         my $read_method = $sub->{read_method} // die 'compiled sub read method missing';
         $impl = sub {
@@ -10745,9 +10334,7 @@ HTML
             return _code_for($read_method)->($self, $file);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_load_saved_page') {
+#@@PAX_OP page_store_load_saved_page
         my $existing_method = $sub->{existing_method} // die 'compiled sub existing method missing';
         my $load_method = $sub->{load_method} // die 'compiled sub load method missing';
         my $read_method = $sub->{read_method} // die 'compiled sub read method missing';
@@ -10762,9 +10349,7 @@ HTML
             return $page;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_save_page') {
+#@@PAX_OP page_store_save_page
         my $page_file_method = $sub->{page_file_method} // die 'compiled sub page-file method missing';
         my $page_class = $sub->{page_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument';
         $impl = sub {
@@ -10783,9 +10368,7 @@ HTML
             return $file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_saved_page_entries_for_root') {
+#@@PAX_OP page_store_saved_page_entries_for_root
         $impl = sub {
             my ($self, $root) = @_;
             return if !defined $root || !-d $root;
@@ -10805,9 +10388,7 @@ HTML
             return @entries;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_list_saved_pages') {
+#@@PAX_OP page_store_list_saved_pages
         my $entries_method = $sub->{entries_method} // die 'compiled sub entries method missing';
         my $load_method = $sub->{load_method} // die 'compiled sub load method missing';
         $impl = sub {
@@ -10825,9 +10406,7 @@ HTML
             return sort keys %ids;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_store_migrate_legacy_json_pages') {
+#@@PAX_OP page_store_migrate_legacy_json_pages
         my $page_file_method = $sub->{page_file_method} // die 'compiled sub page-file method missing';
         my $page_class = $sub->{page_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument';
         $impl = sub {
@@ -10860,9 +10439,7 @@ HTML
             return \@migrated;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_new') {
+#@@PAX_OP page_document_new
         $impl = sub {
             my ($class, %args) = @_;
             my $self = bless {
@@ -10882,9 +10459,7 @@ HTML
             return $self;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_from_hash') {
+#@@PAX_OP page_document_from_hash
         my $new_method = $sub->{new_method} // die 'compiled sub new method missing';
         $impl = sub {
             my ($class, $hash) = @_;
@@ -10892,18 +10467,14 @@ HTML
             return _code_for($new_method)->($class, %{$hash});
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_from_json') {
+#@@PAX_OP page_document_from_json
         my $from_hash_method = $sub->{from_hash_method} // die 'compiled sub from-hash method missing';
         $impl = sub {
             my ($class, $json) = @_;
             return _code_for($from_hash_method)->($class, __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_decode($json));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_from_instruction') {
+#@@PAX_OP page_document_from_instruction
         my $parse_legacy_sections_method = $sub->{parse_legacy_sections_method} // die 'compiled sub parse-legacy method missing';
         my $decode_stash_method = $sub->{decode_stash_method} // die 'compiled sub decode-stash method missing';
         my $trim_method = $sub->{trim_method} // die 'compiled sub trim method missing';
@@ -10958,9 +10529,7 @@ HTML
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_merge_state') {
+#@@PAX_OP page_document_merge_state
         $impl = sub {
             my ($self, $state) = @_;
             return $self if ref($state) ne 'HASH';
@@ -10970,18 +10539,14 @@ HTML
             return $self;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_with_mode') {
+#@@PAX_OP page_document_with_mode
         $impl = sub {
             my ($self, $mode) = @_;
             $self->{mode} = $mode if defined $mode && $mode ne '';
             return $self;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_as_hash') {
+#@@PAX_OP page_document_as_hash
         $impl = sub {
             my ($self) = @_;
             return {
@@ -11000,27 +10565,21 @@ HTML
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_canonical_json') {
+#@@PAX_OP page_document_canonical_json
         my $as_hash_method = $sub->{as_hash_method} // die 'compiled sub as-hash method missing';
         $impl = sub {
             my ($self) = @_;
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_encode(_code_for($as_hash_method)->($self));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_canonical_instruction') {
+#@@PAX_OP page_document_canonical_instruction
         my $legacy_method = $sub->{legacy_method} // die 'compiled sub legacy method missing';
         $impl = sub {
             my ($self) = @_;
             return _code_for($legacy_method)->($self);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_legacy_instruction') {
+#@@PAX_OP page_document_legacy_instruction
         my $legacy_stash_method = $sub->{legacy_stash_method} // die 'compiled sub legacy stash method missing';
         $impl = sub {
             my ($self) = @_;
@@ -11049,23 +10608,17 @@ HTML
             return join("\n" . $__PAX_RUNTIME_LEGACY_NAMESPACE__::PageDocument::LEGACY_SEP . "\n", @chunks) . "\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_instruction_text') {
+#@@PAX_OP page_document_instruction_text
         my $canonical_method = $sub->{canonical_method} // die 'compiled sub canonical method missing';
         $impl = sub {
             my $self = shift;
             return _code_for($canonical_method)->($self, @_);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_render_template') {
+#@@PAX_OP page_document_render_template
         $impl = sub { return shift; };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_render_html') {
+#@@PAX_OP page_document_render_html
         my $html_method = $sub->{html_method} // die 'compiled sub html method missing';
         my $legacy_bootstrap_method = $sub->{legacy_bootstrap_method} // die 'compiled sub legacy bootstrap method missing';
         $impl = sub {
@@ -11206,9 +10759,7 @@ $legacy_bootstrap
 HTML
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_decode_structured_json') {
+#@@PAX_OP page_document_decode_structured_json
         my $trim_method = $sub->{trim_method} // die 'compiled sub trim method missing';
         $impl = sub {
             my ($text) = @_;
@@ -11218,9 +10769,7 @@ HTML
             return defined $value ? $value : {};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_decode_stash_section') {
+#@@PAX_OP page_document_decode_stash_section
         my $trim_method = $sub->{trim_method} // die 'compiled sub trim method missing';
         $impl = sub {
             my ($text) = @_;
@@ -11235,9 +10784,7 @@ HTML
             return ref($hash) eq 'HASH' ? $hash : {};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_parse_legacy_sections') {
+#@@PAX_OP page_document_parse_legacy_sections
         $impl = sub {
             my ($text) = @_;
             my %sections;
@@ -11256,9 +10803,7 @@ HTML
             return %sections;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_legacy_stash_text') {
+#@@PAX_OP page_document_legacy_stash_text
         my $legacy_value_method = $sub->{legacy_value_method} // die 'compiled sub legacy value method missing';
         $impl = sub {
             my ($value) = @_;
@@ -11267,25 +10812,29 @@ HTML
             return join ",\n", @pairs;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_legacy_value') {
+#@@PAX_OP page_document_legacy_value
+        my $quote_method = $sub->{legacy_quote_method} // die 'compiled sub quote method missing';
         $impl = sub {
             my ($value) = @_;
-            return _runtime_legacy_value($value);
+            return 'undef' if !defined $value;
+            if (ref($value) eq 'ARRAY') {
+                return "[\n  " . join(",\n  ", map { _code_for($full)->($_) } @{$value}) . "\n]";
+            }
+            if (ref($value) eq 'HASH') {
+                return "{\n  " . join(",\n  ", map { sprintf "%s => %s", $_, _code_for($full)->($value->{$_}) } sort keys %{$value}) . "\n}";
+            }
+            return $value =~ /\A-?\d+(?:\.\d+)?\z/ ? $value : "'" . _code_for($quote_method)->($value) . "'";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_legacy_quote') {
+#@@PAX_OP page_document_legacy_quote
         $impl = sub {
             my ($text) = @_;
-            return _runtime_legacy_quote($text);
+            $text =~ s/\\/\\\\/g;
+            $text =~ s/'/\\'/g;
+            return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_template_value') {
+#@@PAX_OP page_document_template_value
         my $trim_method = $sub->{trim_method} // die 'compiled sub trim method missing';
         $impl = sub {
             my ($path, $context) = @_;
@@ -11299,9 +10848,7 @@ HTML
             return $value;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_legacy_bootstrap') {
+#@@PAX_OP page_document_legacy_bootstrap
         $impl = sub {
             return <<'JS';
 <script>
@@ -11448,9 +10995,7 @@ if (!window.configs) window.configs = {};
 JS
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_trim') {
+#@@PAX_OP page_document_trim
         $impl = sub {
             my ($text) = @_;
             $text = '' if !defined $text;
@@ -11459,9 +11004,7 @@ JS
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_trim_trailing_newline') {
+#@@PAX_OP page_document_trim_trailing_newline
         $impl = sub {
             my ($text) = @_;
             $text = '' if !defined $text;
@@ -11469,9 +11012,7 @@ JS
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'page_document_html_escape') {
+#@@PAX_OP page_document_html_escape
         $impl = sub {
             my ($text) = @_;
             $text = '' if !defined $text;
@@ -11482,17 +11023,13 @@ JS
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_file_candidates') {
+#@@PAX_OP indicator_store_file_candidates
         $impl = sub {
             my ($self, $name) = @_;
             return map { File::Spec->catfile($_, $name, 'status.json') } $self->{paths}->indicators_roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_read_indicator_file') {
+#@@PAX_OP indicator_store_read_indicator_file
         $impl = sub {
             my ($self, $file) = @_;
             return if !-f $file;
@@ -11501,9 +11038,7 @@ JS
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::JSON::json_decode(<$fh>);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_set_indicator') {
+#@@PAX_OP indicator_store_set_indicator
         my $read_method = $sub->{read_method} // die 'compiled sub read method missing';
         $impl = sub {
             my ($self, $name, %data) = @_;
@@ -11533,9 +11068,7 @@ JS
             return \%data;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_get_indicator') {
+#@@PAX_OP indicator_store_get_indicator
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file candidates method missing';
         my $read_method = $sub->{read_method} // die 'compiled sub read method missing';
         $impl = sub {
@@ -11547,9 +11080,7 @@ JS
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_list_indicators') {
+#@@PAX_OP indicator_store_list_indicators
         my $get_method = $sub->{get_method} // die 'compiled sub get method missing';
         $impl = sub {
             my ($self) = @_;
@@ -11568,18 +11099,14 @@ JS
             return sort { ($a->{priority} || 999) <=> ($b->{priority} || 999) || $a->{name} cmp $b->{name} } values %items;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_is_template_toolkit_text') {
+#@@PAX_OP indicator_store_is_template_toolkit_text
         $impl = sub {
             my ($self, $text) = @_;
             return 0 if !defined $text || $text eq '';
             return index($text, '[%') >= 0 ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_collector_indicator_candidate') {
+#@@PAX_OP indicator_store_collector_indicator_candidate
         my $get_method = $sub->{get_method} // die 'compiled sub get method missing';
         my $is_tt_method = $sub->{is_tt_method} // die 'compiled sub tt method missing';
         $impl = sub {
@@ -11630,9 +11157,7 @@ JS
             return \%candidate;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_delete_indicator') {
+#@@PAX_OP indicator_store_delete_indicator
         $impl = sub {
             my ($self, $name) = @_;
             return 1 if !defined $name || $name eq '';
@@ -11644,9 +11169,7 @@ JS
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_indicator_matches') {
+#@@PAX_OP indicator_store_indicator_matches
         $impl = sub {
             my ($self, $existing, $candidate) = @_;
             return 0 if ref($existing) ne 'HASH' || ref($candidate) ne 'HASH';
@@ -11660,9 +11183,7 @@ JS
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_local_indicator') {
+#@@PAX_OP indicator_store_local_indicator
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file candidates method missing';
         my $read_method = $sub->{read_method} // die 'compiled sub read method missing';
         $impl = sub {
@@ -11672,9 +11193,7 @@ JS
             return _code_for($read_method)->($self, $file);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_nearest_inherited_indicator') {
+#@@PAX_OP indicator_store_nearest_inherited_indicator
         my $file_candidates_method = $sub->{file_candidates_method} // die 'compiled sub file candidates method missing';
         my $read_method = $sub->{read_method} // die 'compiled sub read method missing';
         $impl = sub {
@@ -11688,9 +11207,7 @@ JS
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_is_placeholder_missing_indicator') {
+#@@PAX_OP indicator_store_is_placeholder_missing_indicator
         $impl = sub {
             my ($self, $indicator) = @_;
             return 0 if ref($indicator) ne 'HASH';
@@ -11699,9 +11216,7 @@ JS
             return $status eq 'missing' ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_sync_collectors') {
+#@@PAX_OP indicator_store_sync_collectors
         my $get_method = $sub->{get_method} // die 'compiled sub get method missing';
         my $local_method = $sub->{local_method} // die 'compiled sub local method missing';
         my $nearest_method = $sub->{nearest_method} // die 'compiled sub nearest method missing';
@@ -11775,9 +11290,7 @@ JS
             return \@written;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_mark_stale') {
+#@@PAX_OP indicator_store_mark_stale
         my $get_method = $sub->{get_method} // die 'compiled sub get method missing';
         my $set_method = $sub->{set_method} // die 'compiled sub set method missing';
         $impl = sub {
@@ -11788,9 +11301,7 @@ JS
             return _code_for($set_method)->($self, $name, %{$item});
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_is_stale') {
+#@@PAX_OP indicator_store_is_stale
         $impl = sub {
             my ($self, $item, %opts) = @_;
             return if ref($item) ne 'HASH';
@@ -11800,9 +11311,7 @@ JS
             return (Time::HiRes::time() - $item->{updated_at}) > $max_age ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_refresh_core_indicators') {
+#@@PAX_OP indicator_store_refresh_core_indicators
         my $set_method = $sub->{set_method} // die 'compiled sub set method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -11859,9 +11368,7 @@ JS
             return $items;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_status_icon_for') {
+#@@PAX_OP indicator_store_status_icon_for
         $impl = sub {
             my ($self, $indicator, $map) = @_;
             return '' if ref($indicator) ne 'HASH';
@@ -11871,18 +11378,14 @@ JS
             return defined $indicator->{icon} ? $indicator->{icon} : '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_prompt_status_icon') {
+#@@PAX_OP indicator_store_prompt_status_icon
         my $status_icon_method = $sub->{status_icon_method} // die 'compiled sub status icon method missing';
         $impl = sub {
             my ($self, $indicator) = @_;
             return _code_for($status_icon_method)->($self, $indicator, $INDICATOR_PROMPT_STATUS_ICONS);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_page_status_icon') {
+#@@PAX_OP indicator_store_page_status_icon
         my $status_icon_method = $sub->{status_icon_method} // die 'compiled sub status icon method missing';
         $impl = sub {
             my ($self, $indicator) = @_;
@@ -11891,9 +11394,7 @@ JS
             return _code_for($status_icon_method)->($self, $indicator, $INDICATOR_STATUS_ICONS);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_page_header_items') {
+#@@PAX_OP indicator_store_page_header_items
         my $list_method = $sub->{list_method} // die 'compiled sub list method missing';
         my $page_status_icon_method = $sub->{page_status_icon_method} // die 'compiled sub page status icon method missing';
         $impl = sub {
@@ -11917,9 +11418,7 @@ JS
             return @items;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'indicator_store_page_header_payload') {
+#@@PAX_OP indicator_store_page_header_payload
         my $items_method = $sub->{items_method} // die 'compiled sub items method missing';
         $impl = sub {
             my ($self) = @_;
@@ -11932,9 +11431,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_subcommand_candidates') {
+#@@PAX_OP app_subcommand_candidates
         my $command_map = $sub->{command_map} || {};
         $impl = sub {
             my ($command) = @_;
@@ -11942,9 +11439,7 @@ JS
             return @{ $command_map->{$command} || [] };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_complete') {
+#@@PAX_OP app_complete
         my $suggest_class = $sub->{suggest_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::CLI::Suggest';
         my $subcommand_method = $sub->{subcommand_method} // die 'compiled sub subcommand method missing';
         my $missing_words_error = $sub->{missing_words_error} // "Missing completion words\n";
@@ -11957,6 +11452,7 @@ JS
             die $type_error if ref($words) ne 'ARRAY';
             my @words = @{$words};
             my $current = defined $words[$index] ? $words[$index] : '';
+            _load_package_by_module_name($suggest_class);
             my $suggest = $suggest_class->new();
             my @candidates;
             if ($index <= 1) {
@@ -11971,9 +11467,7 @@ JS
             return grep { !$seen{$_}++ } grep { !defined $current || $current eq '' || index($_, $current) == 0 } @candidates;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'resolve_ticket_request') {
+#@@PAX_OP resolve_ticket_request
         my $type_error = $sub->{type_error} // 'Ticket args must be an array reference';
         my $missing_error = $sub->{missing_error} // "Please specify a ticket name\n";
         $impl = sub {
@@ -11986,9 +11480,7 @@ JS
             return $ticket;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'ticket_environment') {
+#@@PAX_OP ticket_environment
         my $missing_error = $sub->{missing_error} // "Ticket name is required\n";
         $impl = sub {
             my ($ticket) = @_;
@@ -12000,9 +11492,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'captured_command_result') {
+#@@PAX_OP captured_command_result
         my $command = $sub->{command} // die 'compiled sub command missing';
         my $type_error = $sub->{type_error} // 'command args must be an array reference';
         $impl = sub {
@@ -12021,9 +11511,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'session_exists_via_command') {
+#@@PAX_OP session_exists_via_command
         my $default_runner = $sub->{default_runner} // die 'compiled sub default runner missing';
         my $missing_error = $sub->{missing_error} // 'Missing session name';
         my $inspect_error = $sub->{inspect_error} // "Unable to inspect tmux session '%s': %s%s";
@@ -12037,15 +11525,11 @@ JS
             die sprintf $inspect_error, $session, ($result->{stderr} || ''), ($result->{stdout} || '');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'which_usage') {
+#@@PAX_OP which_usage
         my $usage = $sub->{usage} // "Usage: dashboard which [--edit] <cmd>|<skill>.<cmd>|<skill>.<sub-skill>.<cmd>\n";
         $impl = sub { return $usage };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'which_build_paths') {
+#@@PAX_OP which_build_paths
         my $path_registry_class = $sub->{path_registry_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PathRegistry';
         $impl = sub {
             require Cwd;
@@ -12059,9 +11543,7 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_build_paths') {
+#@@PAX_OP open_file_build_paths
         my $path_registry_class = $sub->{path_registry_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PathRegistry';
         $impl = sub {
             my $home = $ENV{HOME} || '';
@@ -12072,9 +11554,7 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_registries') {
+#@@PAX_OP open_file_registries
         $impl = sub {
             my (%args) = @_;
             my $paths = $args{paths} || die 'Missing path registry';
@@ -12085,9 +11565,7 @@ JS
             return ($files, $config);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_scope_relative_path_match') {
+#@@PAX_OP open_file_scope_relative_path_match
         $impl = sub {
             my (%args) = @_;
             my $scope = $args{scope} || return;
@@ -12099,17 +11577,13 @@ JS
             return -f $target ? $target : undef;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_default_editor') {
+#@@PAX_OP open_file_default_editor
         $impl = sub {
             my ($editor) = @_;
             return $editor || $ENV{VISUAL} || $ENV{EDITOR} || 'vim';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_editor_supports_tabs') {
+#@@PAX_OP open_file_editor_supports_tabs
         $impl = sub {
             my (%args) = @_;
             my $command = $args{command} || [];
@@ -12119,18 +11593,14 @@ JS
             return $editor =~ /\A(?:vim|nvim|vi|gvim|iv)\z/i ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_unique_matches') {
+#@@PAX_OP open_file_unique_matches
         $impl = sub {
             my (@matches) = @_;
             my %seen;
             return grep { defined && $_ ne '' && !$seen{$_}++ } @matches;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_selection_matches') {
+#@@PAX_OP open_file_selection_matches
         $impl = sub {
             my (%args) = @_;
             my $choices = defined $args{choices} ? $args{choices} : '';
@@ -12153,9 +11623,7 @@ JS
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_select_matches') {
+#@@PAX_OP open_file_select_matches
         my $unique_method = $sub->{unique_method} // die 'compiled sub unique method missing';
         my $selection_method = $sub->{selection_method} // die 'compiled sub selection method missing';
         $impl = sub {
@@ -12180,9 +11648,7 @@ JS
             die "Invalid file selection '$selection'\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_compile_regex') {
+#@@PAX_OP open_file_compile_regex
         $impl = sub {
             my ($pattern) = @_;
             return if !defined $pattern || $pattern eq '';
@@ -12191,9 +11657,7 @@ JS
             return $regex;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_scope_match_rank') {
+#@@PAX_OP open_file_scope_match_rank
         my $compile_regex_method = $sub->{compile_regex_method} // die 'compiled sub compile-regex method missing';
         $impl = sub {
             my (%args) = @_;
@@ -12228,9 +11692,7 @@ JS
             return $rank;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_ordered_scope_matches') {
+#@@PAX_OP open_file_ordered_scope_matches
         my $rank_method = $sub->{rank_method} // die 'compiled sub rank method missing';
         my $unique_method = $sub->{unique_method} // die 'compiled sub unique method missing';
         $impl = sub {
@@ -12254,9 +11716,7 @@ JS
               sort { $a->{rank} <=> $b->{rank} || $a->{index} <=> $b->{index} } @ranked;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_roots') {
+#@@PAX_OP open_file_roots
         $impl = sub {
             my (%args) = @_;
             my $paths = $args{paths} || die 'Missing path registry';
@@ -12271,9 +11731,7 @@ JS
             return grep { defined && $_ ne '' && -d $_ && !$seen{$_}++ } @roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_existing_named_files') {
+#@@PAX_OP open_file_existing_named_files
         $impl = sub {
             my (%args) = @_;
             my $roots = $args{roots} || [];
@@ -12293,9 +11751,7 @@ JS
             return sort @found;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_matching_archive_entries') {
+#@@PAX_OP open_file_matching_archive_entries
         $impl = sub {
             my (%args) = @_;
             my $zip = $args{zip} || return;
@@ -12311,9 +11767,7 @@ JS
             return @entries;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_cached_archive_source_path') {
+#@@PAX_OP open_file_cached_archive_source_path
         $impl = sub {
             my (%args) = @_;
             my $paths = $args{paths} || die 'Missing path registry';
@@ -12330,9 +11784,7 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_java_archive_roots') {
+#@@PAX_OP open_file_java_archive_roots
         $impl = sub {
             my (%args) = @_;
             my $paths = $args{paths} || die 'Missing path registry';
@@ -12347,9 +11799,7 @@ JS
             return grep { defined && $_ ne '' && -d $_ && !$seen{$_}++ } @candidates;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_candidate_archives') {
+#@@PAX_OP open_file_candidate_archives
         my $archive_roots_method = $sub->{archive_roots_method} // die 'compiled sub archive roots method missing';
         $impl = sub {
             my (%args) = @_;
@@ -12375,9 +11825,7 @@ JS
             return @archives;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_extract_archive_sources') {
+#@@PAX_OP open_file_extract_archive_sources
         my $matching_archive_entries_method = $sub->{matching_archive_entries_method} // die 'compiled sub matching entries method missing';
         my $cached_archive_source_path_method = $sub->{cached_archive_source_path_method} // die 'compiled sub cached path method missing';
         $impl = sub {
@@ -12405,9 +11853,7 @@ JS
             return @matches;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_maven_search_documents') {
+#@@PAX_OP open_file_maven_search_documents
         $impl = sub {
             my ($entry_name) = @_;
             return if !defined $entry_name || $entry_name eq '';
@@ -12421,9 +11867,7 @@ JS
             return @{ $payload->{response}{docs} || [] };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_download_maven_source_jar') {
+#@@PAX_OP open_file_download_maven_source_jar
         $impl = sub {
             my (%args) = @_;
             my $paths = $args{paths} || die 'Missing path registry';
@@ -12456,9 +11900,7 @@ JS
             return -f $target ? $target : undef;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_download_java_source_matches') {
+#@@PAX_OP open_file_download_java_source_matches
         my $maven_search_method = $sub->{maven_search_method} // die 'compiled sub maven search method missing';
         my $download_source_jar_method = $sub->{download_source_jar_method} // die 'compiled sub source jar method missing';
         my $extract_archive_sources_method = $sub->{extract_archive_sources_method} // die 'compiled sub extract archive sources method missing';
@@ -12482,9 +11924,7 @@ JS
             return @matches;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_java_archive_matches') {
+#@@PAX_OP open_file_java_archive_matches
         my $candidate_archives_method = $sub->{candidate_archives_method} // die 'compiled sub candidate archives method missing';
         my $extract_archive_sources_method = $sub->{extract_archive_sources_method} // die 'compiled sub extract archive sources method missing';
         my $download_java_matches_method = $sub->{download_java_matches_method} // die 'compiled sub download java matches method missing';
@@ -12513,9 +11953,7 @@ JS
             return _code_for($unique_method)->(@matches);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_named_source_matches') {
+#@@PAX_OP open_file_named_source_matches
         my $roots_method = $sub->{roots_method} // die 'compiled sub roots method missing';
         my $existing_named_files_method = $sub->{existing_named_files_method} // die 'compiled sub existing files method missing';
         my $java_archive_matches_method = $sub->{java_archive_matches_method} // die 'compiled sub java archive matches method missing';
@@ -12551,9 +11989,7 @@ JS
             return _code_for($unique_method)->(@matches);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_resolve_matches') {
+#@@PAX_OP open_file_resolve_matches
         my $named_matches_method = $sub->{named_matches_method} // die 'compiled sub named matches method missing';
         my $compile_regex_method = $sub->{compile_regex_method} // die 'compiled sub compile regex method missing';
         my $ordered_matches_method = $sub->{ordered_matches_method} // die 'compiled sub ordered matches method missing';
@@ -12612,17 +12048,13 @@ JS
             return ($line, @files);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_command_exit') {
+#@@PAX_OP open_file_command_exit
         $impl = sub {
             my ($code) = @_;
             exit $code;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'open_file_run_command') {
+#@@PAX_OP open_file_run_command
         my $build_paths_method = $sub->{build_paths_method} // die 'compiled sub build paths method missing';
         my $resolve_matches_method = $sub->{resolve_matches_method} // die 'compiled sub resolve matches method missing';
         my $select_matches_method = $sub->{select_matches_method} // die 'compiled sub select matches method missing';
@@ -12663,9 +12095,7 @@ JS
             _code_for($command_exec_method)->(@command);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_entry_command') {
+#@@PAX_OP app_entry_command
         $impl = sub {
             return _app_entry_command(
                 sub_env => $sub->{entrypoint_env},
@@ -12673,17 +12103,13 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'exec_command_argv') {
+#@@PAX_OP exec_command_argv
         $impl = sub {
             my (@command) = @_;
             exec { $command[0] } @command;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'resolve_directory_runner') {
+#@@PAX_OP resolve_directory_runner
         $impl = sub {
             my ($dir) = @_;
             return if !defined $dir || $dir eq '' || !-d $dir;
@@ -12695,9 +12121,7 @@ JS
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'resolved_command_path') {
+#@@PAX_OP resolved_command_path
         my $directory_runner_method = $sub->{directory_runner_method} // die 'compiled sub directory runner method missing';
         $impl = sub {
             my ($path) = @_;
@@ -12710,9 +12134,7 @@ JS
             return defined $resolved && $resolved ne '' ? $resolved : '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'custom_command_path') {
+#@@PAX_OP custom_command_path
         my $resolved_command_method = $sub->{resolved_command_method} // die 'compiled sub resolved command method missing';
         $impl = sub {
             my (%args) = @_;
@@ -12727,9 +12149,7 @@ JS
             return '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'command_hook_files') {
+#@@PAX_OP command_hook_files
         $impl = sub {
             my (%args) = @_;
             my $paths = $args{paths} || die "Missing paths registry\n";
@@ -12752,9 +12172,7 @@ JS
             return @hooks;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'builtin_target') {
+#@@PAX_OP builtin_target
         my $hook_method = $sub->{hook_method} // die 'compiled sub hook method missing';
         $impl = sub {
             my (%args) = @_;
@@ -12769,9 +12187,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'custom_target') {
+#@@PAX_OP custom_target
         my $command_method = $sub->{command_method} // die 'compiled sub command method missing';
         my $hook_method = $sub->{hook_method} // die 'compiled sub hook method missing';
         $impl = sub {
@@ -12786,9 +12202,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'locate_skill_target') {
+#@@PAX_OP locate_skill_target
         my $skill_manager_class = $sub->{skill_manager_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::SkillManager';
         my $skill_dispatcher_class = $sub->{skill_dispatcher_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::SkillDispatcher';
         $impl = sub {
@@ -12809,9 +12223,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'locate_target') {
+#@@PAX_OP locate_target
         my $skill_method = $sub->{skill_method} // die 'compiled sub skill method missing';
         my $builtin_method = $sub->{builtin_method} // die 'compiled sub builtin method missing';
         my $custom_method = $sub->{custom_method} // die 'compiled sub custom method missing';
@@ -12832,9 +12244,7 @@ JS
             return { command => '', hooks => [] };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'run_which_command') {
+#@@PAX_OP run_which_command
         my $usage_method = $sub->{usage_method} // die 'compiled sub usage method missing';
         my $build_paths_method = $sub->{build_paths_method} // die 'compiled sub build paths method missing';
         my $locate_target_method = $sub->{locate_target_method} // die 'compiled sub locate target method missing';
@@ -12866,9 +12276,7 @@ JS
             return 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_new') {
+#@@PAX_OP suggest_new
         my $path_registry_class = $sub->{path_registry_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PathRegistry';
         my $skill_manager_class = $sub->{skill_manager_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::SkillManager';
         $impl = sub {
@@ -12882,14 +12290,14 @@ JS
             return bless { paths => $paths, manager => $manager }, $class;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_unknown_command_message') {
+#@@PAX_OP suggest_unknown_command_message
         my $suggestions_method = $sub->{suggestions_method} // die 'compiled sub suggestions method missing';
+        my $message_head = $sub->{message_head} // "Unknown command ";
+        my $message_tail = $sub->{message_tail} // ".\n";
         $impl = sub {
             my ($self, $command) = @_;
             my @suggestions = _code_for($suggestions_method)->($self, $command);
-            my $message = "Unknown command '$command'.\n";
+            my $message = $message_head . "'" . $command . "'" . $message_tail;
             if (@suggestions) {
                 $message .= "\nDid you mean:\n";
                 $message .= join '', map { "  dashboard $_\n" } @suggestions;
@@ -12897,9 +12305,7 @@ JS
             return $message . "\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_unknown_skill_command_message') {
+#@@PAX_OP suggest_unknown_skill_command_message
         my $skill_suggestions_method = $sub->{skill_suggestions_method} // die 'compiled sub skill suggestions method missing';
         $impl = sub {
             my ($self, $skill_name, $command) = @_;
@@ -12925,18 +12331,14 @@ JS
             return $message . "\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_top_level_candidates') {
+#@@PAX_OP suggest_top_level_candidates
         my $internal_method = $sub->{internal_method} // die 'compiled sub internal method missing';
         $impl = sub {
             my ($self) = @_;
             return _code_for($internal_method)->($self);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_top_level_suggestions') {
+#@@PAX_OP suggest_top_level_suggestions
         my $rank_method = $sub->{rank_method} // die 'compiled sub rank method missing';
         my $candidates_method = $sub->{candidates_method} // die 'compiled sub candidates method missing';
         $impl = sub {
@@ -12944,9 +12346,7 @@ JS
             return map { $_->{value} } _code_for($rank_method)->($self, $command, [ _code_for($candidates_method)->($self) ]);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_skill_commands') {
+#@@PAX_OP suggest_skill_commands
         my $skill_entries_method = $sub->{skill_entries_method} // die 'compiled sub skill entries method missing';
         my $all_entries_method = $sub->{all_entries_method} // die 'compiled sub all entries method missing';
         $impl = sub {
@@ -12955,9 +12355,7 @@ JS
             return map { $_->{full} } @entries;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_skill_command_suggestions') {
+#@@PAX_OP suggest_skill_command_suggestions
         my $rank_method = $sub->{rank_method} // die 'compiled sub rank method missing';
         my $skill_entries_method = $sub->{skill_entries_method} // die 'compiled sub skill entries method missing';
         my $all_entries_method = $sub->{all_entries_method} // die 'compiled sub all entries method missing';
@@ -12970,9 +12368,7 @@ JS
             return map { $_->{value} } _code_for($rank_method)->($self, $query, \@candidates);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_internal_top_level_candidates') {
+#@@PAX_OP suggest_internal_top_level_candidates
         my $logical_name_method = $sub->{logical_name_method} // die 'compiled sub logical name method missing';
         $impl = sub {
             my ($self) = @_;
@@ -13004,9 +12400,7 @@ JS
             return @candidates;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_all_skill_command_entries') {
+#@@PAX_OP suggest_all_skill_command_entries
         my $skill_entries_method = $sub->{skill_entries_method} // die 'compiled sub skill entries method missing';
         $impl = sub {
             my ($self) = @_;
@@ -13018,9 +12412,7 @@ JS
             return @entries;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_skill_command_entries') {
+#@@PAX_OP suggest_skill_command_entries
         my $collect_method = $sub->{collect_method} // die 'compiled sub collect method missing';
         $impl = sub {
             my ($self, $skill_name) = @_;
@@ -13029,9 +12421,7 @@ JS
             return _code_for($collect_method)->($self, $skill_root, $skill_name);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_collect_skill_commands') {
+#@@PAX_OP suggest_collect_skill_commands
         my $logical_name_method = $sub->{logical_name_method} // die 'compiled sub logical name method missing';
         $impl = sub {
             my ($self, $skill_root, $prefix) = @_;
@@ -13058,9 +12448,7 @@ JS
             return @entries;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_rank_candidates') {
+#@@PAX_OP suggest_rank_candidates
         my $score_method = $sub->{score_method} // die 'compiled sub score method missing';
         $impl = sub {
             my ($self, $query, $candidates) = @_;
@@ -13082,9 +12470,7 @@ JS
             return @scored;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_candidate_score') {
+#@@PAX_OP suggest_candidate_score
         my $normalize_method = $sub->{normalize_method} // die 'compiled sub normalize method missing';
         my $distance_method = $sub->{distance_method} // die 'compiled sub distance method missing';
         $impl = sub {
@@ -13099,9 +12485,7 @@ JS
             return $distance + 2;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_normalize_token') {
+#@@PAX_OP suggest_normalize_token
         $impl = sub {
             my ($value) = @_;
             $value = lc($value // '');
@@ -13109,9 +12493,7 @@ JS
             return $value;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_levenshtein_distance') {
+#@@PAX_OP suggest_levenshtein_distance
         $impl = sub {
             my ($left, $right) = @_;
             my @left = split //, $left;
@@ -13135,9 +12517,7 @@ JS
             return $dist[-1];
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'suggest_logical_command_name') {
+#@@PAX_OP suggest_logical_command_name
         $impl = sub {
             my ($entry) = @_;
             return '' if !defined $entry || $entry eq '';
@@ -13145,9 +12525,7 @@ JS
             return $entry;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_file_candidates') {
+#@@PAX_OP env_file_candidates
         $impl = sub {
             my ($class, $root) = @_;
             return (
@@ -13156,9 +12534,7 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_path_identity') {
+#@@PAX_OP env_path_identity
         $impl = sub {
             my ($class, $path) = @_;
             return '' if !defined $path || $path eq '';
@@ -13166,9 +12542,7 @@ JS
             return defined $resolved && $resolved ne '' ? $resolved : File::Spec->canonpath($path);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_same_or_descendant_path') {
+#@@PAX_OP env_same_or_descendant_path
         my $identity_method = $sub->{identity_method} // die 'compiled sub identity method missing';
         $impl = sub {
             my ($class, $path, $root) = @_;
@@ -13179,18 +12553,14 @@ JS
             return index($path_id, $root_id . '/') == 0 ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_lookup_symbol') {
+#@@PAX_OP env_lookup_symbol
         $impl = sub {
             my ($class, $name) = @_;
             return undef if !defined $name || $name eq '';
             return $ENV{$name};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_plain_directory_layers') {
+#@@PAX_OP env_plain_directory_layers
         my $same_or_descendant_method = $sub->{same_or_descendant_method} // die 'compiled sub same-or-descendant method missing';
         my $identity_method = $sub->{identity_method} // die 'compiled sub identity method missing';
         $impl = sub {
@@ -13219,9 +12589,7 @@ JS
             return reverse @layers;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_plain_directory_files') {
+#@@PAX_OP env_plain_directory_files
         my $layers_method = $sub->{layers_method} // die 'compiled sub layers method missing';
         my $candidates_method = $sub->{candidates_method} // die 'compiled sub candidates method missing';
         $impl = sub {
@@ -13233,9 +12601,7 @@ JS
             return @files;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_runtime_layer_files') {
+#@@PAX_OP env_runtime_layer_files
         my $candidates_method = $sub->{candidates_method} // die 'compiled sub candidates method missing';
         $impl = sub {
             my ($class, $paths) = @_;
@@ -13246,9 +12612,7 @@ JS
             return @files;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_load_skill_layers') {
+#@@PAX_OP env_load_skill_layers
         my $candidates_method = $sub->{candidates_method} // die 'compiled sub candidates method missing';
         my $load_files_method = $sub->{load_files_method} // die 'compiled sub load files method missing';
         $impl = sub {
@@ -13261,9 +12625,7 @@ JS
             return _code_for($load_files_method)->($class, files => \@files);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_load_runtime_layers') {
+#@@PAX_OP env_load_runtime_layers
         my $plain_files_method = $sub->{plain_files_method} // die 'compiled sub plain files method missing';
         my $runtime_files_method = $sub->{runtime_files_method} // die 'compiled sub runtime files method missing';
         my $load_files_method = $sub->{load_files_method} // die 'compiled sub load files method missing';
@@ -13279,9 +12641,7 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_load_files') {
+#@@PAX_OP env_load_files
         my $identity_method = $sub->{identity_method} // die 'compiled sub identity method missing';
         my $load_env_pl_method = $sub->{load_env_pl_method} // die 'compiled sub env.pl loader method missing';
         my $load_env_file_method = $sub->{load_env_file_method} // die 'compiled sub env loader method missing';
@@ -13306,9 +12666,7 @@ JS
             return \@loaded;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_strip_comments') {
+#@@PAX_OP env_strip_comments
         $impl = sub {
             my ($class, %args) = @_;
             my $line = defined $args{line} ? $args{line} : '';
@@ -13345,9 +12703,7 @@ JS
             return $line;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_expand_value') {
+#@@PAX_OP env_expand_value
         my $braced_method = $sub->{braced_method} // die 'compiled sub braced method missing';
         my $lookup_method = $sub->{lookup_method} // die 'compiled sub lookup method missing';
         $impl = sub {
@@ -13364,9 +12720,7 @@ JS
             return $value;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_expand_braced') {
+#@@PAX_OP env_expand_braced
         my $call_function_method = $sub->{call_function_method} // die 'compiled sub call-function method missing';
         my $lookup_method = $sub->{lookup_method} // die 'compiled sub lookup method missing';
         my $expand_value_method = $sub->{expand_value_method} // die 'compiled sub expand-value method missing';
@@ -13394,9 +12748,7 @@ JS
                     : '';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_call_function') {
+#@@PAX_OP env_call_function
         my $invalid_error = $sub->{invalid_error} // 'Invalid env function in %s line %s: %s';
         my $call_error = $sub->{call_error} // 'Env function %s failed in %s line %s: %s';
         $impl = sub {
@@ -13414,9 +12766,7 @@ JS
             return $value;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_load_env_file') {
+#@@PAX_OP env_load_env_file
         my $strip_method = $sub->{strip_method} // die 'compiled sub strip method missing';
         my $expand_method = $sub->{expand_method} // die 'compiled sub expand method missing';
         my $invalid_line_error = $sub->{invalid_line_error} // 'Invalid env line in %s line %s: %s';
@@ -13457,9 +12807,7 @@ JS
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'env_load_env_pl_file') {
+#@@PAX_OP env_load_env_pl_file
         $impl = sub {
             my ($class, $file) = @_;
             my %before = %ENV;
@@ -13481,9 +12829,7 @@ JS
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_configure') {
+#@@PAX_OP app_file_configure
         my $hash_symbol = $sub->{hash_symbol} // die 'compiled sub aliases symbol missing';
         my $files_symbol = $sub->{files_symbol} // die 'compiled sub files symbol missing';
         my $config_hash_symbol = $sub->{config_hash_symbol} // die 'compiled sub config aliases symbol missing';
@@ -13504,9 +12850,7 @@ JS
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_read') {
+#@@PAX_OP app_file_read
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         my $read_error = $sub->{read_error} // 'Unable to read %s: %s';
         $impl = sub {
@@ -13518,9 +12862,7 @@ JS
             return <$fh>;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_write') {
+#@@PAX_OP app_file_write
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         my $files_method = $sub->{files_method} // die 'compiled sub files method missing';
         my $missing_error = $sub->{missing_error} // 'Missing file path';
@@ -13539,9 +12881,7 @@ JS
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_all') {
+#@@PAX_OP app_file_all
         my $files_method = $sub->{files_method} // die 'compiled sub files method missing';
         my $load_aliases_method = $sub->{load_aliases_method} // die 'compiled sub load aliases method missing';
         $impl = sub {
@@ -13551,9 +12891,7 @@ JS
             return $files->all_files;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_exists') {
+#@@PAX_OP app_file_exists
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
             my ($class, $file) = @_;
@@ -13561,9 +12899,7 @@ JS
             return $path && -f $path ? 1 : 0;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_rm') {
+#@@PAX_OP app_file_rm
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
             my ($class, $file) = @_;
@@ -13572,9 +12908,7 @@ JS
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_files_obj') {
+#@@PAX_OP app_file_files_obj
         my $files_symbol = $sub->{files_symbol} // die 'compiled sub files symbol missing';
         my $file_registry_class = $sub->{file_registry_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::FileRegistry';
         my $path_registry_class = $sub->{path_registry_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::PathRegistry';
@@ -13594,9 +12928,7 @@ JS
             return ${$files_symbol};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_alias_cache_key') {
+#@@PAX_OP app_file_alias_cache_key
         $impl = sub {
             my ($files) = @_;
             return '' if !$files || !Scalar::Util::blessed($files);
@@ -13607,9 +12939,7 @@ JS
             return join "\n", $project_root, @runtime_roots;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_load_configured_aliases') {
+#@@PAX_OP app_file_load_configured_aliases
         my $files_symbol = $sub->{files_symbol} // die 'compiled sub files symbol missing';
         my $config_hash_symbol = $sub->{config_hash_symbol} // die 'compiled sub config aliases symbol missing';
         my $config_key_symbol = $sub->{config_key_symbol} // die 'compiled sub config key symbol missing';
@@ -13627,9 +12957,7 @@ JS
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_resolve_file') {
+#@@PAX_OP app_file_resolve_file
         my $files_symbol = $sub->{files_symbol} // die 'compiled sub files symbol missing';
         my $aliases_symbol = $sub->{aliases_symbol} // die 'compiled sub aliases symbol missing';
         my $config_aliases_symbol = $sub->{config_aliases_symbol} // die 'compiled sub config aliases symbol missing';
@@ -13655,9 +12983,7 @@ JS
             return;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'app_file_autoload') {
+#@@PAX_OP app_file_autoload
         my $autoload_symbol = $sub->{autoload_symbol} // die 'compiled sub autoload symbol missing';
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
@@ -13672,9 +12998,7 @@ JS
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_resolve_file') {
+#@@PAX_OP file_registry_resolve_file
         $impl = sub {
             my ($self, $name) = @_;
             return $name if File::Spec->file_name_is_absolute($name);
@@ -13685,9 +13009,7 @@ JS
             die "Unknown file name '$name'";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_register_named_files') {
+#@@PAX_OP file_registry_register_named_files
         $impl = sub {
             my ($self, $aliases) = @_;
             return $self if ref($aliases) ne 'HASH';
@@ -13700,9 +13022,7 @@ JS
             return $self;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_unregister_named_file') {
+#@@PAX_OP file_registry_unregister_named_file
         $impl = sub {
             my ($self, $name) = @_;
             return $self if !defined $name || $name eq '';
@@ -13711,9 +13031,7 @@ JS
             return $self;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_named_files') {
+#@@PAX_OP file_registry_named_files
         my $load_method = $sub->{load_method} // die 'compiled sub load method missing';
         $impl = sub {
             my ($self) = @_;
@@ -13724,9 +13042,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_all_file_aliases') {
+#@@PAX_OP file_registry_all_file_aliases
         my $alias_methods = $sub->{alias_methods} // [];
         $impl = sub {
             my ($self) = @_;
@@ -13738,9 +13054,7 @@ JS
             return \%aliases;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_all_files') {
+#@@PAX_OP file_registry_all_files
         my $aliases_method = $sub->{aliases_method} // die 'compiled sub aliases method missing';
         my $named_files_method = $sub->{named_files_method} // die 'compiled sub named-files method missing';
         $impl = sub {
@@ -13753,9 +13067,7 @@ JS
             return \%all;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_locate_files') {
+#@@PAX_OP file_registry_locate_files
         my $locate_under_method = $sub->{locate_under_method} // die 'compiled sub locate-under method missing';
         $impl = sub {
             my ($self, @terms) = @_;
@@ -13764,9 +13076,7 @@ JS
             return _code_for($locate_under_method)->($self, $self->paths->cwd, @terms);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_locate_files_under') {
+#@@PAX_OP file_registry_locate_files_under
         $impl = sub {
             require File::Find;
             my ($self, $root, @terms) = @_;
@@ -13792,9 +13102,7 @@ JS
             return grep { !$seen{$_}++ } sort @found;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_load_configured_named_files') {
+#@@PAX_OP file_registry_load_configured_named_files
         $impl = sub {
             my ($self) = @_;
             my $config = __PAX_RUNTIME_LEGACY_NAMESPACE__::Config->new(files => $self, paths => $self->paths);
@@ -13802,9 +13110,7 @@ JS
             return $self;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_read') {
+#@@PAX_OP file_registry_read
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
             my ($self, $name) = @_;
@@ -13815,9 +13121,7 @@ JS
             return <$fh>;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_write') {
+#@@PAX_OP file_registry_write
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         my $mode = $sub->{mode} // '>';
         $impl = sub {
@@ -13830,9 +13134,7 @@ JS
             return $file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_touch') {
+#@@PAX_OP file_registry_touch
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
             my ($self, $name) = @_;
@@ -13843,9 +13145,7 @@ JS
             return $file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_remove') {
+#@@PAX_OP file_registry_remove
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         $impl = sub {
             my ($self, $name) = @_;
@@ -13854,9 +13154,7 @@ JS
             return $file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'file_registry_catfile') {
+#@@PAX_OP file_registry_catfile
         my $root_method = $sub->{root_method} // die 'compiled sub root method missing';
         my $filename = $sub->{filename} // die 'compiled sub filename missing';
         $impl = sub {
@@ -13864,9 +13162,7 @@ JS
             return File::Spec->catfile($self->paths->$root_method(), $filename);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'usage_error_stderr') {
+#@@PAX_OP usage_error_stderr
         my $exit_code = $sub->{exit_code} // 2;
         $impl = sub {
             my ($message) = @_;
@@ -13874,9 +13170,7 @@ JS
             return $exit_code;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skills_install_progress') {
+#@@PAX_OP skills_install_progress
         my $progress_class = $sub->{progress_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::CLI::Progress';
         my $manager_class = $sub->{manager_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::SkillManager';
         my $title = $sub->{title} // 'dashboard skills install progress';
@@ -13892,9 +13186,7 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skills_install_progress_for_sources') {
+#@@PAX_OP skills_install_progress_for_sources
         my $progress_class = $sub->{progress_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::CLI::Progress';
         my $manager_class = $sub->{manager_class} // '__PAX_RUNTIME_LEGACY_NAMESPACE__::SkillManager';
         my $title = $sub->{title} // 'dashboard skills install progress';
@@ -13912,9 +13204,7 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skills_install_result_rows') {
+#@@PAX_OP skills_install_result_rows
         $impl = sub {
             my ($result) = @_;
             return () if ref($result) ne 'HASH';
@@ -13924,9 +13214,7 @@ JS
             return ();
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'ansi_plain_text') {
+#@@PAX_OP ansi_plain_text
         $impl = sub {
             my ($value) = @_;
             $value = '' if !defined $value;
@@ -13934,9 +13222,7 @@ JS
             return $value;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'bool_text_pair') {
+#@@PAX_OP bool_text_pair
         my $true_text = $sub->{true_text} // 'yes';
         my $false_text = $sub->{false_text} // 'no';
         $impl = sub {
@@ -13944,9 +13230,7 @@ JS
             return $value ? $true_text : $false_text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'format_table_row') {
+#@@PAX_OP format_table_row
         my $plain_text_method = $sub->{plain_text_method} // die 'compiled sub plain text method missing';
         $impl = sub {
             my ($row, $widths) = @_;
@@ -13959,9 +13243,7 @@ JS
             return join '  ', @cells;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'render_text_table') {
+#@@PAX_OP render_text_table
         my $plain_text_method = $sub->{plain_text_method} // die 'compiled sub plain text method missing';
         my $format_row_method = $sub->{format_row_method} // die 'compiled sub format row method missing';
         $impl = sub {
@@ -13982,9 +13264,7 @@ JS
             return join("\n", @lines) . "\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skills_install_summary_table') {
+#@@PAX_OP skills_install_summary_table
         my $rows_method = $sub->{rows_method} // die 'compiled sub rows method missing';
         my $render_table_method = $sub->{render_table_method} // die 'compiled sub render table method missing';
         $impl = sub {
@@ -14004,9 +13284,7 @@ JS
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skills_table') {
+#@@PAX_OP skills_table
         my $enabled_text_method = $sub->{enabled_text_method} // die 'compiled sub enabled text method missing';
         my $render_table_method = $sub->{render_table_method} // die 'compiled sub render table method missing';
         $impl = sub {
@@ -14028,9 +13306,7 @@ JS
             );
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'skills_usage_table') {
+#@@PAX_OP skills_usage_table
         my $enabled_text_method = $sub->{enabled_text_method} // die 'compiled sub enabled text method missing';
         my $boolean_text_method = $sub->{boolean_text_method} // die 'compiled sub boolean text method missing';
         my $render_table_method = $sub->{render_table_method} // die 'compiled sub render table method missing';
@@ -14084,9 +13360,7 @@ JS
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'run_skills_command') {
+#@@PAX_OP run_skills_command
         my $build_paths_method = $sub->{build_paths_method} // die 'compiled sub build paths method missing';
         my $usage_error_method = $sub->{usage_error_method} // die 'compiled sub usage error method missing';
         my $install_progress_method = $sub->{install_progress_method} // die 'compiled sub install progress method missing';
@@ -14222,9 +13496,7 @@ JS
             die "Unknown skills action: $action\nUsage: dashboard skills [install|uninstall|enable|disable|list|usage]\n";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'zip_payload_url') {
+#@@PAX_OP zip_payload_url
         $impl = sub {
             my ($text) = @_;
             return if !defined $text || $text eq '';
@@ -14236,18 +13508,14 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'unzip_payload') {
+#@@PAX_OP unzip_payload
         $impl = sub {
             my ($token) = @_;
             return if !defined $token || $token eq '';
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::Codec::decode_payload($token);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'js_single_quote') {
+#@@PAX_OP js_single_quote
         $impl = sub {
             my ($text) = @_;
             $text = '' if !defined $text;
@@ -14256,9 +13524,7 @@ JS
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'validate_saved_ajax_file') {
+#@@PAX_OP validate_saved_ajax_file
         $impl = sub {
             my ($file) = @_;
             die "file is required" if !defined $file || $file eq '';
@@ -14268,9 +13534,7 @@ JS
             return $file;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'saved_ajax_file_path') {
+#@@PAX_OP saved_ajax_file_path
         my $validate_method = $sub->{validate_method} // die 'compiled sub validate method missing';
         $impl = sub {
             my (%args) = @_;
@@ -14279,9 +13543,7 @@ JS
             return File::Spec->catfile($runtime_root, 'dashboards', 'ajax', split('/', $file));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'load_saved_ajax_code') {
+#@@PAX_OP load_saved_ajax_code
         my $path_method = $sub->{path_method} // die 'compiled sub path method missing';
         $impl = sub {
             my (%args) = @_;
@@ -14294,9 +13556,7 @@ JS
             return $code;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'saved_ajax_url') {
+#@@PAX_OP saved_ajax_url
         my $validate_method = $sub->{validate_method} // die 'compiled sub validate method missing';
         $impl = sub {
             my (%args) = @_;
@@ -14310,16 +13570,14 @@ JS
             return { url => ($args{base_url} || '') . $query };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'saved_ajax_url_and_store') {
+#@@PAX_OP saved_ajax_url_and_store
         my $path_method = $sub->{path_method} // die 'compiled sub path method missing';
         my $url_method = $sub->{url_method} // die 'compiled sub url method missing';
         $impl = sub {
             my (%args) = @_;
             my $path = _code_for($path_method)->(%args);
             my $dir = dirname($path);
-            make_path($dir) if !-d $dir;
+            File::Path::make_path($dir) if !-d $dir;
             open my $fh, '>', $path or die "Unable to write $path: $!";
             print {$fh} defined $args{code} ? $args{code} : '';
             close $fh;
@@ -14330,9 +13588,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'acmdx_bundle') {
+#@@PAX_OP acmdx_bundle
         my $zip_method = $sub->{zip_method} // die 'compiled sub zip method missing';
         $impl = sub {
             my (%args) = @_;
@@ -14355,9 +13611,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'ajax_helper') {
+#@@PAX_OP ajax_helper
         my $saved_url_method = $sub->{saved_url_method} // die 'compiled sub saved url method missing';
         my $saved_store_method = $sub->{saved_store_method} // die 'compiled sub saved store method missing';
         my $acmdx_method = $sub->{acmdx_method} // die 'compiled sub acmdx method missing';
@@ -14406,9 +13660,7 @@ JS
             return 'HIDE-THIS';
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cmdx_shell_pipeline') {
+#@@PAX_OP cmdx_shell_pipeline
         my $zip_method = $sub->{zip_method} // die 'compiled sub zip method missing';
         $impl = sub {
             my ($type, $code) = @_;
@@ -14416,9 +13668,7 @@ JS
             return "printf '%s' " . quotemeta($token->{raw}) . " | base64 -d | gunzip";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cmdx_tuple') {
+#@@PAX_OP cmdx_tuple
         my $shell_method = $sub->{shell_method} // die 'compiled sub shell method missing';
         $impl = sub {
             my ($type, $code) = @_;
@@ -14426,18 +13676,14 @@ JS
             return ($type, $switch, _code_for($shell_method)->($type, $code));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cmdp_tuple') {
+#@@PAX_OP cmdp_tuple
         my $shell_method = $sub->{shell_method} // die 'compiled sub shell method missing';
         $impl = sub {
             my ($type, $code) = @_;
             return (_code_for($shell_method)->($type, $code), $type);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'build_ticket_plan') {
+#@@PAX_OP build_ticket_plan
         my $resolve_method = $sub->{resolve_method} // die 'compiled sub resolve method missing';
         my $environment_method = $sub->{environment_method} // die 'compiled sub environment method missing';
         my $exists_method = $sub->{exists_method} // die 'compiled sub exists method missing';
@@ -14472,9 +13718,7 @@ JS
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'run_ticket_command_plan') {
+#@@PAX_OP run_ticket_command_plan
         my $default_runner = $sub->{default_runner} // die 'compiled sub default runner missing';
         my $plan_method = $sub->{plan_method} // die 'compiled sub plan method missing';
         my $create_error = $sub->{create_error} // "Unable to create tmux ticket session '%s': %s%s";
@@ -14494,27 +13738,21 @@ JS
             return $plan;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'stream_writer_print') {
+#@@PAX_OP stream_writer_print
         $impl = sub {
             my ($self, @parts) = @_;
             $self->{writer}->(join '', map { defined $_ ? $_ : '' } @parts);
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'stream_writer_printf') {
+#@@PAX_OP stream_writer_printf
         $impl = sub {
             my ($self, $format, @parts) = @_;
             $self->{writer}->(sprintf(defined $format ? $format : '', @parts));
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'gzip_base64_encode') {
+#@@PAX_OP gzip_base64_encode
         my $error_message = $sub->{error_message} // 'gzip failed: %s';
         $impl = sub {
             require IO::Compress::Gzip;
@@ -14526,9 +13764,7 @@ JS
             return MIME::Base64::encode_base64($zipped, '');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'gzip_base64_decode') {
+#@@PAX_OP gzip_base64_decode
         my $error_message = $sub->{error_message} // 'gunzip failed: %s';
         $impl = sub {
             require IO::Uncompress::Gunzip;
@@ -14541,14 +13777,10 @@ JS
             return $text;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'return_true') {
+#@@PAX_OP return_true
         $impl = sub { return 1 };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'posix_shell_binary') {
+#@@PAX_OP posix_shell_binary
         $impl = sub {
             my ($preferred) = @_;
             no strict 'refs';
@@ -14556,9 +13788,7 @@ JS
             return $resolver->($preferred) || $resolver->('sh') || $preferred;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'cmd_binary') {
+#@@PAX_OP cmd_binary
         $impl = sub {
             no strict 'refs';
             my $resolver = *{ $package . '::command_in_path' }{CODE} or die "missing command_in_path for $package";
@@ -14567,18 +13797,14 @@ JS
             return $candidate;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'module_lib_root') {
+#@@PAX_OP module_lib_root
         my $require_path = $sub->{require_path} // die 'compiled sub require_path missing';
         $impl = sub {
             my $path = $INC{$require_path} || __FILE__;
             return dirname(dirname(dirname($path)));
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
-    }
-
-    if (($sub->{op} // '') eq 'build_pax_web_psgi_app') {
+#@@PAX_OP build_pax_web_psgi_app
         no strict 'refs';
         no warnings 'redefine';
         *{$full} = sub {
@@ -14650,365 +13876,3 @@ JS
             return $dancer_app->()->to_app;
         };
         return;
-    }
-
-    die "unsupported compiled sub op: " . ($sub->{op} // '');
-}
-
-# Rewrite script-source subroutines with their compiled/native-aware variants
-# before the top-level script body is evaluated.
-sub _apply_compiled_script_subs {
-    my ($source, $subs) = @_;
-    return $source if !defined $source || $source eq '' || !$subs || !@$subs;
-    for my $sub (@$subs) {
-        next if (($sub->{op} // '') ne 'native_shape_sub');
-        my $full = $sub->{full_name} // '';
-        next if $full !~ /^main::([^:]+)\z/;
-        my $short = $1;
-        my $replacement = _compiled_script_sub_source($full, $short, $sub->{prototype}, $sub->{native_shape});
-        next if !defined $replacement || $replacement eq '';
-        my $original = _extract_sub_source_runtime($source, $short) or next;
-        $source =~ s/\Q$original\E/$replacement/s;
-    }
-    return $source;
-}
-
-# Render a compiled script sub back into source that the runtime can splice into
-# the packaged script body.
-sub _compiled_script_sub_source {
-    my ($full, $short, $prototype, $shape) = @_;
-    return if !defined $short || $short eq '' || ref($shape) ne 'HASH';
-    my $proto = defined $prototype ? $prototype : '';
-    my $args = '$PAX_ARG0';
-    $args .= ', $PAX_ARG1' if scalar(@{ $shape->{args} // [] }) > 1;
-    return sprintf(
-        "sub %s%s {\n    my (%s) = \@_;\n    return PAX::StandaloneRuntime::_run_native_shape_sub(%s, %s, \@_);\n}\n",
-        $short,
-        $proto || '',
-        $args,
-        _perl_literal($full),
-        _perl_literal(JSON::PP->new->canonical(1)->encode($shape)),
-    );
-}
-
-# Extract the original subroutine source from the packaged script so runtime
-# rewriting has an exact source range to replace.
-sub _extract_sub_source_runtime {
-    my ($source, $sub_name) = @_;
-    return if $source !~ /\bsub\s+\Q$sub_name\E\b[^\{]*\{/g;
-    my $start = $-[0];
-    my $brace = index($source, '{', $+[0] - 1);
-    return if $brace < 0;
-    my $depth = 1;
-    my $i = $brace + 1;
-    while ($i < length($source)) {
-        my $char = substr($source, $i, 1);
-        $depth++ if $char eq '{';
-        $depth-- if $char eq '}';
-        if ($depth == 0) {
-            my $end = $i + 1;
-            while ($end < length($source) && substr($source, $end, 1) =~ /[ \t]/) {
-                $end++;
-            }
-            $end++ if $end < length($source) && substr($source, $end, 1) eq ';';
-            return substr($source, $start, $end - $start);
-        }
-        $i++;
-    }
-    return;
-}
-
-# Execute a compiled script sub through the packaged native-dispatch entry when
-# the runtime emitted a matching native artifact.
-sub _run_native_shape_sub {
-    my ($full, $shape_json, @args) = @_;
-    my $shape = ref($shape_json) eq 'HASH' ? $shape_json : _runtime_json_decode($shape_json);
-    my $expected = scalar @{ $shape->{args} // [] };
-    if ($expected && @args == $expected && _native_shape_args_are_i64(\@args)) {
-        my $result = _invoke_native_shape_runtime($full, $shape, \@args);
-        return $result->{value} if $result->{status} eq 'ok' && exists $result->{value};
-    }
-    return _interpret_native_shape($shape, \@args);
-}
-
-# Dispatch supported native-shape script subs through the runtime dispatcher and
-# fall back to interpretation when no packaged artifact is available.
-sub _invoke_native_shape_runtime {
-    my ($full, $shape, $args) = @_;
-    my $state = _state();
-    my $meta = $state->{by_region}{$full} || {};
-    return { status => 'fallback', reason => 'native region missing' } if !($meta->{executable_logical_path} // '');
-    my $probe = File::Spec->catfile($state->{root}, split m{/}, $meta->{executable_logical_path});
-    chmod 0700, $probe if -f $probe;
-    my $left = $args->[0];
-    my $right = @$args > 1 ? $args->[1] : 0;
-    return $state->{native_runner}->run_i64_binary(
-        path => $probe,
-        left => $left,
-        right => $right,
-    );
-}
-
-# Confirm that the current call arguments fit the narrow integer ABI used by
-# packaged native script helpers.
-sub _native_shape_args_are_i64 {
-    my ($args) = @_;
-    for my $arg (@$args) {
-        return 0 if !defined $arg || $arg !~ /\A-?\d+\z/;
-    }
-    return 1;
-}
-
-# Mirror the supported native shapes in Perl so deopt or unsupported dispatch
-# can still run script-native candidates correctly.
-sub _interpret_native_shape {
-    my ($shape, $args) = @_;
-    my $kind = $shape->{kind} // '';
-    if ($kind eq 'i64_binary_leaf') {
-        my ($left, $right) = @$args;
-        my $op = $shape->{op} // '';
-        return $left + $right if $op eq 'add';
-        return $left - $right if $op eq 'subtract';
-        return $left * $right if $op eq 'multiply';
-        return $left > $right ? 1 : 0 if $op eq 'greater_than';
-    }
-    if ($kind eq 'i64_sum_loop') {
-        my ($limit) = @$args;
-        return 0 if !defined $limit || $limit <= 0;
-        my $sum = 0;
-        for (my $i = 1; $i <= $limit; $i++) {
-            $sum += $i;
-        }
-        return $sum;
-    }
-    if ($kind eq 'i64_masked_mix_accum_loop') {
-        my ($limit) = @$args;
-        return 0 if !defined $limit || $limit <= 0;
-        my $acc = 0;
-        for (my $i = 0; $i < $limit; $i++) {
-            $acc += (($i * 13) ^ ($i >> 3)) & 0xFFFF;
-        }
-        return $acc;
-    }
-    die "unsupported native shape kind: $kind";
-}
-
-sub _install_sub_impl {
-    my ($package, $name, $prototype, $impl) = @_;
-    my $full = $package . '::' . $name;
-    no strict 'refs';
-    no warnings 'redefine';
-    if (defined $prototype && $prototype ne '') {
-        my $impl_name = sprintf '__PAX_IMPL_%s_%d_%d', $name, $$, int(rand(1_000_000));
-        my $impl_full = $package . '::' . $impl_name;
-        *{$impl_full} = $impl;
-        my $code = "package $package; no warnings 'redefine'; sub $name $prototype { goto &$impl_full } 1;";
-        my $ok = eval $code;
-        die $@ if !$ok;
-        return;
-    }
-    *{$full} = $impl;
-    return;
-}
-
-sub _install_residual_stubs {
-    my ($unit, $record) = @_;
-    for my $full (@{ $record->{unsupported_subs} // [] }) {
-        no strict 'refs';
-        no warnings 'redefine';
-        *{$full} = sub {
-            _load_residual_sub($unit, $record, $full);
-            my $cv = _code_for($full) or die "residual source did not define $full";
-            goto &$cv;
-        };
-    }
-}
-
-sub _load_residual_sub {
-    my ($unit, $record, $full) = @_;
-    my $state = _state();
-    my $key = $record->{require_path} || $unit->{logical_path} || $unit->{source_path} || '';
-    my $sub_key = $key . '::' . $full;
-    return if $state->{residual_loaded}{$sub_key};
-    if (($record->{residual_mode} // '') eq 'module') {
-        _load_residual_module($unit, $record);
-        my $cv = _code_for($full) or die "module residual source did not define $full";
-        $state->{residual_loaded}{$sub_key} = 1;
-        return 1;
-    }
-    _load_residual_bootstrap($unit, $record);
-    my $source = $record->{residual_sub_sources}{$full}
-        // die "residual sub source missing for $full";
-    my $path = _virtual_source_path($unit, $record);
-    my $wrapped = "package $record->{package};\nno strict;\nno warnings 'redefine';\n#line 1 \"$path\"\n" . $source;
-    local $SIG{__WARN__} = sub {
-        my ($warning) = @_;
-        return if defined $warning && $warning =~ /\ASubroutine .+ redefined at \Q$path\E line \d+\.\n\z/;
-        return if defined $warning && $warning =~ /\APrototype mismatch: sub .+ line \d+\.\n\z/;
-        warn $warning;
-    };
-    my $rv = eval $wrapped;
-    die $@ if $@;
-    $state->{residual_loaded}{$sub_key} = 1;
-    return 1;
-}
-
-sub _load_residual_module {
-    my ($unit, $record) = @_;
-    my $state = _state();
-    my $key = $record->{require_path} || $unit->{logical_path} || $unit->{source_path} || '';
-    return if $state->{residual_bootstrap_loaded}{$key};
-    {
-        no strict 'refs';
-        my $stash = \%{ ($record->{package} // '') . '::' };
-        for my $name (
-            map { $_->{name} } @{ $record->{subs} // [] },
-            map { /::([^:]+)\z/ ? $1 : () } @{ $record->{unsupported_subs} // [] },
-        ) {
-            next if !$name;
-            delete $stash->{$name};
-        }
-    }
-    my $source = $record->{residual_source} // die "residual module source missing for $key";
-    my $path = _virtual_source_path($unit, $record);
-    my $wrapped = "no strict;\nno warnings 'redefine';\n#line 1 \"$path\"\n" . $source;
-    local $SIG{__WARN__} = sub {
-        my ($warning) = @_;
-        return if defined $warning && $warning =~ /\ASubroutine .+ redefined at \Q$path\E line \d+\.\n\z/;
-        return if defined $warning && $warning =~ /\APrototype mismatch: sub .+ line \d+\.\n\z/;
-        warn $warning;
-    };
-    my $rv = eval $wrapped;
-    die $@ if $@;
-    $state->{residual_bootstrap_loaded}{$key} = 1;
-    return $rv;
-}
-
-sub _load_residual_bootstrap {
-    my ($unit, $record) = @_;
-    my $state = _state();
-    my $key = $record->{require_path} || $unit->{logical_path} || $unit->{source_path} || '';
-    return if $state->{residual_bootstrap_loaded}{$key};
-    my $source = $record->{residual_bootstrap_source};
-    $state->{residual_bootstrap_loaded}{$key} = 1;
-    return 1 if !defined $source || $source eq '';
-    my $path = _virtual_source_path($unit, $record);
-    my $wrapped = "no strict;\nno warnings 'redefine';\n#line 1 \"$path\"\n" . $source;
-    local $SIG{__WARN__} = sub {
-        my ($warning) = @_;
-        return if defined $warning && $warning =~ /\ASubroutine .+ redefined at \Q$path\E line \d+\.\n\z/;
-        return if defined $warning && $warning =~ /\APrototype mismatch: sub .+ line \d+\.\n\z/;
-        warn $warning;
-    };
-    my $rv = eval $wrapped;
-    die $@ if $@;
-    return 1;
-}
-
-sub _code_for {
-    my ($full) = @_;
-    no strict 'refs';
-    return *{$full}{CODE};
-}
-
-sub _virtual_source_path {
-    my ($unit, $record) = @_;
-    return _ensure_virtual_source_file($unit);
-}
-
-sub _virtual_entrypoint_path {
-    my ($entrypoint) = @_;
-    my $state = _state();
-    my $manifest = $state->{manifest} || {};
-    my $unit = {
-        logical_path => $manifest->{entrypoint}{logical_path} || $entrypoint,
-    };
-    return _ensure_virtual_source_file($unit);
-}
-
-sub _render_simple_template_asset {
-    my ($path, $vars) = @_;
-    return if !$path || !-f $path;
-    open my $fh, '<', $path or return;
-    local $/;
-    my $template = <$fh>;
-    close $fh;
-    return if !defined $template || $template eq '';
-    $template =~ s/\[\%\s*([A-Za-z_][A-Za-z0-9_]*)\s*\%\]/defined $vars->{$1} ? $vars->{$1} : ''/ge;
-    return $template;
-}
-
-sub _log_native_hit {
-    my ($region) = @_;
-    my $path = $ENV{PAX_STANDALONE_NATIVE_HIT_LOG} or return;
-    open my $fh, '>>', $path or return;
-    print {$fh} $region, "\n";
-    close $fh;
-}
-
-1;
-
-=pod
-
-=head1 NAME
-
-PAX::StandaloneRuntime - embedded runtime loader for standalone binaries
-
-=head1 SYNOPSIS
-
-  use PAX::StandaloneRuntime;
-
-  my $result = PAX::StandaloneRuntime->run(...);
-
-=head1 DESCRIPTION
-
-Bootstraps extracted standalone payloads, configures the runtime environment, and dispatches entrypoints, helpers, and native fallbacks from a single binary.
-
-=head1 METHODS
-
-=head2 run, stash, hide, void, stop, params, stash, hide, void, stop, params
-
-These are the public entrypoints exposed by this module's current interface.
-
-=head1 PURPOSE
-
-This module exists to keep the embedded runtime loader for standalone binaries logic in one place so the CLI, build
-pipeline, and runtime can reuse the same behavior instead of duplicating it.
-
-=head1 WHY IT EXISTS
-
-PAX uses this module when it needs embedded runtime loader for standalone binaries. Keeping that behavior isolated here
-makes the surrounding compiler and packaging stages easier to reason about and
-safer to evolve.
-
-=head1 WHEN TO USE
-
-Edit this file when a change affects embedded runtime loader for standalone binaries, the data contract this module
-returns, or the conditions under which callers choose this path.
-
-=head1 HOW TO USE
-
-Load the module through the normal PAX call path, pass explicit arguments rather
-than ambient global state, and keep project-specific behavior out of this file
-so the implementation stays neutral across arbitrary Perl applications.
-
-=head1 WHAT USES IT
-
-This module is used by the PAX CLI, the build pipeline, standalone packaging,
-and the test suite paths that cover embedded runtime loader for standalone binaries.
-
-=head1 EXAMPLES
-
-Example 1:
-
-  perl -Ilib -MPAX::StandaloneRuntime -e 1
-
-Confirm that the module loads from a source checkout.
-
-Example 2:
-
-  prove -lr t
-
-Run the repository test suite after changing the behavior this module owns.
-
-=cut
