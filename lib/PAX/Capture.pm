@@ -1,6 +1,6 @@
 package PAX::Capture;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -75,7 +75,7 @@ sub _scan_source_features {
         overload => $source =~ /\buse\s+overload\b/ ? 1 : 0,
         typeglob => $source =~ /\*[A-Za-z_][A-Za-z0-9_:]*/ ? 1 : 0,
         xs_loader => $source =~ /\b(?:XSLoader|DynaLoader)\b/ ? 1 : 0,
-        local_dynamic => $source =~ /\blocal\s+[$@%*]/ ? 1 : 0,
+        local_dynamic => $source =~ /\blocal\s+[\$\@%*]/ ? 1 : 0,
     };
 }
 
@@ -459,7 +459,7 @@ sub _lower_i64_masked_mix_accum_loop {
         induction => $induction,
         smoke_left => 8,
         smoke_right => 0,
-        smoke_expected => 360,
+        smoke_expected => 364,
         source => 'capture_optree_unit',
     };
 }

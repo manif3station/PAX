@@ -1,6 +1,6 @@
 package PAX::Compatibility;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -27,7 +27,7 @@ sub report {
             feature => $name,
             policy => $policy->{policy},
             reason => $policy->{reason},
-        } if $policy->{barrier};
+        };
     }
 
     if (($capture->{status} // '') ne 'ok') {
@@ -70,7 +70,6 @@ sub _feature_policy {
     return {
         policy => $entry->[0],
         reason => $entry->[1],
-        barrier => 1,
     };
 }
 

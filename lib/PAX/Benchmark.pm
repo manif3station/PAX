@@ -1,6 +1,6 @@
 package PAX::Benchmark;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -143,8 +143,12 @@ sub _summarise {
     };
 }
 
+# Path of the process status file that supplies resident-set size; tests may
+# point it at a fixture.
+our $STATUS_PATH = '/proc/self/status';
+
 sub _current_rss_kb {
-    open my $fh, '<', '/proc/self/status' or return undef;
+    open my $fh, '<', $STATUS_PATH or return undef;
     while (my $line = <$fh>) {
         return 0 + $1 if $line =~ /^VmRSS:\s+(\d+)\s+kB/;
     }

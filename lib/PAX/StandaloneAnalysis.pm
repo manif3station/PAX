@@ -1,6 +1,6 @@
 package PAX::StandaloneAnalysis;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -68,7 +68,7 @@ sub dependencies {
             used_in_code => $modules{$module}{used_in_code} ? JSON::PP::true() : JSON::PP::false(),
         );
         if (my $packaged = $packaged{$module}) {
-            if (($packaged->{unit_kind} // '') eq 'dependency') {
+            if ($packaged->{unit_kind} eq 'dependency') {
                 $item{class} = 'compiled_dependency';
                 $item{provider} = 'pax_compiler';
                 $summary{compiled_dependency}++;
@@ -176,7 +176,7 @@ sub native_artifacts {
             message => "$@",
         }],
         runtime_epochs => undef,
-    } if !$capture || $@;
+    } if !$capture;
     return { items => [], summary => { native_ready => 0, fallback_only => 0, total => 0 } }
         if ($capture->{status} ne 'ok');
 
@@ -261,11 +261,12 @@ sub _static_native_units_from_code_units {
             next if ref($sub) ne 'HASH';
             my $shape = $sub->{native_shape};
             next if ref($shape) ne 'HASH' || !%$shape;
-            my $full_name = $sub->{full_name} // do {
+            my $full_name = $sub->{full_name};
+            if (!defined $full_name) {
                 my $package = $record->{package} // 'main';
                 my $name = $sub->{name} // next;
-                $package . '::' . $name;
-            };
+                $full_name = $package . '::' . $name;
+            }
             push @units, {
                 region_id => sprintf('static-region-%04d', ++$index),
                 region_name => $full_name,
@@ -346,13 +347,21 @@ sub _source_has_native_candidate {
     return 0;
 }
 
+# Resolve a path to its canonical absolute form, keeping the input when the
+# filesystem cannot resolve it.
+sub _real_path {
+    my ($path) = @_;
+    my $real = abs_path($path);
+    return defined $real ? $real : $path;
+}
+
 sub _module_name_from_path {
     my ($path) = @_;
     return undef if !$path || $path !~ /\.pm$/;
-    my $abs = abs_path($path) || $path;
+    my $abs = _real_path($path);
     for my $inc (@INC) {
         next if ref $inc;
-        my $inc_abs = abs_path($inc) || $inc;
+        my $inc_abs = _real_path($inc);
         next if index($abs, $inc_abs . '/') != 0;
         my $rel = substr($abs, length($inc_abs) + 1);
         $rel =~ s/\.pm$//;
@@ -361,7 +370,7 @@ sub _module_name_from_path {
     }
     my @parts = File::Spec->splitdir($abs);
     for my $i (0 .. $#parts) {
-        if ($parts[$i] eq 'lib' && $i < $#parts) {
+        if ($parts[$i] eq 'lib') {
             my @tail = @parts[$i + 1 .. $#parts];
             my $name = join('::', @tail);
             $name =~ s/\.pm$//;
@@ -381,7 +390,7 @@ sub _locate_module {
     for my $inc (@INC) {
         next if ref $inc;
         my $path = File::Spec->catfile($inc, $rel);
-        return abs_path($path) || $path if -f $path;
+        return _real_path($path) if -f $path;
     }
     return;
 }

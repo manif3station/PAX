@@ -1,6 +1,6 @@
 package PAX::CLI::Progress;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -15,7 +15,7 @@ sub new {
         my $id   = $task->{id} || die 'Progress task missing id';
         $id => {
             id     => $id,
-            label  => $task->{label} || $id,
+            label  => $task->{label} ? $task->{label} : $id,
             status => 'pending',
         };
     } @{$tasks};

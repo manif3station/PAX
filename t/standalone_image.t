@@ -11,6 +11,9 @@ use JSON::PP ();
 use POSIX qw(WNOHANG);
 use lib "$FindBin::Bin/../lib";
 
+# Under a slow harness (for example Devel::Cover) the capture probe needs more than the default seconds.
+$ENV{PAX_CODE_UNIT_CAPTURE_TIMEOUT} //= 60;
+
 use PAX::StandaloneImage;
 use PAX::StandaloneDispatch;
 use PAX::Paxfile;

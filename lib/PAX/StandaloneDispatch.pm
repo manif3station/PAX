@@ -1,6 +1,6 @@
 package PAX::StandaloneDispatch;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -151,7 +151,7 @@ sub _runtime_paths {
         entrypoint => $entrypoint,
         manifest_path => File::Spec->catfile($image->{standalone_dir}, 'manifest.json'),
         perl_exec => $perl_exec,
-        perl5lib => join(':', grep { defined && length } (@lib_roots, @runtime_roots)),
+        perl5lib => join(':', @lib_roots, @runtime_roots),
     };
 }
 
@@ -187,9 +187,12 @@ print defined $value ? $value : q{};
     my $err = gensym;
     my $pid = open3(my $in, my $out, $err, $perl, '-e', $script, $paths->{entrypoint}, $region->{region_name}, $args{left}, $args{right});
     close $in;
-    local $/;
-    my $stdout = <$out> // '';
-    my $stderr = <$err> // '';
+    my ($stdout, $stderr);
+    {
+        local $/;
+        $stdout = <$out> // '';
+        $stderr = <$err> // '';
+    }
     waitpid($pid, 0);
     chomp $stdout;
 

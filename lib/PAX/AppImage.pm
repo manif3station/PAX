@@ -1,6 +1,6 @@
 package PAX::AppImage;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -31,8 +31,8 @@ sub new {
 sub build {
     my ($self, %args) = @_;
     my $entrypoint = $args{entrypoint} // die 'entrypoint required';
-    my $name = $args{name} // _default_name($entrypoint);
-    my @lib_dirs = map { abs_path($_) || $_ } @{ $args{lib_dirs} // [] };
+    my $name = defined $args{name} ? $args{name} : _default_name($entrypoint);
+    my @lib_dirs = map { _real_path($_) } @{ $args{lib_dirs} // [] };
     my $assets = _asset_manifest($args{assets} // [], $args{asset_dirs} // []);
     my $abs_entrypoint = abs_path($entrypoint) || die "entrypoint not found: $entrypoint";
     my $app_dir = File::Spec->catdir($self->{root}, $name);
@@ -125,6 +125,16 @@ sub _discover_preload_modules {
     return [sort keys %seen];
 }
 
+# _real_path($path)
+# Resolves a path to its canonical absolute form, keeping the input when the
+# filesystem cannot resolve it.
+# Input: path string. Output: absolute path or the original string.
+sub _real_path {
+    my ($path) = @_;
+    my $real = abs_path($path);
+    return defined $real ? $real : $path;
+}
+
 # _perl_files($lib_dirs)
 # Enumerates Perl source files beneath the declared library roots so preload
 # discovery and source hashing see the same file set.
@@ -138,7 +148,7 @@ sub _perl_files {
         File::Find::find({
             wanted => sub {
                 return if !-f $_;
-                return if $_ !~ /\.(?:pm|pl)$/ && $_ !~ /^[A-Za-z0-9_.-]+$/;
+                return if $_ !~ /\.(?:pm|pl)$/;
                 push @files, $File::Find::name;
             },
             no_chdir => 1,

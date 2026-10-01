@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -102,7 +102,7 @@ sub run {
     _install_require_hook();
     _install_pending_wrappers();
 
-    local $0 = $self_path if defined $self_path && $self_path ne '';
+    local $0 = $self_path if defined $self_path;
     if (@argv && $argv[0] eq '--pax-standalone-helper') {
         shift @argv;
         my $helper = shift @argv // die "standalone helper name required\n";
@@ -137,7 +137,7 @@ sub _resolve_entrypoint_from_manifest {
         my $unit = $_;
         my $unit_kind = $unit->{unit_kind} // '';
         my $packaging = $unit->{packaging} // '';
-        ($unit_kind // '') eq 'entrypoint' || ($packaging // '') =~ /\A(compiled|hybrid|residual)_(?:dispatch|cli_router|script)_pcu_v1\z/;
+        $unit_kind eq 'entrypoint' || $packaging =~ /\A(compiled|hybrid|residual)_(?:dispatch|cli_router|script)_pcu_v1\z/;
     } @{ $state->{manifest}{code_units} // [] };
     for my $unit (@unit_candidates) {
         my $logical = $unit->{logical_path} // '';
@@ -171,7 +171,7 @@ sub _state {
     } @{ $manifest->{code_units} // [] };
     for my $unit (@{ $manifest->{code_units} // [] }) {
         my $package = $unit->{package} // '';
-        next if !$package || $package eq '';
+        next if !$package;
         $compiled_packages{$package} = 1;
     }
     return $STATE = {
@@ -238,22 +238,20 @@ sub _app_entry_command {
     my $app = $manifest->{app} // {};
 
     my $env_name = $args{sub_env} // '';
-    if (defined $env_name && $env_name ne '') {
+    if ($env_name ne '') {
         my $value = $ENV{$env_name} // '';
         return $value if $value ne '';
     }
 
     my $fallback_env = $app->{entrypoint_env} // '';
-    if (defined $fallback_env && $fallback_env ne '' && (!$env_name || $fallback_env ne $env_name)) {
+    if ($fallback_env ne '' && (!$env_name || $fallback_env ne $env_name)) {
         my $value = $ENV{$fallback_env} // '';
         return $value if $value ne '';
     }
 
     my $prefix_command_env = _app_env_prefix() . '_COMMAND';
-    if (defined $prefix_command_env && $prefix_command_env ne '') {
-        my $value = $ENV{$prefix_command_env} // '';
-        return $value if $value ne '';
-    }
+    my $prefix_command_value = $ENV{$prefix_command_env} // '';
+    return $prefix_command_value if $prefix_command_value ne '';
 
     my $fallback = $args{sub_fallback};
     $fallback = $app->{entrypoint_fallback} if !defined $fallback || $fallback eq '';
@@ -295,7 +293,7 @@ sub _load_compiled_require {
     if (!$unit) {
         my $mapped = _legacy_require_path_to_app_require_path($target);
         $target = $mapped if defined $mapped;
-        $unit = $state->{compiled_units}{$target} if $target && $target ne '';
+        $unit = $state->{compiled_units}{$target} if $target;
     }
     return if !$unit;
     _trace("require start $target");
@@ -363,7 +361,7 @@ sub _legacy_module_for_app_module {
     my $state = _state();
     my $app_namespace = $state->{app_namespace} // '';
     my $legacy = $state->{legacy_namespace} // '';
-    return $module if !$module || $module eq '' || $app_namespace eq '' || $app_namespace eq $legacy;
+    return $module if !$module || $app_namespace eq '' || $app_namespace eq $legacy;
     if (index($module, $app_namespace) == 0) {
         my $suffix = substr($module, length($app_namespace));
         return $legacy . $suffix;
@@ -447,18 +445,16 @@ sub _load_package_by_module_name {
     }
     my $path = File::Spec->catfile($state->{root}, $require_path);
     if (-f $path) {
-        my $ok = eval { require $path; 1; };
-        die $@ if !$ok && $@;
-        return 1 if $ok;
+        require $path;
+        return 1;
     }
-    my $ok = eval { require $require_path; 1; };
-    die $@ if !$ok && $@;
+    require $require_path;
     return 1;
 }
 
 sub _standalone_executable_path {
     my $path = $ENV{PAX_STANDALONE_EXECUTABLE} // '';
-    return if !defined $path || $path eq '';
+    return if $path eq '';
     if (File::Spec->file_name_is_absolute($path)) {
         my $resolved = abs_path($path);
         return $resolved if defined $resolved && $resolved ne '';
@@ -469,8 +465,8 @@ sub _standalone_executable_path {
         return $resolved if defined $resolved && $resolved ne '';
         return File::Spec->rel2abs($path);
     }
-    my $path_sep = $Config::Config{path_sep} || ':';
-    for my $dir (grep { defined && $_ ne '' } split /\Q$path_sep\E/, ($ENV{PATH} // '')) {
+    my $path_sep = $Config::Config{path_sep};
+    for my $dir (grep { $_ ne '' } split /\Q$path_sep\E/, ($ENV{PATH} // '')) {
         my $candidate = File::Spec->catfile($dir, $path);
         next if !-f $candidate || !-x _;
         my $resolved = abs_path($candidate);
@@ -508,7 +504,7 @@ sub _standalone_internal_cli_class {
     for my $unit (@{ $state->{manifest}{code_units} // [] }) {
         next if ref($unit) ne 'HASH';
         my $package = $unit->{package} // '';
-        next if !$package || $package eq '';
+        next if !$package;
         return $package if $package =~ /::InternalCLI\z/;
     }
     return;
@@ -527,14 +523,22 @@ sub _standalone_internal_cli_asset_path {
     return &{$full}($name);
 }
 
+# _slurp_file($path)
+# Reads one file whole in raw mode.
+# Input: file path. Output: file content; dies when the file cannot be opened.
+sub _slurp_file {
+    my ($path) = @_;
+    open my $fh, '<:raw', $path or die "Unable to read $path: $!";
+    local $/;
+    my $content = <$fh>;
+    close $fh;
+    return $content;
+}
+
 sub _standalone_internal_cli_asset_content {
     my ($name) = @_;
     if (my $path = _standalone_internal_cli_asset_path($name)) {
-        open my $fh, '<:raw', $path or die "Unable to read $path: $!";
-        local $/;
-        my $content = <$fh>;
-        close $fh or die "Unable to close $path: $!";
-        return ($content, $path);
+        return (_slurp_file($path), $path);
     }
     my $class = _standalone_internal_cli_class() or return;
     _load_package_by_module_name($class);
@@ -581,7 +585,7 @@ sub _run_standalone_managed_helper {
     my ($helper_source, $helper_path) = _standalone_internal_cli_asset_content($helper);
     die "standalone managed helper '$helper' is unavailable\n" if !defined $helper_source || $helper_source eq '';
     my $self_path = _standalone_executable_path();
-    local $ENV{DEVELOPER_DASHBOARD_ENTRYPOINT} = $self_path if defined $self_path && $self_path ne '';
+    local $ENV{DEVELOPER_DASHBOARD_ENTRYPOINT} = $self_path if defined $self_path;
     my ($source, $path, @helper_argv);
     if ($helper eq '_dashboard-core' || _standalone_helper_delegates_to_dashboard_core($helper_source)) {
         my ($core_source, $core_path) = _standalone_internal_cli_asset_content('_dashboard-core');
@@ -722,7 +726,7 @@ sub _virtual_source_logical_path {
             $logical =~ s/\.pcu\.json\z/.pm/;
             return $logical;
         }
-        return File::Spec->catfile('virtual', split m{/}, ($unit->{require_path} // 'module.pm'));
+        return File::Spec->catfile('virtual', split m{/}, $unit->{require_path});
     }
     if ($logical =~ /\.dashboard\.json\z/) {
         $logical =~ s/\.dashboard\.json\z/.pl/;
@@ -794,11 +798,11 @@ sub _run_service_dispatch_unit {
             die "unexpected argument: $arg\n";
         }
 
-        my $asset_root = $ENV{PAX_EMBEDDED_ASSET_ROOT}
-            || File::Spec->catdir(dirname(_virtual_entrypoint_path($entrypoint)), '..', 'share');
+        my $asset_root = $ENV{PAX_EMBEDDED_ASSET_ROOT};
+        $asset_root = File::Spec->catdir(dirname(_virtual_entrypoint_path($entrypoint)), '..', 'share') if !$asset_root;
         my $builder_method = $record->{builder_method} || 'build_psgi_app';
         my $app_module = $record->{app_module} || die "service dispatch missing app module\n";
-        my $server_module = $record->{server_module} || die "service dispatch missing server module\n";
+        my $server_module = $record->{server_module};
         my $app = $app_module->$builder_method(asset_root => $asset_root);
         my $server = $server_module->new;
         $server->run($app, {
@@ -979,11 +983,7 @@ sub _run_dispatch_action {
             print STDERR "missing asset\n";
             exit 3;
         }
-        open my $fh, '<', $path or die $!;
-        local $/;
-        my $content = <$fh>;
-        close $fh;
-        print $content;
+        print _slurp_file($path);
         exit 0;
     }
     if ($op eq 'stderr_interpolate_cmd') {
@@ -1162,10 +1162,11 @@ sub _perl_literal {
 # Input: runtime state hash. Output: PAX::NativeRunner object.
 sub _native_runner {
     my ($state) = @_;
-    return $state->{native_runner} ||= do {
+    if (!$state->{native_runner}) {
         require PAX::NativeRunner;
-        PAX::NativeRunner->new;
-    };
+        $state->{native_runner} = PAX::NativeRunner->new;
+    }
+    return $state->{native_runner};
 }
 
 # _install_compiled_sub_lazily($package, $sub)
@@ -1224,7 +1225,7 @@ sub _apply_compiled_script_subs {
         next if $full !~ /^main::([^:]+)\z/;
         my $short = $1;
         my $replacement = _compiled_script_sub_source($full, $short, $sub->{prototype}, $sub->{native_shape});
-        next if !defined $replacement || $replacement eq '';
+        next if !defined $replacement;
         my $original = _extract_sub_source_runtime($source, $short) or next;
         $source =~ s/\Q$original\E/$replacement/s;
     }
@@ -1256,7 +1257,6 @@ sub _extract_sub_source_runtime {
     return if $source !~ /\bsub\s+\Q$sub_name\E\b[^\{]*\{/g;
     my $start = $-[0];
     my $brace = index($source, '{', $+[0] - 1);
-    return if $brace < 0;
     my $depth = 1;
     my $i = $brace + 1;
     while ($i < length($source)) {
@@ -1529,10 +1529,7 @@ sub _virtual_entrypoint_path {
 sub _render_simple_template_asset {
     my ($path, $vars) = @_;
     return if !$path || !-f $path;
-    open my $fh, '<', $path or return;
-    local $/;
-    my $template = <$fh>;
-    close $fh;
+    my $template = eval { _slurp_file($path) };
     return if !defined $template || $template eq '';
     $template =~ s/\[\%\s*([A-Za-z_][A-Za-z0-9_]*)\s*\%\]/defined $vars->{$1} ? $vars->{$1} : ''/ge;
     return $template;
@@ -1595,10 +1592,11 @@ sub _require_modules_for_op_source {
         open3 => 'IPC::Open3', gensym => 'Symbol', md5_hex => 'Digest::MD5',
         inet_aton => 'Socket', inet_ntoa => 'Socket',
     );
-    my $token_re = $TOKEN_MODULE_RE ||= do {
+    if (!$TOKEN_MODULE_RE) {
         my $alt = join '|', map { quotemeta } sort { length($b) <=> length($a) } keys %module_for_token;
-        qr/\b(?:($alt)\b|((?:un)?pack_sockaddr_\w+)|(LOCK_(?:EX|SH|UN|NB))|(O_(?:CREAT|EXCL|RDWR|WRONLY))|(SEEK_\w+))/;
-    };
+        $TOKEN_MODULE_RE = qr/\b(?:($alt)\b|((?:un)?pack_sockaddr_\w+)|(LOCK_(?:EX|SH|UN|NB))|(O_(?:CREAT|EXCL|RDWR|WRONLY))|(SEEK_\w+))/;
+    }
+    my $token_re = $TOKEN_MODULE_RE;
     my %modules;
     while ($body =~ /$token_re/g) {
         my $module = defined $1 ? $module_for_token{$1}

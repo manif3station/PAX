@@ -60,14 +60,14 @@ PERL
         push @calls, [$full, $shape->{kind}, [@$args]];
         return {
             status => 'ok',
-            value => 360,
+            value => 364,
         };
     };
     my $value = PAX::StandaloneRuntime::_run_native_shape_sub('main::dot_i64', {
         kind => 'i64_masked_mix_accum_loop',
         args => ['n'],
     }, 8);
-    is($value, 360, 'native shape helper returns the native runtime value when a bundled artifact is available');
+    is($value, 364, 'native shape helper returns the native runtime value when a bundled artifact is available');
     is_deeply(\@calls, [
         ['main::dot_i64', 'i64_masked_mix_accum_loop', [8]],
     ], 'native shape helper dispatches unary loop shapes through the bundled native artifact path');

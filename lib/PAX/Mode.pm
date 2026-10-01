@@ -1,6 +1,6 @@
 package PAX::Mode;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -28,7 +28,7 @@ sub policy {
             telemetry => 'low_overhead',
         },
     );
-    return $policies{$mode} // $policies{dev};
+    return exists $policies{$mode} ? $policies{$mode} : $policies{dev};
 }
 
 1;

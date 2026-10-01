@@ -1,6 +1,6 @@
 package PAX::Differential;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -22,9 +22,9 @@ sub compare_capture {
     my $capture = eval { PAX::Capture->new(mode => 'live')->capture($entrypoint) };
     my $pax = {
         command => ['PAX::Capture', $entrypoint],
-        exit => ($@ || !$capture || ($capture->{status} // '') ne 'ok') ? 1 : 0,
+        exit => ($@ || !$capture || $capture->{status} ne 'ok') ? 1 : 0,
         stdout => '',
-        stderr => $@ // '',
+        stderr => $@,
     };
 
     return {

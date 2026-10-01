@@ -1,6 +1,6 @@
 package PAX::RuntimeDispatcher;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -72,7 +72,7 @@ sub dispatch_i64 {
     }
 
     for my $unit (@candidate_units) {
-        my $method = $unit->{region_name} // $region_name // $unit->{region_id};
+        my $method = $unit->{region_name} // $unit->{region_id};
         my $cache_lookup = $self->{inline_cache}->lookup(
             site => $cache_site,
             class_key => 'main',

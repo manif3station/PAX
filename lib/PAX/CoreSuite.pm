@@ -1,6 +1,6 @@
 package PAX::CoreSuite;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -12,7 +12,7 @@ sub new {
     my ($class, %args) = @_;
     return bless {
         manifest_path => $args{manifest_path},
-        perl => $args{perl} // $^X,
+        perl => defined $args{perl} ? $args{perl} : $^X,
     }, $class;
 }
 

@@ -1,6 +1,6 @@
 package PAX::AppServer;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -58,6 +58,7 @@ sub stop {
         Peer => $image->{socket_path},
     ) or return 1;
     print {$socket} "{\"control\":\"stop\"}\n";
+    my $reply = <$socket>;    # wait for the acknowledgement so the server never writes into a closed socket
     close $socket;
     return 0;
 }
@@ -127,7 +128,7 @@ sub _run_request {
         $ENV{PAX_APP_IMAGE} = $image->{name};
         my $ok = do $image->{entrypoint};
         if (!$ok) {
-            print STDERR defined $@ && length $@ ? $@ : "failed to run $image->{entrypoint}: $!\n";
+            print STDERR length $@ ? $@ : "failed to run $image->{entrypoint}: $!\n";
             exit 111;
         }
         exit 0;
@@ -144,7 +145,7 @@ sub _prepare_runtime {
     if (@libs) {
         require Config;
         my $sep = $Config::Config{path_sep} || ':';
-        my @existing = grep { defined && length } split /\Q$sep\E/, ($ENV{PERL5LIB} // '');
+        my @existing = grep { length } split /\Q$sep\E/, ($ENV{PERL5LIB} // '');
         $ENV{PERL5LIB} = join $sep, @libs, @existing;
     }
 }
@@ -167,13 +168,20 @@ sub _direct_exec {
     die "fork failed: $!" if !defined $pid;
     if ($pid == 0) {
         my @cmd = ($^X, $image->{entrypoint}, @$argv);
-        no warnings 'exec';
-        exec { $cmd[0] } @cmd;
+        _exec_command(@cmd);
         print STDERR "exec failed: $!\n";
         exit 111;
     }
     waitpid($pid, 0);
     return $? >> 8;
+}
+
+# _exec_command(@cmd)
+# Replaces the current process with the command; returns (false) only when the
+# exec failed. Kept as its own function so the failure path is testable.
+sub _exec_command {
+    no warnings 'exec';
+    return exec { $_[0] } @_;
 }
 
 sub _in_inc {

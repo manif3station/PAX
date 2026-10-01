@@ -1,6 +1,6 @@
 package PAX::RegionSelector;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -47,7 +47,7 @@ sub select {
                 native_shape => $sub->{native_shape},
             },
             required_epochs => [qw(package_symbols method_resolution loaded_modules)],
-            lowering_status => $support->{level} eq 'fallback' ? 'blocked' : 'ready',
+            lowering_status => 'ready',
         };
     }
 

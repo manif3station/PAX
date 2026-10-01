@@ -4,6 +4,42 @@ PAX_IMAGE ?= pax-dev:perl-5.42
 TDD_TESTS = \
 	t/artifact_cache.t \
 	t/build_speed.t \
+	t/cov_cuca_compile.t \
+	t/cov_cuca_matchers.t \
+	t/cov_cucb_matchers.t \
+	t/cov_cucc_custom_ops.t \
+	t/cov_cucd_extras.t \
+	t/cov_cucd_matchers.t \
+	t/cov_cuce_helpers.t \
+	t/cov_cuce_router.t \
+	t/cov_mia_analysis.t \
+	t/cov_mia_appimage.t \
+	t/cov_mia_appserver.t \
+	t/cov_mia_dispatch.t \
+	t/cov_mia_paxfile.t \
+	t/cov_mib_flow.t \
+	t/cov_mib_native.t \
+	t/cov_mib_planners.t \
+	t/cov_mic_cli_build.t \
+	t/cov_mic_cli_diag.t \
+	t/cov_mic_gatekeeper.t \
+	t/cov_mic_matrices.t \
+	t/cov_mic_progress.t \
+	t/cov_mic_small_modules.t \
+	t/cov_r2cuc_helpers.t \
+	t/cov_r2img_build.t \
+	t/cov_r2img_guards.t \
+	t/cov_r2misc_misc.t \
+	t/cov_r2srt_runtime_gaps.t \
+	t/cov_sima_build.t \
+	t/cov_sima_manifest.t \
+	t/cov_sima_source_plan.t \
+	t/cov_simb_helpers.t \
+	t/cov_simb_launcher.t \
+	t/cov_simb_manifest.t \
+	t/cov_simb_runtime.t \
+	t/cov_srta_runtime_core.t \
+	t/cov_srtb_runtime_units.t \
 	t/capture.t \
 	t/code_unit_compiler.t \
 	t/compatibility.t \

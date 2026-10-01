@@ -97,7 +97,7 @@ my $native_script_record = JSON::PP->new->canonical(1)->encode({
                 args => ['n'],
                 smoke_left => 8,
                 smoke_right => 0,
-                smoke_expected => 360,
+                smoke_expected => 364,
             },
         },
     ],

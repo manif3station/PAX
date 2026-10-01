@@ -1,3 +1,29 @@
+0.033  Thu Oct  1 12:00:00 2026
+    - Reached 100% Devel::Cover coverage (statement, branch, condition and
+      subroutine) of lib/ with no `# uncoverable` pragmas, from 48% total.
+      Added 36 hermetic `t/cov_*.t` tests (registered in the TDD gate) that
+      exercise the compiler recognisers, the standalone runtime, the image
+      builder, the CLI, the analysis and dispatch modules, and the small
+      planner/guard modules in-process.
+    - Code that could not be reached was refactored away instead of being
+      excluded: about 440 always-true package-tail operands, duplicate and
+      shadowed recognisers, regex terms implied by earlier terms, and
+      redundant `// ''`, `defined` and `abs_path(...) || ...` guards. Repeated
+      idioms became small tested helpers (`_real_path`, `_slurp_file`,
+      `_try_write_bytes`, `_first_executable`, `_quiet_exec_command`).
+    - Fixed real bugs found on the way: the `canonical_helper_name` matcher
+      regex had an unescaped `||` that made it match any body; the loop-shape
+      recognisers returned an undefined induction variable; the masked-mix
+      smoke value was 360 instead of 364; `Capture` never detected `local $x`
+      or `local @x`; `AppServer::stop` hung up before reading the reply so the
+      server died of SIGPIPE; `StandaloneDispatch` never chomped captured
+      output; `_compile_launcher` lost its failure reason; the namespace
+      rewrite's path form could never match; the extract/inspect children could
+      run the caller's code after a failed devnull open; and a bare relative
+      output name put the launcher build directory at `/`.
+    - `t/standalone_image.t` raises the capture timeout so it also passes under
+      the slower Devel::Cover harness.
+
 0.032  Wed Sep 30 22:40:00 2026
     - Cut the standalone build of a real application (Developer Dashboard
       `bin/dashboard`, 74 modules) from about 68s to about 12s. Live

@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -20,6 +20,9 @@ use PAX::StandaloneAnalysis;
 
 my %PURE_PERL_MODULE_CACHE;
 my %RUNTIME_FAMILY_FILE_CACHE;
+# Interpreter library directories that live inside the PAX development checkout are never bundled
+# as runtime inc roots; the runtime helper modules ship separately.
+our $PAX_DEV_TREE = qr{\A/home/mv/projects/pax(?:/|$)};
 
 sub new {
     my ($class, %args) = @_;
@@ -50,9 +53,10 @@ sub build {
     my $progress = $args{progress};
     my $entrypoint = $args{entrypoint} // die 'entrypoint required';
     my $standalone_source = _standalone_source_plan($entrypoint);
-    my $name = $args{name} // $standalone_source->{name} // _default_name($entrypoint);
+    my $name = defined $args{name} ? $args{name} : $standalone_source->{name};
+    $name = _default_name($entrypoint) if !defined $name;
     _progress_emit($progress, { task_id => 'resolve_inputs', status => 'running' });
-    my $resolved_entrypoint = $standalone_source->{entrypoint} // $entrypoint;
+    my $resolved_entrypoint = defined $standalone_source->{entrypoint} ? $standalone_source->{entrypoint} : $entrypoint;
     my $abs_entrypoint = abs_path($resolved_entrypoint) || die "entrypoint not found: $resolved_entrypoint";
     my @lib_dirs = _abs_existing([
         @{ $args{lib_dirs} // [] },
@@ -71,7 +75,7 @@ sub build {
         @lib_dirs,
         map { $_->{dir} } @inferred_app_file_sets,
     ]);
-    my @scan_roots = grep { defined && $_ ne '' } (
+    my @scan_roots = (
         _safe_dir_abs($abs_entrypoint),
         @runtime_lib_dirs,
         @source_roots,
@@ -201,7 +205,7 @@ sub build {
     _progress_emit($progress, {
         task_id => 'package_runtime',
         status => 'done',
-        label => sprintf('Package runtime payloads (%d payloads)', scalar(@{ $runtime->{payloads} // [] })),
+        label => sprintf('Package runtime payloads (%d payloads)', scalar(@{ $runtime->{payloads} })),
     });
     my $standalone_dir = _absolute_output(File::Spec->catdir($self->{root}, $name));
     make_path($standalone_dir);
@@ -341,10 +345,10 @@ sub _standalone_source_plan {
     if ($entry_source eq '' || !-f $entry_source) {
         $entry_source = _materialize_entrypoint_source($extract_root, $manifest->{entrypoint});
     }
-    if ($entry_source eq '' || !-f $entry_source) {
+    if ($entry_source eq '') {
         $entry_source = _extracted_manifest_path($extract_root, 'code', $manifest->{entrypoint}{logical_path});
     }
-    return {} if $entry_source eq '' || !-f $entry_source;
+    return {} if $entry_source eq '';
 
     my $lib_dirs = _original_manifest_roots($manifest, 'lib_dirs', 'lib');
     $lib_dirs = _extracted_manifest_roots($extract_root, 'code', $manifest->{lib_dirs}) if !@$lib_dirs;
@@ -383,45 +387,47 @@ sub _looks_like_plain_script_entrypoint {
     return $prefix =~ /\A#!/ ? 1 : 0;
 }
 
+# _standalone_inspect_json($entrypoint)
+# Runs a standalone binary in inspect mode with its stderr silenced and returns the JSON it prints.
+# Input: path of the standalone binary. Output: the JSON text, or '' when it cannot run or exits non-zero.
 sub _standalone_inspect_json {
     my ($entrypoint) = @_;
-    my $pid = open my $fh, '-|';
-    return '' if !defined $pid;
-    if (!$pid) {
-        open STDERR, '>', File::Spec->devnull or die "cannot open devnull: $!";
-        exec {$entrypoint} $entrypoint, '--pax-standalone-inspect';
-        exit 127;
-    }
+    open my $fh, '-|', _quiet_exec_command('2>' . File::Spec->devnull, $entrypoint, '--pax-standalone-inspect') or return '';
     local $/;
-    my $json = <$fh> // '';
+    my $json = <$fh>;
     close $fh;
     return ($? >> 8) == 0 ? $json : '';
 }
 
+# _standalone_extract_quietly($entrypoint, $extract_root)
+# Runs a standalone binary in extract mode with all of its output silenced.
+# Input: path of the standalone binary and the directory to extract into. Output: 1 on success, 0 otherwise.
 sub _standalone_extract_quietly {
     my ($entrypoint, $extract_root) = @_;
-    my $pid = fork();
-    return 0 if !defined $pid;
-    if (!$pid) {
-        open STDOUT, '>', File::Spec->devnull or die "cannot open devnull: $!";
-        open STDERR, '>', File::Spec->devnull or die "cannot open devnull: $!";
-        exec {$entrypoint} $entrypoint, '--pax-standalone-extract', $extract_root;
-        exit 127;
-    }
-    waitpid($pid, 0);
+    my $null = File::Spec->devnull;
+    system(_quiet_exec_command(">$null 2>&1", $entrypoint, '--pax-standalone-extract', $extract_root));
     return ($? >> 8) == 0 ? 1 : 0;
+}
+
+# _quiet_exec_command($redirect, $program, @args)
+# Builds the argument list that runs a program through the shell with a redirection and without
+# any shell quoting of the program or its arguments.
+# Input: a shell redirection, the program and its arguments. Output: the command list for open or system.
+sub _quiet_exec_command {
+    my ($redirect, @command) = @_;
+    return ('/bin/sh', '-c', 'exec "$0" "$@" ' . $redirect, @command);
 }
 
 sub _extract_payload_path {
     my ($root, $prefix, $logical_path) = @_;
-    my @parts = grep { defined && $_ ne '' } split m{/+}, ($logical_path // '');
+    my @parts = grep { $_ ne '' } split m{/+}, ($logical_path // '');
     return File::Spec->catfile($root, $prefix, @parts);
 }
 
 sub _extracted_manifest_path {
     my ($root, $prefix, $logical_path) = @_;
     my $path = _extract_payload_path($root, $prefix, $logical_path);
-    return '' if !defined $path || $path eq '' || !-f $path;
+    return '' if !-f $path;
     return $path;
 }
 
@@ -437,10 +443,17 @@ sub _materialize_entrypoint_source {
     my $dir = File::Spec->catdir($extract_root, 'source-entrypoint');
     mkdir $dir if !-d $dir;
     my $path = File::Spec->catfile($dir, $name);
-    open my $fh, '>:raw', $path or return '';
+    return _try_write_bytes($path, $bytes) ? $path : '';
+}
+
+# _try_write_bytes($path, $bytes)
+# Writes raw bytes to a file and reports whether every step, including the final flush, worked.
+# Input: destination path and byte string. Output: 1 on success, 0 when open or close failed.
+sub _try_write_bytes {
+    my ($path, $bytes) = @_;
+    open my $fh, '>:raw', $path or return 0;
     print {$fh} $bytes;
-    close $fh or return '';
-    return $path;
+    return close($fh) ? 1 : 0;
 }
 
 sub _materialize_manifest_source_tree {
@@ -469,23 +482,19 @@ sub _materialize_manifest_source_tree {
     my %written;
     my $materialized_entrypoint = '';
     for my $item (@source_items) {
-        my $source_path = $item->{source_path} // next;
-        my $bytes = $item->{source_bytes} // '';
-        next if $bytes eq '';
+        my $source_path = $item->{source_path};
         my $rel = File::Spec->abs2rel($source_path, $root);
-        next if !defined $rel || $rel eq '' || $rel =~ /^\.\.(?:\/|\\|$)/;
+        next if $rel =~ /^\.\.(?:\/|\\|$)/;
         my $dest = File::Spec->catfile($rebuild_root, split m{/+|\\+}, $rel);
         next if $written{$dest}++;
         my ($vol, $dirs) = File::Spec->splitpath($dest);
-        make_path($dirs) if $dirs ne '' && !-d $dirs;
-        open my $fh, '>:raw', $dest or return {};
-        print {$fh} $bytes;
-        close $fh or return {};
-        if (($item->{unit_kind} // '') eq 'entrypoint') {
+        make_path($dirs) if !-d $dirs;
+        return {} if !_try_write_bytes($dest, $item->{source_bytes});
+        if ($item->{unit_kind} eq 'entrypoint') {
             $materialized_entrypoint = $dest;
         }
     }
-    return {} if $materialized_entrypoint eq '' || !-f $materialized_entrypoint;
+    return {} if $materialized_entrypoint eq '';
 
     return {
         entrypoint => $materialized_entrypoint,
@@ -501,9 +510,9 @@ sub _materialized_manifest_roots {
     for my $logical_root (@{ $manifest->{$field} // [] }) {
         next if !defined $logical_root || $logical_root eq '';
         my $original_root = _manifest_source_root_for_logical($manifest, $logical_root, $unit_kind);
-        next if !defined $original_root || $original_root eq '';
+        next if !defined $original_root;
         my $rel = File::Spec->abs2rel($original_root, $source_root);
-        next if !defined $rel || $rel eq '' || $rel =~ /^\.\.(?:\/|\\|$)/;
+        next if $rel =~ /^\.\.(?:\/|\\|$)/;
         my $materialized = File::Spec->catdir($rebuild_root, split m{/+|\\+}, $rel);
         next if !-d $materialized || $seen{$materialized}++;
         push @roots, $materialized;
@@ -532,7 +541,7 @@ sub _extracted_manifest_roots {
     my %seen;
     for my $logical_root (@{ $logical_roots // [] }) {
         next if !defined $logical_root || $logical_root eq '';
-        my @parts = grep { defined && $_ ne '' } split m{/+}, $logical_root;
+        my @parts = grep { $_ ne '' } split m{/+}, $logical_root;
         my $path = File::Spec->catdir($root, $prefix, @parts);
         next if !-d $path || $seen{$path}++;
         push @roots, $path;
@@ -547,7 +556,7 @@ sub _original_manifest_roots {
     for my $logical_root (@{ $manifest->{$field} // [] }) {
         next if !defined $logical_root || $logical_root eq '';
         my $root = _original_source_root_for_logical($manifest, $logical_root, $unit_kind);
-        next if !defined $root || $root eq '' || !-d $root || $seen{$root}++;
+        next if !defined $root || $seen{$root}++;
         push @roots, $root;
     }
     return \@roots;
@@ -556,7 +565,7 @@ sub _original_manifest_roots {
 sub _original_source_root_for_logical {
     my ($manifest, $logical_root, $unit_kind) = @_;
     my $root = _manifest_source_root_for_logical($manifest, $logical_root, $unit_kind);
-    return if !defined $root || $root eq '' || !-d $root;
+    return if !defined $root || !-d $root;
     return $root;
 }
 
@@ -608,9 +617,9 @@ sub _app_metadata {
     my $image_name = $args{image_name} // 'pax-standalone';
     my $app_name = $args{app_name} // $image_name;
     my $command_fallback = _entrypoint_default_command($entrypoint);
-    my $command = $args{app_command} // $command_fallback;
+    my $command = defined $args{app_command} ? $args{app_command} : $command_fallback;
     my $entrypoint_env = $args{app_entrypoint_env};
-    my $entrypoint_fallback = $args{app_entrypoint_fallback} // $command_fallback;
+    my $entrypoint_fallback = defined $args{app_entrypoint_fallback} ? $args{app_entrypoint_fallback} : $command_fallback;
     my $legacy_namespace = _normalize_namespace($args{app_legacy_namespace});
     my $compat_namespace = _normalize_namespace($args{app_namespace});
     $legacy_namespace = $compat_namespace if $legacy_namespace eq '';
@@ -629,11 +638,22 @@ sub _app_metadata {
     };
 }
 
+# _real_path($path)
+# Resolves a path to its canonical absolute form, keeping the input when it cannot be resolved.
+# Input: a path. Output: the canonical path, or the input path unchanged.
+sub _real_path {
+    my ($path) = @_;
+    my $abs = abs_path($path);
+    return defined $abs ? $abs : $path;
+}
+
+# _safe_dir_abs($path)
+# Resolves the directory part of a path, or '' for an empty path.
+# Input: a file path. Output: the canonical directory path.
 sub _safe_dir_abs {
     my ($path) = @_;
     return '' if !defined $path || $path eq '';
-    my $dir = dirname($path);
-    return abs_path($dir) || $dir;
+    return _real_path(dirname($path));
 }
 
 sub _infer_app_namespace {
@@ -655,7 +675,6 @@ sub _infer_app_namespace {
     my $inferred = '';
     my $best = 0;
     for my $ns (keys %score) {
-        next if scalar split(/::/, $ns) < 2;
         if ($score{$ns} > $best) {
             $best = $score{$ns};
             $inferred = $ns;
@@ -802,7 +821,7 @@ sub _code_manifest {
     my @app_jobs;
     for my $set (@application_file_sets) {
         my $dir = $set->{dir};
-        my $prefix = $set->{prefix} // _logical_root('lib', $dir);
+        my $prefix = defined $set->{prefix} ? $set->{prefix} : _logical_root('lib', $dir);
         my $kind = $set->{kind} // 'lib';
         for my $path (@{ $set->{files} }) {
             next if $seen{$path}++;
@@ -931,11 +950,12 @@ sub _declared_app_prefixes {
     }
 
     my @candidates = grep { $prefix_count{$_} >= 2 } keys %prefix_count;
-    @candidates = sort {
-        $prefix_count{$b} <=> $prefix_count{$a}
-            || scalar(split(/::/, $b)) <=> scalar(split(/::/, $a))
-            || $a cmp $b
+    # Most shared modules first, then the deeper prefix, then name order; the fixed-width
+    # rank string carries all three keys so one plain string comparison orders them.
+    my %rank = map {
+        $_ => sprintf('%09d%03d', 999_999_999 - $prefix_count{$_}, 999 - (1 + (() = /::/g))) . $_
     } @candidates;
+    @candidates = sort { $rank{$a} cmp $rank{$b} } @candidates;
 
     my @selected;
     CANDIDATE:
@@ -951,26 +971,19 @@ sub _declared_app_prefixes {
     my %seen;
     return grep { $_ ne '' && !$seen{$_}++ } map {
         my @parts = split /::/, $_;
-        @parts > 1 ? join('::', @parts[0 .. $#parts - 1]) : $_;
+        join('::', @parts[0 .. $#parts - 1]);
     } grep { $_ =~ /::/ } @modules;
 }
 
 sub _namespace_tree_files {
     my ($prefix, $preferred_roots) = @_;
     my @files;
-    my %seen;
     my $root_module_path = _locate_pure_perl_module($prefix, $preferred_roots);
     if ($root_module_path && -f $root_module_path) {
         push @files, $root_module_path;
-        $seen{$root_module_path} = 1;
         my $subtree_dir = $root_module_path;
         $subtree_dir =~ s/\.pm\z//;
-        if (-d $subtree_dir) {
-            for my $path (_perl_files([$subtree_dir], exclude_nested_inc => 1)) {
-                next if $seen{$path}++;
-                push @files, $path;
-            }
-        }
+        push @files, _perl_files([$subtree_dir], exclude_nested_inc => 1) if -d $subtree_dir;
         return @files;
     }
 
@@ -983,11 +996,7 @@ sub _namespace_tree_files {
     return () if !$base_dir;
     my $subtree_dir = File::Spec->catdir($base_dir, @parts);
     return () if !-d $subtree_dir;
-    for my $path (_perl_files([$subtree_dir], exclude_nested_inc => 1)) {
-        next if $seen{$path}++;
-        push @files, $path;
-    }
-    return @files;
+    return _perl_files([$subtree_dir], exclude_nested_inc => 1);
 }
 
 sub _module_base_dir_for_files {
@@ -1164,23 +1173,6 @@ sub _dependency_runtime_only {
     return 0;
 }
 
-sub _dependency_codegen_safe {
-    my ($path) = @_;
-    my $source = _slurp_bytes($path);
-    return 0 if !$source;
-    $source = _strip_pod($source);
-    return 0 if $source =~ /^\s*sub\s+import\b/m;
-    return 0 if $source =~ /\bAUTOLOAD\b/;
-    return 0 if $source =~ /\beval\b/;
-    return 0 if $source =~ /\bgoto\s*&/;
-    return 0 if $source =~ /\bcaller\s*\(/;
-    return 0 if $source =~ /\*[\w:]+/;
-    return 0 if $source =~ /\@EXPORT(?:_OK)?\b/;
-    return 0 if $source =~ /\bExporter\b/;
-    return 0 if $source =~ /^\s*sub\s+\w+\s*\([^\)]/m;
-    return 1;
-}
-
 sub _declared_modules {
     my ($source) = @_;
     $source = _strip_pod($source);
@@ -1228,11 +1220,11 @@ sub _locate_pure_perl_module {
     my %seen_root;
     for my $inc (@search_roots) {
         next if ref $inc;
-        my $inc_abs = abs_path($inc) || $inc;
+        my $inc_abs = _real_path($inc);
         next if $seen_root{$inc_abs}++;
         my $path = File::Spec->catfile($inc, $rel);
         next if !-f $path;
-        my $abs = abs_path($path) || $path;
+        my $abs = _real_path($path);
         next if _module_uses_xs($abs);
         return $PURE_PERL_MODULE_CACHE{$cache_key} = $abs;
     }
@@ -1242,10 +1234,10 @@ sub _locate_pure_perl_module {
 sub _module_name_from_source_path {
     my ($path) = @_;
     return if !$path || $path !~ /\.pm$/;
-    my $abs = abs_path($path) || $path;
+    my $abs = _real_path($path);
     for my $inc (@INC) {
         next if ref $inc;
-        my $inc_abs = abs_path($inc) || $inc;
+        my $inc_abs = _real_path($inc);
         next if index($abs, $inc_abs . '/') != 0;
         my $rel = substr($abs, length($inc_abs) + 1);
         $rel =~ s/\.pm$//;
@@ -1269,18 +1261,14 @@ sub _perl_files {
     my $exclude_nested_inc = $args{exclude_nested_inc} ? 1 : 0;
     for my $dir (@$dirs) {
         next if !-d $dir;
-        my $dir_abs = abs_path($dir) || $dir;
-        my @nested_inc_dirs = $exclude_nested_inc ? _nested_runtime_inc_dirs($dir_abs) : ();
+        my $dir_abs = _real_path($dir);
+        my %nested_inc_dirs = map { $_ => 1 } ($exclude_nested_inc ? _nested_runtime_inc_dirs($dir_abs) : ());
         File::Find::find({
             wanted => sub {
                 my $path = $File::Find::name;
-                if (-d $_ && @nested_inc_dirs) {
-                    for my $inc_dir (@nested_inc_dirs) {
-                        if ($path eq $inc_dir || index($path, $inc_dir . '/') == 0) {
-                            $File::Find::prune = 1;
-                            return;
-                        }
-                    }
+                if (-d $_ && $nested_inc_dirs{$path}) {
+                    $File::Find::prune = 1;
+                    return;
                 }
                 return if !-f $_;
                 return if $_ !~ /\.(?:pm|pl)$/;
@@ -1355,15 +1343,14 @@ sub _inferred_asset_dirs {
             my $op = $sub->{op} // '';
             if ($op eq 'internal_cli_repo_private_cli_root') {
                 my $dir = _repo_private_cli_dir_from_source($source_path);
-                next if !$dir || $dir eq '';
-                next if !$dir || !-d $dir;
+                next if !$dir;
                 next if $seen{$dir}++;
                 push @dirs, $dir;
                 next;
             }
             if ($op eq 'internal_cli_shared_private_cli_root') {
                 my $dir = _shared_private_cli_dir($sub->{dist_name});
-                next if !$dir || !-d $dir;
+                next if !$dir;
                 next if $seen{$dir}++;
                 push @dirs, $dir;
                 next;
@@ -1388,7 +1375,7 @@ sub _repo_private_cli_dir_from_source {
     my ($source_path) = @_;
     return if !defined $source_path || $source_path eq '';
     my $dir = dirname($source_path);
-    while ($dir && $dir ne File::Spec->rootdir()) {
+    while ($dir ne File::Spec->rootdir()) {
         if (basename($dir) eq 'lib') {
             my $root = dirname($dir);
             my $candidate = File::Spec->catdir($root, 'share', 'private-cli');
@@ -1396,7 +1383,7 @@ sub _repo_private_cli_dir_from_source {
             last;
         }
         my $parent = dirname($dir);
-        last if !defined $parent || $parent eq $dir;
+        last if $parent eq $dir;
         $dir = $parent;
     }
     return;
@@ -1441,9 +1428,8 @@ sub _source_hash {
 sub _compile_launcher {
     my ($manifest) = @_;
     my $source_path = "$manifest->{output_path}.c";
-    my $parent = $manifest->{output_path};
-    $parent =~ s{/[^/]+\z}{};
-    make_path($parent) if length $parent && !-d $parent;
+    my $parent = dirname($manifest->{output_path});
+    make_path($parent) if !-d $parent;
     my $build_dir = File::Spec->catdir($parent, '.pax-launcher-build');
     make_path($build_dir) if !-d $build_dir;
     my $code_pkg = File::Spec->catfile($build_dir, 'code.pkg');
@@ -1469,7 +1455,7 @@ sub _compile_launcher {
     require Cwd;
     my $cwd = Cwd::getcwd();
     my $ok = eval {
-        local $ENV{PATH} = $tool_path if defined $tool_path && $tool_path ne '';
+        local $ENV{PATH} = $tool_path;
         chdir $build_dir or die "cannot chdir to $build_dir: $!";
         system($objcopy, '--input', 'binary', '--output', 'elf64-x86-64', '--binary-architecture', 'i386:x86-64', 'code.pkg', 'code.pkg.o');
         die "objcopy code.pkg failed" if ($? >> 8) != 0;
@@ -1494,10 +1480,12 @@ sub _compile_launcher {
         die "launcher compile failed" if ($? >> 8) != 0;
         1;
     };
+    my $build_error = $@;
     my $restore_ok = eval { chdir $cwd or die "cannot restore cwd to $cwd: $!"; 1; };
-    return { status => 'not_built', reason => $@ } if !$ok;
-    return { status => 'not_built', reason => $@ } if !$restore_ok;
-    return (($? >> 8) == 0 && -x $manifest->{output_path})
+    my $restore_error = $@;
+    return { status => 'not_built', reason => $build_error } if !$ok;
+    return { status => 'not_built', reason => $restore_error } if !$restore_ok;
+    return -x $manifest->{output_path}
         ? { status => 'built' }
         : { status => 'not_built', reason => 'standalone launcher compile failed' };
 }
@@ -1509,7 +1497,6 @@ sub _toolchain_path {
     for my $tool (@tools) {
         next if !defined $tool || $tool eq '';
         my $dir = dirname($tool);
-        next if !defined $dir || $dir eq '';
         push @dirs, $dir if !$seen{$dir}++;
     }
     for my $dir (qw(/usr/bin /bin /usr/sbin /sbin /usr/local/bin)) {
@@ -1860,7 +1847,7 @@ sub _launcher_manifest {
     my ($manifest) = @_;
     my $copy = _manifest_without_bytes($manifest);
     $copy->{code_units} = [
-        map { my %unit = %$_; delete $unit{source_bytes}; \%unit } @{ $copy->{code_units} // [] }
+        map { my %unit = %$_; delete $unit{source_bytes}; \%unit } @{ $copy->{code_units} }
     ];
     delete $copy->{runtime_payloads};
     return $copy;
@@ -1990,8 +1977,7 @@ sub _runtime_manifest {
     my @force_runtime_source_files = (
         @helper_module_files,
         map {
-            my $path = $_->{source_path} // ();
-            $path ? ($path) : ()
+            $_->{source_path} ? ($_->{source_path}) : ()
         } grep {
             ($_->{class} // '') eq 'compiled_dependency'
                 && (($_->{packaging} // '') eq 'hybrid_compiled_pcu_v1')
@@ -2000,7 +1986,7 @@ sub _runtime_manifest {
 
     my $perl;
     if ($mode eq 'bundled_perl') {
-        $perl = abs_path($^X) || $^X;
+        $perl = _real_path($^X);
         my @inc_dirs = _runtime_inc_dirs($args{exclude_dirs} // []);
         push @payloads, _file_payload($perl, 'runtime_binary', 'bin/perl');
         my @selected = _runtime_selected_files(
@@ -2010,7 +1996,7 @@ sub _runtime_manifest {
             exclude_files => $args{exclude_files} // [],
         );
         # The runtime helper modules already ship (namespace-rewritten) as helper payloads.
-        my %helper_file = map { (abs_path($_) || $_) => 1 } @helper_module_files;
+        my %helper_file = map { (_real_path($_)) => 1 } @helper_module_files;
         @selected = grep { !$helper_file{$_} } @selected;
         if (@selected) {
             my %by_dir;
@@ -2057,15 +2043,14 @@ sub _runtime_manifest {
             my $keep = 1;
             # Only code files are resolved through @INC; data files are found relative to
             # the module that loaded, so every root keeps its own.
-            if (($_->{unit_kind} // '') eq 'runtime_inc' && ($_->{logical_path} // '') =~ m{\Ainc/\d+/(.+\.(?:pm|pod|so|bs|al|ix|pl))\z}) {
+            if ($_->{unit_kind} eq 'runtime_inc' && $_->{logical_path} =~ m{\Ainc/\d+/(.+\.(?:pm|pod|so|bs|al|ix|pl))\z}) {
                 $keep = 0 if $claimed_rel{$1}++;
             }
             $keep;
         } @payloads;
-        my @runtime_shared_objects = map { $_->{source_path} // () }
+        my @runtime_shared_objects = map { $_->{source_path} }
             grep {
-                (($_->{unit_kind} // '') eq 'runtime_inc')
-                    && _looks_like_shared_object($_->{source_path} // '')
+                $_->{unit_kind} eq 'runtime_inc' && _looks_like_shared_object($_->{source_path})
             } @payloads;
         push @payloads, _runtime_shared_lib_payloads($perl, \@inc_dirs, \@runtime_shared_objects);
     }
@@ -2120,12 +2105,12 @@ sub _runtime_shared_lib_payloads {
     my %seen_source;
     my %seen_logical;
     for my $path (_shared_lib_dependency_closure($perl, grep { _looks_like_shared_object($_) } @{ $runtime_files // [] })) {
-        my $abs = abs_path($path) || $path;
+        my $abs = _real_path($path);
         next if $seen_source{$abs}++;
         push @payloads, _shared_lib_payload_variants($abs, \%seen_logical);
     }
     for my $runtime_lib (_runtime_core_libs_from_inc_dirs($runtime_inc_dirs // [])) {
-        my $abs = abs_path($runtime_lib) || $runtime_lib;
+        my $abs = _real_path($runtime_lib);
         next if $seen_source{$abs}++;
         push @payloads, _shared_lib_payload_variants($abs, \%seen_logical);
     }
@@ -2137,7 +2122,7 @@ sub _shared_lib_payload_variants {
     return () if !$path || !-f $path;
     $seen_logical ||= {};
     my @payloads;
-    my $abs = abs_path($path) || $path;
+    my $abs = _real_path($path);
     my $primary = _safe_logical_path(File::Spec->catfile('lib', File::Basename::basename($abs)));
     if (!$seen_logical->{$primary}++) {
         push @payloads, _file_payload($abs, 'runtime_lib', $primary);
@@ -2158,11 +2143,11 @@ sub _shared_lib_dependency_closure {
     my %seen;
     my %selected;
     while (my $path = shift @queue) {
-        my $abs = abs_path($path) || $path;
+        my $abs = _real_path($path);
         next if $seen{$abs}++;
         for my $dep (_linked_shared_lib_paths($abs)) {
-            my $dep_abs = abs_path($dep) || $dep;
-            next if !$dep_abs || !-f $dep_abs;
+            my $dep_abs = _real_path($dep);
+            next if !-f $dep_abs;
             next if _runtime_system_lib_exempt($dep_abs);
             next if $selected{$dep_abs}++;
             push @queue, $dep_abs;
@@ -2174,7 +2159,7 @@ sub _shared_lib_dependency_closure {
 sub _linked_shared_lib_paths {
     my ($binary) = @_;
     return () if !$binary || !-f $binary;
-    my $ldd = _which('ldd') || ((-x '/usr/bin/ldd') ? '/usr/bin/ldd' : '');
+    my $ldd = _first_executable(_which('ldd'), '/usr/bin/ldd');
     return () if $ldd eq '';
     open my $fh, '-|', $ldd, $binary or return ();
     my @paths;
@@ -2189,12 +2174,22 @@ sub _linked_shared_lib_paths {
         else {
             next;
         }
-        next if !$path || !-f $path;
+        next if !-f $path;
         push @paths, $path;
     }
     close $fh;
     my %seen;
     return grep { !$seen{$_}++ } @paths;
+}
+
+# _first_executable(@candidates)
+# Picks the first candidate path that names an executable file.
+# Input: candidate paths, undef or empty entries allowed. Output: the path, or '' when none qualifies.
+sub _first_executable {
+    for my $candidate (@_) {
+        return $candidate if defined $candidate && $candidate ne '' && -x $candidate;
+    }
+    return '';
 }
 
 sub _shared_object_soname {
@@ -2244,7 +2239,7 @@ sub _which {
     my @dirs = split /:/, ($ENV{PATH} // '');
     push @dirs, qw(/usr/bin /bin /usr/sbin /sbin /usr/local/bin);
     for my $dir (@dirs) {
-        next if !defined $dir || $dir eq '';
+        next if $dir eq '';
         next if $seen{$dir}++;
         my $path = File::Spec->catfile($dir, $program);
         return $path if -x $path;
@@ -2256,14 +2251,14 @@ sub _runtime_core_libs_from_inc_dirs {
     my ($inc_dirs) = @_;
     my @libs;
     my %seen;
-    my @dirs = grep { defined $_ && $_ ne '' } map { abs_path($_) || $_ } @{ $inc_dirs // [] };
+    my @dirs = map { _real_path($_) } @{ $inc_dirs // [] };
     for my $dir (@dirs) {
         next if !-d $dir;
         File::Find::find({
             wanted => sub {
                 return if !-f $_;
                 return unless m{/CORE/libperl} && m/\.(?:so|dylib|dll)(?:\.[^\/\\]+)?\z/;
-                my $abs = abs_path($File::Find::name) || $File::Find::name;
+                my $abs = _real_path($File::Find::name);
                 return if $seen{$abs}++;
                 push @libs, $abs;
             },
@@ -2275,7 +2270,7 @@ sub _runtime_core_libs_from_inc_dirs {
 
 sub _runtime_inc_dirs {
     my ($exclude_dirs) = @_;
-    my %exclude = map { $_ => 1 } grep { defined && length } map { abs_path($_) || $_ } @$exclude_dirs;
+    my %exclude = map { _real_path($_) => 1 } @$exclude_dirs;
     my %seen;
     my @dirs;
     for my $dir (@INC) {
@@ -2283,7 +2278,7 @@ sub _runtime_inc_dirs {
         my $abs = abs_path($dir);
         next if !defined $abs || !-d $abs;
         next if $exclude{$abs};
-        next if $abs =~ m{\A/home/mv/projects/pax(?:/|$)};
+        next if $abs =~ $PAX_DEV_TREE;
         next if $seen{$abs}++;
         push @dirs, $abs;
     }
@@ -2308,7 +2303,6 @@ sub _is_vendor_runtime_inc_dir {
     my ($dir) = @_;
     return 0 if !$dir;
     return 1 if $dir =~ m{/vendor_perl(?:/|$)};
-    return 1 if $dir =~ m{/perl5/\d+\.\d+\.\d+(?:/x86_64-linux-gnu)?\z} && $dir =~ m{/vendor_perl/};
     return 1 if $dir =~ m{/share/perl5\z};
     return 0;
 }
@@ -2321,9 +2315,8 @@ sub _runtime_tree_family_dirs {
         next if !$dir || !-d $dir;
         next if $seen{$dir}++;
         push @dirs, $dir;
-        next if $dir !~ m{/x86_64-linux-gnu\z};
-        (my $parent = $dir) =~ s{/x86_64-linux-gnu\z}{};
-        next if !$parent || !-d $parent;
+        next if $dir !~ m{\A(.+)/x86_64-linux-gnu\z};
+        my $parent = $1;
         next if $seen{$parent}++;
         push @dirs, $parent;
     }
@@ -2344,8 +2337,7 @@ sub _runtime_selected_files {
         } @{ $args{dependencies} // [] };
     my @helper_module_files = _pax_runtime_helper_module_files();
     my @hybrid_dependency_files = map {
-        my $path = $_->{source_path} // ();
-        $path ? ($path) : ()
+        $_->{source_path} ? ($_->{source_path}) : ()
     } grep {
         ($_->{class} // '') eq 'compiled_dependency'
             && (($_->{packaging} // '') eq 'hybrid_compiled_pcu_v1')
@@ -2374,7 +2366,7 @@ sub _runtime_selected_files {
         my $source = $dep->{source_path} // next;
         $selected{$source} = 1 if -f $source;
         for my $path (_related_xs_files($module, $source, $args{inc_dirs} // [])) {
-            $selected{$path} = 1 if -f $path;
+            $selected{$path} = 1;
         }
     }
 
@@ -2384,7 +2376,7 @@ sub _runtime_selected_files {
 
     my %force = map { $_ => 1 } (@helper_module_files, @hybrid_dependency_files);
     for my $path (@{ $args{exclude_files} // [] }) {
-        my $abs = abs_path($path) || $path;
+        my $abs = _real_path($path);
         delete $selected{$abs} if !$force{$abs};
     }
 
@@ -2399,7 +2391,7 @@ sub _runtime_selected_files {
 # Output: absolute paths of sibling data files; files at an inc root are skipped.
 sub _sibling_data_files {
     my ($files, $inc_dirs) = @_;
-    my %roots = map { (abs_path($_) || $_) => 1 } @$inc_dirs;
+    my %roots = map { (_real_path($_)) => 1 } @$inc_dirs;
     my (%dirs_seen, @found);
     for my $file (@$files) {
         next if $file !~ /\.pm\z/;
@@ -2410,7 +2402,7 @@ sub _sibling_data_files {
             next if $entry =~ /\A\./ || $entry =~ /\.(?:pm|pod|pl|so|bs|h|a|o|c|xs|orig|bak)\z/i;
             my $path = File::Spec->catfile($dir, $entry);
             next if !-f $path || -s $path > 2_000_000;
-            push @found, abs_path($path) || $path;
+            push @found, _real_path($path);
         }
         closedir $dh;
     }
@@ -2422,23 +2414,23 @@ sub _expand_runtime_module_files {
     my @queue = grep { defined && -f $_ } @{ $args{seed_files} // [] };
     my %selected;
     while (my $path = shift @queue) {
-        my $abs = abs_path($path) || $path;
+        my $abs = _real_path($path);
         next if $selected{$abs}++;
         for my $family_file (_runtime_family_files_for($abs)) {
-            my $fam_abs = abs_path($family_file) || $family_file;
+            my $fam_abs = _real_path($family_file);
             next if $selected{$fam_abs};
             push @queue, $fam_abs;
         }
         for my $related (_related_xs_files_for_source($abs, $args{inc_dirs} // [])) {
-            my $rel_abs = abs_path($related) || $related;
-            $selected{$rel_abs} = 1 if -f $rel_abs;
+            my $rel_abs = _real_path($related);
+            $selected{$rel_abs} = 1;
         }
         next if $abs !~ /\.(?:pm|pl)\z/;
         my $source = _slurp_bytes($abs);
         for my $module (_declared_modules($source)) {
             next if _skip_dependency_module($module);
             my $dep_path = _locate_module_runtime_file($module) or next;
-            my $dep_abs = abs_path($dep_path) || $dep_path;
+            my $dep_abs = _real_path($dep_path);
             next if $selected{$dep_abs};
             push @queue, $dep_abs;
         }
@@ -2462,7 +2454,7 @@ sub _runtime_family_files_for {
             wanted => sub {
                 return if !-f $_;
                 return if $_ !~ /\.pm\z/;
-                my $abs = abs_path($File::Find::name) || $File::Find::name;
+                my $abs = _real_path($File::Find::name);
                 return if $seen{$abs}++;
                 push @files, $abs;
             },
@@ -2483,7 +2475,7 @@ sub _locate_module_runtime_file {
         next if ref $inc;
         my $path = File::Spec->catfile($inc, $rel);
         next if !-f $path;
-        return abs_path($path) || $path;
+        return _real_path($path);
     }
     return;
 }
@@ -2502,12 +2494,13 @@ sub _pax_runtime_helper_lib_roots {
     my @roots;
 
     my $loaded = $INC{'PAX/StandaloneImage.pm'} || __FILE__;
-    my $abs = abs_path($loaded) || $loaded;
+    my $abs = _real_path($loaded);
     my @parts = File::Spec->splitdir($abs);
     while (@parts) {
         my $candidate = File::Spec->catdir(@parts);
         if (-f File::Spec->catfile($candidate, 'PAX', 'StandaloneImage.pm')) {
-            push @roots, $candidate if !$seen{$candidate}++;
+            push @roots, $candidate;
+            $seen{$candidate} = 1;
         }
         pop @parts;
     }
@@ -2515,7 +2508,7 @@ sub _pax_runtime_helper_lib_roots {
     for my $inc (@INC) {
         next if ref $inc;
         next if !defined $inc || $inc eq '';
-        my $abs_inc = abs_path($inc) || $inc;
+        my $abs_inc = _real_path($inc);
         push @roots, $abs_inc if -f File::Spec->catfile($abs_inc, 'PAX', 'StandaloneRuntime.pm')
             && !$seen{$abs_inc}++;
     }
@@ -2568,7 +2561,8 @@ sub _pax_runtime_helper_module_files {
     for my $rel (_pax_runtime_helper_relative_paths()) {
         my $path = _helper_module_path($rel, \@roots);
         next if !$path;
-        push @files, $path if !$seen{$path}++;
+        push @files, $path;
+        $seen{$path} = 1;
     }
     for my $module (@modules) {
         my $path = _locate_module_runtime_file($module) or next;
@@ -2631,12 +2625,12 @@ PL
 
     my $payload = JSON::PP->new->ascii(1)->canonical(1)->encode({
         modules => \@modules,
-        lib_dirs => [ map { abs_path($_) || $_ } @{ $args{lib_dirs} // [] } ],
+        lib_dirs => [ map { _real_path($_) } @{ $args{lib_dirs} // [] } ],
     });
     local $ENV{PAX_RUNTIME_PROBE_PAYLOAD} = $payload;
     my $output = qx{$^X $path};
     my $exit = $? >> 8;
-    return () if $exit != 0 || !defined $output || $output eq '';
+    return () if $exit != 0 || $output eq '';
     my $decoded = eval { JSON::PP::decode_json($output) };
     return () if $@ || ref($decoded) ne 'ARRAY';
     my %seen;
@@ -2647,13 +2641,8 @@ sub _related_xs_files {
     my ($module, $source, $inc_dirs) = @_;
     my @parts = split /::/, $module;
     my $leaf = $parts[-1];
-    my @roots = @{ $inc_dirs // [] };
-    if (!@roots) {
-        my $root = _inc_root_for_file($source, $inc_dirs);
-        @roots = defined $root ? ($root) : ();
-    }
     my @candidates;
-    for my $root (@roots) {
+    for my $root (@{ $inc_dirs // [] }) {
         push @candidates,
             File::Spec->catfile($root, 'auto', @parts, "$leaf.so"),
             File::Spec->catfile($root, 'auto', @parts, "$leaf.bundle"),
@@ -2668,15 +2657,15 @@ sub _related_xs_files_for_source {
     my ($source, $inc_dirs) = @_;
     return () if !$source;
     my $root = _inc_root_for_file($source, $inc_dirs) or return;
-    my $abs = abs_path($source) || $source;
+    my $abs = _real_path($source);
     my $rel = File::Spec->abs2rel($abs, $root);
-    return () if !$rel || $rel !~ /\.pm\z/;
+    return () if $rel !~ /\.pm\z/;
     $rel =~ s/\.pm\z//;
     my @parts = File::Spec->splitdir($rel);
     return () if !@parts;
     my $leaf = $parts[-1];
     my @candidates;
-    for my $dir (@{ $inc_dirs // [] }) {
+    for my $dir (@$inc_dirs) {
         push @candidates,
             File::Spec->catfile($dir, 'auto', @parts, "$leaf.so"),
             File::Spec->catfile($dir, 'auto', @parts, "$leaf.bundle"),
@@ -2689,7 +2678,7 @@ sub _related_xs_files_for_source {
 
 sub _inc_root_for_file {
     my ($path, $inc_dirs) = @_;
-    my $abs = abs_path($path) || $path;
+    my $abs = _real_path($path);
     my @roots = sort { length($b) <=> length($a) } @{ $inc_dirs // [] };
     for my $dir (@roots) {
         return $dir if index($abs, $dir . '/') == 0 || $abs eq $dir;
@@ -2700,11 +2689,11 @@ sub _inc_root_for_file {
 sub _file_list_payloads {
     my ($dir, $prefix, $kind, $files, $exclude_files, $force_include_files) = @_;
     my @payloads;
-    my %exclude = map { (abs_path($_) || $_) => 1 } @{ $exclude_files // [] };
-    my %force = map { (abs_path($_) || $_) => 1 } @{ $force_include_files // [] };
+    my %exclude = map { (_real_path($_)) => 1 } @{ $exclude_files // [] };
+    my %force = map { (_real_path($_)) => 1 } @{ $force_include_files // [] };
     my %seen;
     for my $path (@{ $files // [] }) {
-        my $abs = abs_path($path) || $path;
+        my $abs = _real_path($path);
         next if $exclude{$abs} && !$force{$abs};
         next if $seen{$abs}++;
         next if index($abs, $dir . '/') != 0 && $abs ne $dir;
@@ -2717,11 +2706,11 @@ sub _file_list_payloads {
 sub _tree_payloads {
     my ($dir, $prefix, $kind, $exclude_files) = @_;
     my @payloads;
-    my %exclude = map { (abs_path($_) || $_) => 1 } @{ $exclude_files // [] };
+    my %exclude = map { (_real_path($_)) => 1 } @{ $exclude_files // [] };
     File::Find::find({
         wanted => sub {
             return if !-f $_;
-            my $abs = abs_path($File::Find::name) || $File::Find::name;
+            my $abs = _real_path($File::Find::name);
             return if $exclude{$abs};
             my $rel = File::Spec->abs2rel($File::Find::name, $dir);
             push @payloads, _file_payload($File::Find::name, $kind, _safe_logical_path(File::Spec->catfile($prefix, $rel)));
@@ -2733,7 +2722,7 @@ sub _tree_payloads {
 
 sub _file_payload {
     my ($path, $kind, $logical) = @_;
-    my $abs = abs_path($path) || $path;
+    my $abs = _real_path($path);
     my $bytes = _slurp_bytes($abs);
     return _file_payload_bytes($abs, $kind, $logical, $bytes);
 }
@@ -2763,7 +2752,7 @@ sub _replace_runtime_namespace {
     my ($bytes, $app_namespace, $legacy_namespace) = @_;
     return $bytes if !$bytes || !defined $app_namespace || $app_namespace eq '';
     $legacy_namespace = _normalize_namespace($legacy_namespace);
-    my $legacy = $legacy_namespace // '';
+    my $legacy = $legacy_namespace;
 
     my $legacy_marker = '__PAX_RUNTIME_LEGACY_NAMESPACE__';
     my $has_legacy_marker = index($bytes, $legacy_marker) >= 0 ? 1 : 0;
@@ -2780,8 +2769,8 @@ sub _replace_runtime_namespace {
         my $namespace = _normalize_namespace($app_namespace);
         my $namespace_path = $namespace;
         $namespace_path =~ s{::}{/}g;
-        $bytes =~ s/\Q$legacy_marker\E/$namespace/g;
         $bytes =~ s/\Q${legacy_marker}\/\E/$namespace_path\//g;
+        $bytes =~ s/\Q$legacy_marker\E/$namespace/g;
         return $bytes;
     }
 
@@ -2796,26 +2785,23 @@ sub _replace_runtime_namespace {
 
 sub _infer_legacy_runtime_namespace {
     my ($bytes) = @_;
-    return '' if !$bytes || $bytes eq '';
+    return '' if !$bytes;
     my %counts;
     while ($bytes =~ /(?<![A-Za-z0-9_])([A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)+)\b/g) {
         my $module = $1;
         my @parts = split /::/, $module;
-        next if @parts < 2;
         for my $depth (2 .. @parts) {
             my $prefix = join('::', @parts[0 .. $depth - 1]);
             $counts{$prefix}++;
         }
     }
-    my ($best, $best_score, $best_depth) = ('', 0, 0);
-    for my $candidate (keys %counts) {
+    my ($best, $best_score) = ('', 0);
+    for my $candidate (sort keys %counts) {
         my $depth = scalar split /::/, $candidate;
-        next if $depth < 2;
         my $score = ($counts{$candidate} * 1000) + $depth;
-        if ($score > $best_score || ($score == $best_score && $depth > $best_depth)) {
+        if ($score > $best_score) {
             $best = $candidate;
             $best_score = $score;
-            $best_depth = $depth;
         }
     }
     return $best;
@@ -2856,7 +2842,7 @@ sub _c_string {
 sub _write_json {
     my ($path, $data) = @_;
     my $dir = dirname($path);
-    make_path($dir) if length $dir && !-d $dir;
+    make_path($dir) if !-d $dir;
     open my $fh, '>', $path or die "cannot write $path: $!";
     print {$fh} JSON::PP->new->ascii(1)->canonical(1)->pretty(1)->encode(_manifest_without_bytes($data));
     close $fh;
@@ -2865,7 +2851,7 @@ sub _write_json {
 sub _write_binary {
     my ($path, $bytes) = @_;
     my $dir = dirname($path);
-    make_path($dir) if length $dir && !-d $dir;
+    make_path($dir) if !-d $dir;
     open my $fh, '>:raw', $path or die "cannot write $path: $!";
     print {$fh} $bytes;
     close $fh;

@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.032';
+our $VERSION = '0.033';
 
 use strict;
 use warnings;
@@ -171,7 +171,7 @@ sub compile {
         return _fallback_unit($abs_path, $kind, $logical_path, 'no_supported_compiled_content');
     }
 
-    if ($has_sub_defs && !@subs && !@compiled_subs && @declared_subs) {
+    if (!@subs && !@compiled_subs && @declared_subs) {
         return _fallback_unit(
             $abs_path,
             $kind,
@@ -283,18 +283,17 @@ sub _compile_declared_sub_from_source_unprototyped {
             trim_method => $package . '::_trim',
         };
     }
-    return _custom_sub_from_source($source, $short_name, $package, $full_name)
-        || _compile_simple_transform_sub_from_source($source, $short_name, $full_name)
-        || do {
-            my $literal = _return_literal_from_source($source, $short_name) or return;
-            return {
-                name => $short_name,
-                full_name => $full_name,
-                op => 'return_literal',
-                value_type => $literal->{type},
-                value => $literal->{value},
-            };
-        };
+    my $custom = _custom_sub_from_source($source, $short_name, $package, $full_name)
+        || _compile_simple_transform_sub_from_source($source, $short_name, $full_name);
+    return $custom if $custom;
+    my $literal = _return_literal_from_source($source, $short_name) or return;
+    return {
+        name => $short_name,
+        full_name => $full_name,
+        op => 'return_literal',
+        value_type => $literal->{type},
+        value => $literal->{value},
+    };
 }
 
 # _uses_class_builder_dsl($source)
@@ -453,11 +452,7 @@ sub _custom_sub_from_source {
     }
 
     if ($body =~ /\A\s*my\s+\$path\s*=\s*\$INC\{(?:'([^']+)'|"([^"]+)"|([^\}]+))\}\s*\|\|\s*__FILE__\s*;\s*return\s+dirname\(\s*dirname\(\s*dirname\(\$path\)\s*\)\s*\)\s*;\s*\z/s) {
-        my $require_path = $1 // $2 // $3;
-        if (!defined $require_path || $require_path eq '') {
-            ($require_path = $full_name) =~ s/::/\//g;
-            $require_path .= '.pm';
-        }
+        my ($require_path) = grep { defined } ($1, $2, $3);
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
             name => $short_name,
@@ -1812,8 +1807,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_normalize_add_arguments'
+        $short_name eq '_normalize_add_arguments'
         && $body =~ /dashboard path add/
         && $body =~ /basename\(\\?\$cwd\)/
         && $body =~ /\$path = cwd\(\) if \$path eq '\.'/
@@ -1828,8 +1822,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_normalize_delete_argument'
+        $short_name eq '_normalize_delete_argument'
         && $body =~ /Missing paths registry/
         && $body =~ /Missing config/
         && $body =~ /dashboard path del/
@@ -1870,7 +1863,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'build_psgi_app'
-        && _package_tail_is($package, '')
         && $body =~ /Missing backend web app/
         && $body =~ /\$BACKEND_APP/
         && $body =~ /default_headers/
@@ -1889,7 +1881,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_temp_file_kind'
-        && _package_tail_is($package, '')
         && $body =~ /\$entry\s*=~\s*\/\\A/i
         && $body =~ /result/
     ) {
@@ -1904,7 +1895,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_collector_rotation'
-        && _package_tail_is($package, '')
         && $body =~ /ref\( \$job->\{rotation\} \) eq 'HASH'/
         && $body =~ /ref\( \$job->\{rotations\} \) eq 'HASH'/
         && $body =~ /return \\\%rotation/
@@ -1920,7 +1910,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_path_is_old_enough'
-        && _package_tail_is($package, '')
         && $body =~ /stat\(\$path\)/
         && $body =~ /\( time - \$stat\[9\] \) >= \$min_age_seconds/
     ) {
@@ -1935,7 +1924,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_only_missing_tree_errors'
-        && _package_tail_is($package, '')
         && $body =~ /No such file or directory/
         && $body =~ /values %\{ \$entry \|\| \{\} \}/
     ) {
@@ -1950,7 +1938,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_read_state_metadata'
-        && _package_tail_is($package, '')
         && $body =~ /runtime\.json/
         && $body =~ /json_decode/
         && $body =~ /ref\(\$data\) ne 'HASH'/
@@ -1966,7 +1953,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_remove_tree'
-        && _package_tail_is($package, '')
         && $body =~ /remove_tree/
         && $body =~ /Unable to remove stale \$kind \$path/
         && $body =~ /_only_missing_tree_errors/
@@ -1983,7 +1969,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_collector_store'
-        && _package_tail_is($package, '')
         && $body =~ /collector_store/
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Collector->new/
     ) {
@@ -1998,7 +1983,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_config'
-        && _package_tail_is($package, '')
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Config->new/
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*FileRegistry->new/
         && $body =~ /config/
@@ -2014,7 +1998,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'configure'
-        && _package_tail_is($package, '')
         && $body =~ /\$PATHS = \$args\{paths\}/
         && $body =~ /%ALIASES = %\{ \$args\{aliases\} \|\| \{\} \}/
         && $body =~ /\$CONFIG_ALIASES_KEY = ''/
@@ -2034,7 +2017,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'home'
-        && _package_tail_is($package, '')
         && $body =~ /return \$ENV\{HOME\} \|\| ''/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -2048,7 +2030,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'tmp'
-        && _package_tail_is($package, '')
         && $body =~ /File::Spec->tmpdir/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -2062,7 +2043,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'dd'
-        && _package_tail_is($package, '')
         && $body =~ /runtime_root/
         && $body =~ /_paths_obj/
     ) {
@@ -2078,7 +2058,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'bookmarks'
-        && _package_tail_is($package, '')
         && $body =~ /dashboards_root/
         && $body =~ /_paths_obj/
     ) {
@@ -2094,7 +2073,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'configs'
-        && _package_tail_is($package, '')
         && $body =~ /config_root/
         && $body =~ /_paths_obj/
     ) {
@@ -2110,7 +2088,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'all'
-        && _package_tail_is($package, '')
         && $body =~ /all_paths/
         && $body =~ /_load_configured_aliases/
     ) {
@@ -2127,7 +2104,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'postman'
-        && _package_tail_is($package, '')
         && $body =~ /File::Spec->catdir\( configs\(\), 'postman' \)/
         && $body =~ /make_path/
     ) {
@@ -2142,7 +2118,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_paths_obj'
-        && _package_tail_is($package, '')
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*PathRegistry->new/
         && $body =~ /workspace_roots/
         && $body =~ /_load_configured_aliases/
@@ -2159,7 +2134,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'helper_names'
-        && _package_tail_is($package, '')
         && $body =~ /jq yq tomq propq iniq csvq xmlq/
         && $body =~ /complete/
     ) {
@@ -2178,7 +2152,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'helper_aliases'
-        && _package_tail_is($package, '')
         && $body =~ /pjq/
         && $body =~ /skill/
     ) {
@@ -2200,10 +2173,9 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'canonical_helper_name'
-        && _package_tail_is($package, '')
         && $body =~ /helper_names/
         && $body =~ /helper_aliases/
-        && $body =~ /return '' if !defined \$name || \$name eq ''/
+        && $body =~ /return '' if !defined \$name \|\| \$name eq ''/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -2218,7 +2190,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_helper_parent_root'
-        && _package_tail_is($package, '')
         && $body =~ /home_runtime_root/
         && $body =~ /'cli'/
     ) {
@@ -2233,7 +2204,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_helper_install_root'
-        && _package_tail_is($package, '')
         && $body =~ /_helper_parent_root/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -2248,7 +2218,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_managed_helper_marker'
-        && _package_tail_is($package, '')
         && $body =~ /managed-helper/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -2262,7 +2231,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_repo_private_cli_root'
-        && _package_tail_is($package, '')
         && $body =~ /dirname\(__FILE__\)/
         && $body =~ /share/
         && $body =~ /private-cli/
@@ -2278,7 +2246,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_shared_private_cli_root'
-        && _package_tail_is($package, '')
         && $body =~ /dist_dir/
         && $body =~ /private-cli/
     ) {
@@ -2295,7 +2262,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_helper_asset_path'
-        && _package_tail_is($package, '')
         && $body =~ /_repo_private_cli_root/
         && $body =~ /_shared_private_cli_root/
     ) {
@@ -2312,7 +2278,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'helper_path'
-        && _package_tail_is($package, '')
         && $body =~ /canonical_helper_name/
         && $body =~ /Unsupported helper command/
         && $body =~ /_helper_install_root/
@@ -2330,7 +2295,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'helper_content'
-        && _package_tail_is($package, '')
         && $body =~ /_dashboard-core/
         && $body =~ /canonical_helper_name/
         && $body =~ /_helper_asset_path/
@@ -2348,7 +2312,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_managed_helper_content'
-        && _package_tail_is($package, '')
         && $body =~ /helper_content/
         && $body =~ /_managed_helper_marker/
     ) {
@@ -2365,7 +2328,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_is_dashboard_managed_helper'
-        && _package_tail_is($package, '')
         && $body =~ /_managed_helper_marker/
         && $body =~ /Missing built-in dashboard command/
         && $body =~ /LAZY-THIN-CMD/
@@ -2382,7 +2344,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_stage_managed_helper'
-        && _package_tail_is($package, '')
         && $body =~ /_managed_helper_content/
         && $body =~ /_is_dashboard_managed_helper/
         && $body =~ /same_content_md5/
@@ -2400,7 +2361,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_remove_retired_managed_helper'
-        && _package_tail_is($package, '')
         && $body =~ /_helper_install_root/
         && $body =~ /_is_dashboard_managed_helper/
         && $body =~ /Unable to remove retired helper/
@@ -2418,7 +2378,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'ensure_helpers'
-        && _package_tail_is($package, '')
         && $body =~ /ensure_dir/
         && $body =~ /_stage_managed_helper/
         && $body =~ /_remove_retired_managed_helper/
@@ -2440,7 +2399,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_expand_env_path'
-        && _package_tail_is($package, '')
         && $body =~ /defined \$ENV/
         && $body =~ /return \$path/
     ) {
@@ -2455,7 +2413,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_docker_config_root'
-        && _package_tail_is($package, '')
         && $body =~ /config_root/
         && $body =~ /'docker'/
     ) {
@@ -2470,7 +2427,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_home_docker_config_root'
-        && _package_tail_is($package, '')
         && $body =~ /home_runtime_root/
         && $body =~ /'config'/
         && $body =~ /'docker'/
@@ -2486,7 +2442,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_discover_base_files'
-        && _package_tail_is($package, '')
         && $body =~ /compose\.yml/
         && $body =~ /docker-compose\.yaml/
     ) {
@@ -2502,7 +2457,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_service_toggle_root'
-        && _package_tail_is($package, '')
         && $body =~ /runtime_layers/
         && $body =~ /home_runtime_root/
         && $body =~ /config/
@@ -2518,7 +2472,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_service_disabled_marker_path'
-        && _package_tail_is($package, '')
         && $body =~ /_service_toggle_root/
         && $body =~ /disabled\.yml/
     ) {
@@ -2534,7 +2487,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_service_lookup_roots'
-        && _package_tail_is($package, '')
         && $body =~ /runtime_layers/
         && $body =~ /installed_skill_docker_roots_for_runtime/
         && $body =~ /__all__/
@@ -2550,7 +2502,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_service_folder_is_disabled'
-        && _package_tail_is($package, '')
         && $body =~ /_service_lookup_roots/
         && $body =~ /disabled\.yml/
     ) {
@@ -2566,7 +2517,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_discover_service_names'
-        && _package_tail_is($package, '')
         && $body =~ /_service_lookup_roots/
         && $body =~ /service_map/
         && $body =~ /sort keys %names/
@@ -2583,7 +2533,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_discover_enabled_services'
-        && _package_tail_is($package, '')
         && $body =~ /_discover_service_names/
         && $body =~ /_service_folder_is_disabled/
     ) {
@@ -2600,7 +2549,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_infer_services_from_args'
-        && _package_tail_is($package, '')
         && $body =~ /_discover_service_names/
         && $body =~ /next if !\$known\{\$arg\}/
         && $body =~ /push \@services, \$arg/
@@ -2617,7 +2565,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_discover_service_files'
-        && _package_tail_is($package, '')
         && $body =~ /_service_folder_is_disabled/
         && $body =~ /_service_lookup_roots/
         && $body =~ /development\.compose\.yml/
@@ -2635,7 +2582,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'resolve'
-        && _package_tail_is($package, '')
         && $body =~ /_discover_base_files/
         && $body =~ /_infer_services_from_args/
         && $body =~ /docker', 'compose/
@@ -2657,7 +2603,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'disable_service'
-        && _package_tail_is($package, '')
         && $body =~ /_service_disabled_marker_path/
         && $body =~ /disabled: 1/
     ) {
@@ -2673,7 +2618,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'enable_service'
-        && _package_tail_is($package, '')
         && $body =~ /_service_disabled_marker_path/
         && $body =~ /Unable to remove/
     ) {
@@ -2689,7 +2633,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'list_services'
-        && _package_tail_is($package, '')
         && $body =~ /_discover_service_names/
         && $body =~ /_service_folder_is_disabled/
         && $body =~ /_service_disabled_marker_path/
@@ -2708,7 +2651,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'run'
-        && _package_tail_is($package, '')
         && $body =~ /resolve/
         && $body =~ /capture/
         && $body =~ /system \@\{ .*command.* \}/
@@ -2725,7 +2667,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'run_query_command'
-        && _package_tail_is($package, '')
         && $body =~ /_split_query_args/
         && $body =~ /_parse_query_input/
         && $body =~ /_command_exit/
@@ -2747,7 +2688,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_split_query_args'
-        && _package_tail_is($package, '')
         && $body =~ /-f \$arg/
         && $body =~ /join\( ' ', \@rest \)/
     ) {
@@ -2762,7 +2702,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_read_query_input'
-        && _package_tail_is($package, '')
         && $body =~ /<STDIN>/
         && $body =~ /Unable to read \$file/
     ) {
@@ -2777,7 +2716,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_parse_query_input'
-        && _package_tail_is($package, '')
         && $body =~ /TOML::Tiny::from_toml/
         && $body =~ /YAML::XS::Load/
         && $body =~ /Unsupported data query command/
@@ -2797,7 +2735,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_extract_query_path'
-        && _package_tail_is($package, '')
         && $body =~ /Missing path segment/
         && $body =~ /Array index/
         && $body =~ /nested structure/
@@ -2813,7 +2750,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_path_uses_perl_expression'
-        && _package_tail_is($package, '')
         && $body =~ /index\( \$path, '\$d' \) >= 0/
         && $body =~ /return 0 if !defined \$path/
     ) {
@@ -2828,7 +2764,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_select_query_value'
-        && _package_tail_is($package, '')
         && $body =~ /_evaluate_query_expression/
         && $body =~ /_extract_query_path/
     ) {
@@ -2846,7 +2781,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_evaluate_query_expression'
-        && _package_tail_is($package, '')
         && $body =~ /PERL_EVAL/
         && $body =~ /_expression_prefers_list_output/
     ) {
@@ -2862,7 +2796,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_expression_prefers_list_output'
-        && _package_tail_is($package, '')
         && $body =~ /sort\|map\|grep\|keys\|values/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -2876,7 +2809,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_print_query_value'
-        && _package_tail_is($package, '')
         && $body =~ /json_encode/
         && $body =~ /defined \$value \? \$value : ''/
     ) {
@@ -2891,7 +2823,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_parse_java_properties'
-        && _package_tail_is($package, '')
         && $body =~ /_unescape_properties/
         && $body =~ /\%props/
         && $body =~ /\$pending/
@@ -2908,7 +2839,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_unescape_properties'
-        && _package_tail_is($package, '')
         && $body =~ /\\\\t/
         && $body =~ /\\\\\\\\/
     ) {
@@ -2923,10 +2853,8 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_parse_ini'
-        && _package_tail_is($package, '')
         && $body =~ /_global/
         && $body =~ /current_section/
-        && $body =~ /_global/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -2939,7 +2867,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_parse_csv'
-        && _package_tail_is($package, '')
         && $body =~ /split \/,\/, \$line/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -2953,7 +2880,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_parse_xml'
-        && _package_tail_is($package, '')
         && $body =~ /XML::Parser->new/
         && $body =~ /_xml_tree_to_data/
     ) {
@@ -2969,7 +2895,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_xml_tree_to_data'
-        && _package_tail_is($package, '')
         && $body =~ /XML tree must be an array reference/
         && $body =~ /_xml_element_payload/
     ) {
@@ -2985,7 +2910,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_xml_element_payload'
-        && _package_tail_is($package, '')
         && $body =~ /XML element payload must be an array reference/
         && $body =~ /_attributes/
         && $body =~ /_text/
@@ -3001,7 +2925,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_command_exit'
-        && _package_tail_is($package, '')
         && $body =~ /exit \$code/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -3015,7 +2938,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'api_dashboard_page'
-        && _package_tail_is($package, '')
         && $body =~ /api-dashboard\.page/
         && $body =~ /_page_from_asset/
     ) {
@@ -3031,7 +2953,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'sql_dashboard_page'
-        && _package_tail_is($package, '')
         && $body =~ /sql-dashboard\.page/
         && $body =~ /_page_from_asset/
     ) {
@@ -3047,7 +2968,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'page_for_id'
-        && _package_tail_is($package, '')
         && $body =~ /_seeded_page_asset_filename/
         && $body =~ /_page_from_asset/
     ) {
@@ -3064,7 +2984,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'seed_manifest_path'
-        && _package_tail_is($package, '')
         && $body =~ /config_root/
         && $body =~ /seeded-pages\.json/
     ) {
@@ -3079,7 +2998,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'known_managed_page_md5s'
-        && _package_tail_is($package, '')
         && $body =~ /_seeded_page_asset_filename/
         && $body =~ /content_md5/
         && $body =~ /LEGACY_MANAGED_PAGE_MD5/
@@ -3104,7 +3022,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'is_known_managed_page_md5'
-        && _package_tail_is($package, '')
         && $body =~ /known_managed_page_md5s/
         && $body =~ /return 0 if \$id eq '' \|\| \$md5 eq ''/
     ) {
@@ -3120,7 +3037,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_page_from_asset'
-        && _package_tail_is($package, '')
         && $body =~ /_seeded_page_instruction/
         && $body =~ /PageDocument->from_instruction/
     ) {
@@ -3137,7 +3053,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_seeded_page_instruction'
-        && _package_tail_is($package, '')
         && $body =~ /_seeded_page_asset_path/
         && $body =~ /PAGE_CACHE/
         && $body =~ /Unable to read/
@@ -3154,7 +3069,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_seeded_page_asset_filename'
-        && _package_tail_is($package, '')
         && $body =~ /Unknown seeded page id/
         && $body =~ /ID_TO_ASSET/
     ) {
@@ -3173,7 +3087,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_seeded_page_asset_path'
-        && _package_tail_is($package, '')
         && $body =~ /_repo_seeded_pages_root/
         && $body =~ /_shared_seeded_pages_root/
     ) {
@@ -3190,7 +3103,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_repo_seeded_pages_root'
-        && _package_tail_is($package, '')
         && $body =~ /dirname\(__FILE__\)/
         && $body =~ /seeded-pages/
         && $body =~ /File::Spec->updir/
@@ -3206,7 +3118,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_shared_seeded_pages_root'
-        && _package_tail_is($package, '')
         && $body =~ /dist_dir/
         && $body =~ /seeded-pages/
     ) {
@@ -3221,7 +3132,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_read_manifest'
-        && _package_tail_is($package, '')
         && $body =~ /seed_manifest_path/
         && $body =~ /json_decode/
         && $body =~ /must decode to a hash/
@@ -3238,7 +3148,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_write_manifest'
-        && _package_tail_is($package, '')
         && $body =~ /seed_manifest_path/
         && $body =~ /json_encode/
         && $body =~ /secure_file_permissions/
@@ -3255,7 +3164,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_record_manifest_md5'
-        && _package_tail_is($package, '')
         && $body =~ /_read_manifest/
         && $body =~ /_seeded_page_asset_filename/
         && $body =~ /_write_manifest/
@@ -3274,7 +3182,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_manifest_md5_matches'
-        && _package_tail_is($package, '')
         && $body =~ /_read_manifest/
         && $body =~ /return 0 if \$id eq '' \|\| \$md5 eq ''/
     ) {
@@ -3290,7 +3197,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'ensure_seeded_page'
-        && _package_tail_is($package, '')
         && $body =~ /canonical_instruction/
         && $body =~ /_manifest_md5_matches/
         && $body =~ /is_known_managed_page_md5/
@@ -3310,7 +3216,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_load_configured_aliases'
-        && _package_tail_is($package, '')
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*FileRegistry->new/
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Config->new/
         && $body =~ /path_aliases/
@@ -3330,7 +3235,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_resolve_path'
-        && _package_tail_is($package, '')
         && $body =~ /_paths_obj/
         && $body =~ /_load_configured_aliases/
         && $body =~ /DEVELOPER_DASHBOARD_PATH_/
@@ -3350,7 +3254,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'AUTOLOAD'
-        && _package_tail_is($package, '')
         && $body =~ /Unknown folder/
         && $body =~ /_resolve_path/
         && $body =~ /make_path/
@@ -3368,7 +3271,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'cd'
-        && _package_tail_is($package, '')
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -3382,7 +3284,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'ls'
-        && _package_tail_is($package, '')
         && $body =~ /_resolve_path/
         && $body =~ /readdir/
         && $body =~ /type => -d \$path \? 'folder' : 'file'/
@@ -3400,7 +3301,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'locate'
-        && _package_tail_is($package, '')
         && $body =~ /workspace_roots/
         && $body =~ /File::Find::find/
         && $body =~ /return grep \{ !\$seen\{\$_\}\+\+ \} sort \@found/
@@ -3417,7 +3317,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_state_root_has_live_collectors'
-        && _package_tail_is($package, '')
         && $body =~ /collectors/
         && $body =~ /\.pid\\z/
         && $body =~ /kill 0, \$pid/
@@ -3433,7 +3332,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_state_root_is_stale'
-        && _package_tail_is($package, '')
         && $body =~ /_path_is_old_enough/
         && $body =~ /_state_root_has_live_collectors/
         && $body =~ /_read_state_metadata/
@@ -3452,7 +3350,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_cleanup_state_roots'
-        && _package_tail_is($package, '')
         && $body =~ /state_base_root/
         && $body =~ /runtime_layers/
         && $body =~ /_state_root_is_stale/
@@ -3471,7 +3368,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_cleanup_temp_files'
-        && _package_tail_is($package, '')
         && $body =~ /tmpdir/
         && $body =~ /_temp_file_kind/
         && $body =~ /_path_is_old_enough/
@@ -3490,7 +3386,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_rotate_collector_logs'
-        && _package_tail_is($package, '')
         && $body =~ /_config->collectors/
         && $body =~ /_collector_rotation/
         && $body =~ /_collector_store->rotate_log/
@@ -3509,7 +3404,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'run'
-        && _package_tail_is($package, '')
         && $body =~ /min_age_seconds must be a non-negative integer/
         && $body =~ /_cleanup_state_roots/
         && $body =~ /_cleanup_temp_files/
@@ -3531,7 +3425,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_current_backend'
-        && _package_tail_is($package, '')
         && $body =~ /\$BACKEND_APP/
         && $body =~ /Missing backend web app/
     ) {
@@ -3547,7 +3440,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_request_headers'
-        && _package_tail_is($package, '')
         && $body =~ /request->header\('Host'\)/
         && $body =~ /request->header\('Cookie'\)/
     ) {
@@ -3562,7 +3454,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_request_args'
-        && _package_tail_is($package, '')
         && $body =~ /SERVER_NAME/
         && $body =~ /PATH_INFO/
         && $body =~ /_request_headers/
@@ -3579,7 +3470,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_capture'
-        && _package_tail_is($package, '')
         && $body =~ /my \@parts = splat;/
         && $body =~ /ref\( \$parts\[0\] \) eq 'ARRAY'/
     ) {
@@ -3594,7 +3484,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_looks_like_disconnect_error'
-        && _package_tail_is($package, '')
         && $body =~ /broken pipe/
         && $body =~ /connection reset/
         && $body =~ /write failed/
@@ -3610,7 +3499,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_response_from_result'
-        && _package_tail_is($package, '')
         && $body =~ /default_headers/
         && $body =~ /delayed \{/
         && $body =~ /response_header/
@@ -3629,7 +3517,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_run_backend'
-        && _package_tail_is($package, '')
         && $body =~ /_current_backend/
         && $body =~ /_request_args/
         && $body =~ /_response_from_result/
@@ -3649,7 +3536,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_run_authorized'
-        && _package_tail_is($package, '')
         && $body =~ /authorize_request/
         && $body =~ /_current_backend/
         && $body =~ /_request_args/
@@ -3668,8 +3554,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'new'
+        $short_name eq 'new'
         && $body =~ /Missing web app/
         && $body =~ /Worker count must be a positive integer/
         && $body =~ /generate_self_signed_cert/
@@ -3685,8 +3570,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'run'
+        $short_name eq 'run'
         && $body =~ /start_daemon/
         && $body =~ /listening_url/
         && $body =~ /serve_daemon/
@@ -3704,10 +3588,8 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'listening_url'
+        $short_name eq 'listening_url'
         && $body =~ /https/
-        && $body =~ /http/
         && $body =~ /localhost/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -3720,8 +3602,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'serve_daemon'
+        $short_name eq 'serve_daemon'
         && $body =~ /_serve_ssl_frontend/
         && $body =~ /_build_runner/
         && $body =~ /psgi_app/
@@ -3739,8 +3620,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'psgi_app'
+        $short_name eq 'psgi_app'
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Web::DancerApp->build_psgi_app/
         && $body =~ /_default_headers/
         && $body =~ /_ssl_redirect_response/
@@ -3758,8 +3638,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'start_daemon'
+        $short_name eq 'start_daemon'
         && $body =~ /IO::Socket::INET->new/
         && $body =~ /Unable to reserve internal SSL backend port/
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Web::Server::Daemon->new/
@@ -3774,8 +3653,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_serve_ssl_frontend'
+        $short_name eq '_serve_ssl_frontend'
         && $body =~ /Unable to fork SSL backend process/
         && $body =~ /_build_runner/
         && $body =~ /_handle_ssl_frontend_client/
@@ -3798,8 +3676,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_build_runner'
+        $short_name eq '_build_runner'
         && $body =~ /Plack::Runner->new/
         && $body =~ /--server', 'Starman'/
         && $body =~ /get_ssl_cert_paths/
@@ -3815,8 +3692,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_handle_ssl_frontend_client'
+        $short_name eq '_handle_ssl_frontend_client'
         && $body =~ /MSG_PEEK/
         && $body =~ /_socket_looks_like_tls/
         && $body =~ /_read_http_request_head/
@@ -3838,8 +3714,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_proxy_streams'
+        $short_name eq '_proxy_streams'
         && $body =~ /IO::Select->new/
         && $body =~ /sysread/
         && $body =~ /syswrite/
@@ -3854,8 +3729,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_socket_looks_like_tls'
+        $short_name eq '_socket_looks_like_tls'
         && $body =~ /return 0 if !defined \$byte \|\| \$byte eq ''/
         && $body =~ /ord\(\$byte\) == 22/
     ) {
@@ -3869,8 +3743,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_read_http_request_head'
+        $short_name eq '_read_http_request_head'
         && $body =~ /length\(\$head\) < 16384/
         && $body =~ /sysread\( \$socket, \$chunk, 1024 \)/
         && $body =~ /\\r\?\\n\\r\?\\n/
@@ -3885,8 +3758,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_request_target_from_head'
+        $short_name eq '_request_target_from_head'
         && $body =~ /return '\/' if !defined \$head \|\| \$head eq ''/
         && $body =~ /HTTP/
     ) {
@@ -3900,8 +3772,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_request_host_from_head'
+        $short_name eq '_request_host_from_head'
         && $body =~ /Host:\\s\*\(\[\^\\r\\n\]\+\)/
         && $body =~ /sockhost/
         && $body =~ /sockport/
@@ -3916,8 +3787,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_http_redirect_response'
+        $short_name eq '_http_redirect_response'
         && $body =~ /307 Temporary Redirect/
         && $body =~ /Location: https:\/\//
         && $body =~ /Redirecting to HTTPS/
@@ -3932,8 +3802,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_stop_ssl_backend'
+        $short_name eq '_stop_ssl_backend'
         && $body =~ /return 1 if !\$pid/
         && $body =~ /kill 15, \$pid/
         && $body =~ /waitpid\( \$pid, 0 \)/
@@ -3948,8 +3817,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name =~ /\A_ssl_(term|int|hup)_handler\z/
+        $short_name =~ /\A_ssl_(term|int|hup)_handler\z/
         && $body =~ /return _handle_ssl_signal\('/
     ) {
         my ($signal_name) = $body =~ /return _handle_ssl_signal\('([A-Z]+)'\)/;
@@ -3965,8 +3833,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_handle_ssl_signal'
+        $short_name eq '_handle_ssl_signal'
         && $body =~ /_stop_ssl_backend\(\$SSL_BACKEND_PID\)/
         && $body =~ /_run_previous_signal/
     ) {
@@ -3982,8 +3849,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_run_previous_signal'
+        $short_name eq '_run_previous_signal'
         && $body =~ /ref\(\$handler\) eq 'CODE'/
         && $body =~ /_signal_default_term/
     ) {
@@ -3998,8 +3864,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_signal_default_term'
+        $short_name eq '_signal_default_term'
         && $body =~ /kill 15, \$\$/
         && $body =~ /return 1/
     ) {
@@ -4013,8 +3878,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_default_headers'
+        $short_name eq '_default_headers'
         && $body =~ /X-Frame-Options/
         && $body =~ /Content-Security-Policy/
     ) {
@@ -4028,8 +3892,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_request_is_https'
+        $short_name eq '_request_is_https'
         && $body =~ /psgi\.url_scheme/
         && $body =~ /HTTP_X_FORWARDED_PROTO/
     ) {
@@ -4043,8 +3906,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_ssl_redirect_response'
+        $short_name eq '_ssl_redirect_response'
         && $body =~ /Redirecting to HTTPS/
         && $body =~ /_https_redirect_location/
     ) {
@@ -4059,8 +3921,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_https_redirect_location'
+        $short_name eq '_https_redirect_location'
         && $body =~ /HTTP_HOST/
         && $body =~ /SCRIPT_NAME/
         && $body =~ /PATH_INFO/
@@ -4076,8 +3937,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_ssl_expected_subject_alt_names'
+        $short_name eq '_ssl_expected_subject_alt_names'
         && $body =~ /localhost/
         && $body =~ /_normalize_ssl_subject_alt_name/
         && $body =~ /_ssl_subject_alt_name_is_wildcard/
@@ -4094,8 +3954,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_normalize_ssl_subject_alt_name'
+        $short_name eq '_normalize_ssl_subject_alt_name'
         && $body =~ /return '' if !defined \$name/
         && $body =~ /\^\\\[\(\.\+\)\\\]/
     ) {
@@ -4109,8 +3968,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_ssl_subject_alt_name_is_wildcard'
+        $short_name eq '_ssl_subject_alt_name_is_wildcard'
         && $body =~ /0\.0\.0\.0/
         && $body =~ /0:0:0:0:0:0:0:0/
     ) {
@@ -4124,8 +3982,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_ssl_subject_alt_name_is_ip'
+        $short_name eq '_ssl_subject_alt_name_is_ip'
         && $body =~ /\\d\{1,3\}/
         && $body =~ /return 1 if \$name =~ \/\:/
     ) {
@@ -4139,8 +3996,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_ssl_cert_has_expected_profile'
+        $short_name eq '_ssl_cert_has_expected_profile'
         && $body =~ /openssl', 'x509'/
         && $body =~ /Basic Constraints/
         && $body =~ /openssl', 'verify'/
@@ -4157,8 +4013,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'generate_self_signed_cert'
+        $short_name eq 'generate_self_signed_cert'
         && $body =~ /dd-openssl-XXXXXX/
         && $body =~ /openssl', 'req'/
         && $body =~ /Generated certificate is missing/
@@ -4176,8 +4031,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'get_ssl_cert_paths'
+        $short_name eq 'get_ssl_cert_paths'
         && $body =~ /server\.crt/
         && $body =~ /server\.key/
     ) {
@@ -4191,8 +4045,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'new'
+        $short_name eq 'new'
         && $body =~ /Missing config/
         && $body =~ /Missing path registry/
         && $body =~ /Missing app builder/
@@ -4207,8 +4060,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'web_log'
+        $short_name eq 'web_log'
         && $body =~ /Line count must be a positive integer/
         && $body =~ /_tail_text/
         && $body =~ /_follow_log_file/
@@ -4225,8 +4077,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_tail_text'
+        $short_name eq '_tail_text'
         && $body =~ /split \/\\n\/, \$text, -1/
         && $body =~ /join "\\n"/
         && $body =~ /had_trailing_newline/
@@ -4241,8 +4092,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_follow_log_file'
+        $short_name eq '_follow_log_file'
         && $body =~ /Missing log file/
         && $body =~ /sysread\( \$fh, \$chunk, 8192 \)/
         && $body =~ /sleep \$interval/
@@ -4257,8 +4107,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'web_state'
+        $short_name eq 'web_state'
         && $body =~ /return if !-f \$file/
         && $body =~ /json_decode/
         && $body =~ /web_state/
@@ -4273,8 +4122,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_shutdown_web'
+        $short_name eq '_shutdown_web'
         && $body =~ /updated_at => _now_iso8601/
         && $body =~ /status     => \$final_status/
         && $body =~ /exit 0/
@@ -4291,8 +4139,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_write_web_state'
+        $short_name eq '_write_web_state'
         && $body =~ /json_encode/
         && $body =~ /secure_file_permissions/
         && $body =~ /rename \$tmp, \$file/
@@ -4307,8 +4154,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_cleanup_web_files'
+        $short_name eq '_cleanup_web_files'
         && $body =~ /remove\('web_pid'\)/
         && $body =~ /remove\('web_state'\)/
     ) {
@@ -4322,8 +4168,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_web_process_title'
+        $short_name eq '_web_process_title'
         && $body =~ /dashboard web: \$host:\$port/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -4336,8 +4181,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_portable_signal'
+        $short_name eq '_portable_signal'
         && $body =~ /Unsupported signal name/
         && $body =~ /TERM => 15/
         && $body =~ /return \$signal \+ 0 if \$signal =~/
@@ -4352,8 +4196,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_send_signal'
+        $short_name eq '_send_signal'
         && $body =~ /_portable_signal/
         && $body =~ /kill \$portable_signal, \@targets/
     ) {
@@ -4368,8 +4211,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_proc_owned_by_current_user'
+        $short_name eq '_proc_owned_by_current_user'
         && $body =~ /return 1 if !defined \$proc->\{uid\}/
         && $body =~ /\( \$< \+ 0 \)/
     ) {
@@ -4383,8 +4225,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_find_legacy_web_processes'
+        $short_name eq '_find_legacy_web_processes'
         && $body =~ /_find_web_processes/
         && $body =~ /\!\~ \/\^dashboard web:\//
     ) {
@@ -4399,8 +4240,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_looks_like_web_process'
+        $short_name eq '_looks_like_web_process'
         && $body =~ /dashboard web:/
         && $body =~ /bin\/dashboard/
         && $body =~ /dashboard\s+serve/
@@ -4415,8 +4255,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_ps_processes'
+        $short_name eq '_ps_processes'
         && $body =~ /system 'ps', '-eo', 'pid=,uid=,args='/
         && $body =~ /push \@procs/
     ) {
@@ -4430,8 +4269,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_find_processes_by_prefix'
+        $short_name eq '_find_processes_by_prefix'
         && $body =~ /_proc_owned_by_current_user/
         && $body =~ /_ps_processes/
     ) {
@@ -4447,8 +4285,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_find_web_processes'
+        $short_name eq '_find_web_processes'
         && $body =~ /_ps_processes/
         && $body =~ /_looks_like_web_process/
         && $body =~ /_proc_owned_by_current_user/
@@ -4466,8 +4303,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_is_managed_web'
+        $short_name eq '_is_managed_web'
         && $body =~ /_read_process_env_marker/
         && $body =~ /_read_process_title/
         && $body =~ /_web_process_title/
@@ -4484,8 +4320,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_pkill_perl'
+        $short_name eq '_pkill_perl'
         && $body =~ /system 'pkill', '-15', '-f', \$pattern/
         && $body =~ /_ps_processes/
         && $body =~ /_send_signal/
@@ -4503,8 +4338,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_managed_listener_pids_for_port'
+        $short_name eq '_managed_listener_pids_for_port'
         && $body =~ /_is_managed_web/
         && $body =~ /_listener_pids_for_port/
     ) {
@@ -4520,8 +4354,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_listener_pids_for_port'
+        $short_name eq '_listener_pids_for_port'
         && $body =~ /system 'ss', '-ltnp',/
         && $body =~ /_listener_pids_for_port_via_proc/
     ) {
@@ -4536,8 +4369,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_listener_pids_for_port_via_proc'
+        $short_name eq '_listener_pids_for_port_via_proc'
         && $body =~ /_listener_socket_inodes_for_port/
         && $body =~ /_process_pids_for_socket_inodes/
     ) {
@@ -4553,8 +4385,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_listener_socket_inodes_for_port'
+        $short_name eq '_listener_socket_inodes_for_port'
         && $body =~ /_listener_socket_table_paths/
         && $body =~ /sprintf '%04X', \$port/
         && $body =~ /\$fields\[3\] ne '0A'/
@@ -4570,8 +4401,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_process_pids_for_socket_inodes'
+        $short_name eq '_process_pids_for_socket_inodes'
         && $body =~ /_process_fd_paths/
         && $body =~ /readlink \$fd_path/
         && $body =~ /socket:\[\(\\d\+\)\]/
@@ -4587,8 +4417,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'start_collectors'
+        $short_name eq 'start_collectors'
         && $body =~ /_progress_emit/
         && $body =~ /collectors/
         && $body =~ /start_loop/
@@ -4606,8 +4435,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'stop_collectors'
+        $short_name eq 'stop_collectors'
         && $body =~ /running_loops/
         && $body =~ /stop_loop/
         && $body =~ /dashboard collector:/
@@ -4626,8 +4454,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'stop_all'
+        $short_name eq 'stop_all'
         && $body =~ /stop_web/
         && $body =~ /stop_collectors/
     ) {
@@ -4643,8 +4470,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'stop_progress_tasks'
+        $short_name eq 'stop_progress_tasks'
         && $body =~ /running_loops/
         && $body =~ /stop_collector:/
     ) {
@@ -4658,8 +4484,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'restart_progress_tasks'
+        $short_name eq 'restart_progress_tasks'
         && $body =~ /stop_progress_tasks/
         && $body =~ /start_collector:/
         && $body =~ /start_web/
@@ -4675,8 +4500,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'serve_all'
+        $short_name eq 'serve_all'
         && $body =~ /start_collectors/
         && $body =~ /start_web/
         && $body =~ /stop_collectors/
@@ -4694,8 +4518,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'restart_all'
+        $short_name eq 'restart_all'
         && $body =~ /stop_all/
         && $body =~ /start_collectors/
         && $body =~ /_restart_web_with_retry/
@@ -4713,8 +4536,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_listener_socket_table_paths'
+        $short_name eq '_listener_socket_table_paths'
         && $body =~ /\/proc\/net\/tcp/
         && $body =~ /\/proc\/net\/tcp6/
     ) {
@@ -4728,8 +4550,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_process_fd_paths'
+        $short_name eq '_process_fd_paths'
         && $body =~ /glob '\/proc\/\[0-9\]\*\/fd\/\*'/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -4742,8 +4563,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_wait_for_port_release'
+        $short_name eq '_wait_for_port_release'
         && $body =~ /_listener_pids_for_port/
         && $body =~ /for \( 1 \.\. 50 \)/
         && $body =~ /sleep 0\.1/
@@ -4759,8 +4579,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_progress_emit'
+        $short_name eq '_progress_emit'
         && $body =~ /ref\(\$progress\) ne 'CODE'/
         && $body =~ /\$progress->\(\$event\)/
     ) {
@@ -4774,8 +4593,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_runtime_stability_polls'
+        $short_name eq '_runtime_stability_polls'
         && $body =~ /DEVELOPER_DASHBOARD_RUNTIME_STABILITY_POLLS/
         && $body =~ /Devel::Cover/
         && $body =~ /return 100/
@@ -4790,8 +4608,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_runtime_confirmation_polls'
+        $short_name eq '_runtime_confirmation_polls'
         && $body =~ /DEVELOPER_DASHBOARD_RUNTIME_CONFIRMATION_POLLS/
         && $body =~ /return 3/
     ) {
@@ -4805,8 +4622,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_runtime_poll_interval'
+        $short_name eq '_runtime_poll_interval'
         && $body =~ /return 0\.1/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -4819,8 +4635,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_port_accepting_connections'
+        $short_name eq '_port_accepting_connections'
         && $body =~ /IO::Socket::INET->new/
         && $body =~ /PeerAddr => '127\.0\.0\.1'/
         && $body =~ /Proto    => 'tcp'/
@@ -4835,8 +4650,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_read_process_env_marker'
+        $short_name eq '_read_process_env_marker'
         && $body =~ m{/proc/\$pid/environ}
         && $body =~ /split \/\\0\/, \$env/
         && $body =~ /return \$2 if \$1 eq \$key/
@@ -4851,8 +4665,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_read_process_title'
+        $short_name eq '_read_process_title'
         && $body =~ m{/proc/\$pid/cmdline}
         && $body =~ /system 'ps', '-o', 'args=', '-p', \$pid/
     ) {
@@ -4866,8 +4679,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_system_context'
+        $short_name eq '_system_context'
         && $body =~ /cwd/
         && $body =~ /runtime_context/
         && $body =~ /params/
@@ -4882,8 +4694,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_noop_writer'
+        $short_name eq '_noop_writer'
         && $body =~ /return ''/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -4896,8 +4707,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_looks_like_stream_disconnect_error'
+        $short_name eq '_looks_like_stream_disconnect_error'
         && $body =~ /__DD_AJAX_STREAM_DISCONNECTED__/
         && $body =~ /broken pipe/
         && $body =~ /closed handle/
@@ -4912,8 +4722,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_stream_sysread'
+        $short_name eq '_stream_sysread'
         && $body =~ /sysread/
         && $body =~ /8192/
     ) {
@@ -4927,8 +4736,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_saved_ajax_inline_env_limit'
+        $short_name eq '_saved_ajax_inline_env_limit'
         && $body =~ /131_072/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -4941,8 +4749,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_cleanup_saved_ajax_temp_files'
+        $short_name eq '_cleanup_saved_ajax_temp_files'
         && $body =~ /saved ajax temp file/
         && $body =~ /unlink \$path/
     ) {
@@ -4956,8 +4763,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_normalize_saved_ajax_singleton'
+        $short_name eq '_normalize_saved_ajax_singleton'
         && $body =~ /Invalid ajax singleton name/
         && $body =~ /\[\[:cntrl:\]\]/
     ) {
@@ -4971,8 +4777,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_kill_saved_ajax_singleton'
+        $short_name eq '_kill_saved_ajax_singleton'
         && $body =~ /_quote_process_pattern_literal/
         && $body =~ /_pkill_perl/
     ) {
@@ -4987,8 +4792,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_quote_process_pattern_literal'
+        $short_name eq '_quote_process_pattern_literal'
         && $body =~ /\\\\\$\|\(\)\{\}\[\]\*\+\?/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -5001,8 +4805,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_query_string_from_params'
+        $short_name eq '_query_string_from_params'
         && $body =~ /URI::Escape/
         && $body =~ /join '&'/
     ) {
@@ -5016,8 +4819,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_runtime_legacy_quote'
+        $short_name eq '_runtime_legacy_quote'
         && $body =~ /\\\\\\\\/
         && $body =~ /\\\\'/
     ) {
@@ -5031,8 +4833,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_runtime_legacy_value'
+        $short_name eq '_runtime_legacy_value'
         && $body =~ /ref\(\$value\) eq 'ARRAY'/
         && $body =~ /ref\(\$value\) eq 'HASH'/
         && $body =~ /_runtime_legacy_quote/
@@ -5049,8 +4850,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_runtime_value_text'
+        $short_name eq '_runtime_value_text'
         && $body =~ /ref\(\$value\) ne 'HASH' && ref\(\$value\) ne 'ARRAY'/
         && $body =~ /_runtime_legacy_value/
     ) {
@@ -5065,8 +4865,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_saved_ajax_command'
+        $short_name eq '_saved_ajax_command'
         && $body =~ /Missing saved ajax file path/
         && $body =~ /command_argv_for_path/
         && $body =~ /command_in_path\('python3'\)/
@@ -5082,8 +4881,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_saved_ajax_env'
+        $short_name eq '_saved_ajax_env'
         && $body =~ /DEVELOPER_DASHBOARD_AJAX_PARAMS/
         && $body =~ /_saved_ajax_inline_env_limit/
         && $body =~ /_runtime_local_perl_env/
@@ -5103,8 +4901,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_runtime_local_perl_env'
+        $short_name eq '_runtime_local_perl_env'
         && $body =~ /PERL5LIB/
         && $body =~ /runtime_local_lib_roots/
     ) {
@@ -5118,8 +4915,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_saved_ajax_temp_file'
+        $short_name eq '_saved_ajax_temp_file'
         && $body =~ /tempfile/
         && $body =~ /saved ajax temp file/
     ) {
@@ -5133,8 +4929,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_drain_saved_ajax_ready_handle'
+        $short_name eq '_drain_saved_ajax_ready_handle'
         && $body =~ /_stream_sysread/
         && $body =~ /stdout_writer/
         && $body =~ /stderr_writer/
@@ -5151,8 +4946,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_close_saved_ajax_streams'
+        $short_name eq '_close_saved_ajax_streams'
         && $body =~ /select->can\('handles'\)/
         && $body =~ /close \$fh/
     ) {
@@ -5166,8 +4960,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_terminate_saved_ajax_process'
+        $short_name eq '_terminate_saved_ajax_process'
         && $body =~ /kill 15, \$pid/
         && $body =~ /kill 9, \$pid if kill 0, \$pid/
     ) {
@@ -5181,8 +4974,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'stash'
+        $short_name eq 'stash'
         && $body =~ /\$AJAX_STASH/
         && $body =~ /no input/
     ) {
@@ -5196,8 +4988,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'hide'
+        $short_name eq 'hide'
         && $body =~ /__DD_HIDE__/
         && $body =~ /stash\(\$input\) if ref\(\$input\) eq 'HASH'/
     ) {
@@ -5212,8 +5003,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'void'
+        $short_name eq 'void'
         && $body =~ /stash\(\$input\) if defined \$input/
         && $body =~ /return/
     ) {
@@ -5228,8 +5018,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'stop'
+        $short_name eq 'stop'
         && $body =~ /die defined \$message/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -5242,8 +5031,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'params'
+        $short_name eq 'params'
         && $body =~ /\$AJAX_PARAMS/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -5256,8 +5044,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_code_header'
+        $short_name eq '_code_header'
         && $body =~ /my \@keys = grep/
         && $body =~ /my \(%s\) = \@\{ \$stash \}\{qw/
     ) {
@@ -5271,8 +5058,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_destroy_sandpit'
+        $short_name eq '_destroy_sandpit'
         && $body =~ /no strict 'refs'/
         && $body =~ /%\{"\$\{stash\}::"\} = \(\)/
     ) {
@@ -5286,8 +5072,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_quote_process_pattern_literal'
+        $short_name eq '_quote_process_pattern_literal'
         && $body =~ /\\\.\^\$\|\(\)\{\}\\\[\\\]\*\+\?/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -5300,8 +5085,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_saved_ajax_perl_wrapper'
+        $short_name eq '_saved_ajax_perl_wrapper'
         && $body =~ /DEVELOPER_DASHBOARD_AJAX_PARAMS_FILE/
         && $body =~ /dashboard ajax:/
         && $body =~ /eval "\{ \$code \}"/
@@ -5316,8 +5100,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '__add_error'
+        $short_name eq '__add_error'
         && $body =~ /push \\\@errors/
         && $body =~ /defined \\\$_ && \\\$_ ne ''/
     ) {
@@ -5331,8 +5114,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '__errors'
+        $short_name eq '__errors'
         && $body =~ /my \\\@copy = \\\@errors/
         && $body =~ /\\\@errors = \(\)/
     ) {
@@ -5346,8 +5128,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '__initial_context'
+        $short_name eq '__initial_context'
         && $body =~ /\\\$stash = \\\$next_stash \|\| \{\}/
         && $body =~ /\\\$runtime = \\\$next_runtime \|\| \{\}/
     ) {
@@ -5361,8 +5142,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '__run_code'
+        $short_name eq '__run_code'
         && $body =~ /my \\\@result = eval "\{\\\$code\}"/
         && $body =~ /__add_error/
     ) {
@@ -5377,8 +5157,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_new_sandpit'
+        $short_name eq '_new_sandpit'
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Sandpit/
         && $body =~ /__initial_context/
         && $body =~ /Unable to setup sandpit/
@@ -5393,8 +5172,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_run_single_block'
+        $short_name eq '_run_single_block'
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Folder->configure/
         && $body =~ /_new_sandpit/
         && $body =~ /_code_header/
@@ -5414,8 +5192,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'stream_code_block'
+        $short_name eq 'stream_code_block'
         && $body =~ /StreamHandle/
         && $body =~ /_new_sandpit/
         && $body =~ /__run_code/
@@ -5436,8 +5213,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'stream_saved_ajax_file'
+        $short_name eq 'stream_saved_ajax_file'
         && $body =~ /open3/
         && $body =~ /_saved_ajax_command/
         && $body =~ /_saved_ajax_env/
@@ -5463,8 +5239,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'run_code_blocks'
+        $short_name eq 'run_code_blocks'
         && $body =~ /_new_sandpit/
         && $body =~ /_run_single_block/
         && $body =~ /_runtime_value_text/
@@ -5484,8 +5259,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_render_templates'
+        $short_name eq '_render_templates'
         && $body =~ /Template->new/
         && $body =~ /_system_context/
         && $body =~ /_run_single_block/
@@ -5503,8 +5277,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'prepare_page'
+        $short_name eq 'prepare_page'
         && $body =~ /run_code_blocks/
         && $body =~ /_render_templates/
         && $body =~ /runtime_outputs/
@@ -5670,7 +5443,6 @@ sub _compile_simple_transform_sub_from_source {
     if (
         $short_name eq '_is_action_trusted'
         && $body =~ /allow_untrusted_actions/
-        && $body =~ /trusted_actions/
         && $body =~ /return 1 if \$action->\{safe\}/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -6343,8 +6115,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'new'
+        $short_name eq 'new'
         && $body =~ /Missing file registry/
         && $body =~ /Missing path registry/
         && $body =~ /repo_root/
@@ -6359,8 +6130,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_global_config_file'
+        $short_name eq '_global_config_file'
         && $body =~ /config_root/
         && $body =~ /config\.json/
     ) {
@@ -6374,8 +6144,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_global_config_files'
+        $short_name eq '_global_config_files'
         && $body =~ /config_roots/
         && $body =~ /map \{ File::Spec->catfile/
     ) {
@@ -6389,8 +6158,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_merge_named_hash_item'
+        $short_name eq '_merge_named_hash_item'
         && $body =~ /ref\(\$left\) ne 'HASH'/
         && $body =~ /_merge_hashes/
     ) {
@@ -6405,8 +6173,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_merge_named_hash_array'
+        $short_name eq '_merge_named_hash_array'
         && $body =~ /%positions/
         && $body =~ /_merge_named_hash_item/
         && $body =~ /identity_key/
@@ -6422,8 +6189,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_merge_hashes'
+        $short_name eq '_merge_hashes'
         && $body =~ /collectors/
         && $body =~ /providers/
         && $body =~ /_merge_named_hash_array/
@@ -6439,8 +6205,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'load_global'
+        $short_name eq 'load_global'
         && $body =~ /reverse \$self->_global_config_files/
         && $body =~ /_skill_config_fragments/
         && $body =~ /_merge_hashes/
@@ -6458,8 +6223,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'save_global'
+        $short_name eq 'save_global'
         && $body =~ /_global_config_file/
         && $body =~ /json_encode/
         && $body =~ /secure_file_permissions/
@@ -6475,8 +6239,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_load_writable_global'
+        $short_name eq '_load_writable_global'
         && $body =~ /_global_config_file/
         && $body =~ /json_decode/
         && $body =~ /return \{\} if !-f \$file/
@@ -6492,8 +6255,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'save_global_defaults'
+        $short_name eq 'save_global_defaults'
         && $body =~ /_load_writable_global/
         && $body =~ /_merge_hashes/
         && $body =~ /save_global/
@@ -6511,8 +6273,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'ensure_global_file'
+        $short_name eq 'ensure_global_file'
         && $body =~ /return \$file if -e \$file/
         && $body =~ /save_global\( \{\} \)/
     ) {
@@ -6528,8 +6289,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'load_repo'
+        $short_name eq 'load_repo'
         && $body =~ /current_project_root/
         && $body =~ /json_decode/
     ) {
@@ -6543,8 +6303,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'merged'
+        $short_name eq 'merged'
         && $body =~ /load_global/
         && $body =~ /load_repo/
         && $body =~ /_merge_hashes/
@@ -6562,8 +6321,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_builtin_collectors'
+        $short_name eq '_builtin_collectors'
         && $body =~ /housekeeper/
         && $body =~ /PathRegistry->new/
         && $body =~ /workspace_roots/
@@ -6578,8 +6336,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_config_entries'
+        $short_name eq '_skill_config_entries'
         && $body =~ /SkillDispatcher->new/
         && $body =~ /installed_skill_roots/
         && $body =~ /get_skill_config/
@@ -6595,8 +6352,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_config_fragments'
+        $short_name eq '_skill_config_fragments'
         && $body =~ /_skill_config_entries/
         && $body =~ /config_fragment/
     ) {
@@ -6611,8 +6367,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_collectors'
+        $short_name eq '_skill_collectors'
         && $body =~ /_skill_config_entries/
         && $body =~ /qualified_name/
         && $body =~ /skill_root/
@@ -6628,8 +6383,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'collectors'
+        $short_name eq 'collectors'
         && $body =~ /_builtin_collectors/
         && $body =~ /_skill_collectors/
         && $body =~ /DEVELOPER_DASHBOARD_CHECKERS/
@@ -6648,8 +6402,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_normalize_home_path'
+        $short_name eq '_normalize_home_path'
         && $body =~ /\$HOME/
         && $body =~ /home_prefix/
     ) {
@@ -6663,8 +6416,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_expand_config_path'
+        $short_name eq '_expand_config_path'
         && $body =~ /\$HOME/
         && $body =~ /^\s*return \$home/m
         && $body =~ /path =~ \/\^~/
@@ -6679,8 +6431,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_expand_path_aliases'
+        $short_name eq '_expand_path_aliases'
         && $body =~ /_expand_config_path/
         && $body =~ /%expanded/
     ) {
@@ -6695,11 +6446,9 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'path_aliases'
+        $short_name eq 'path_aliases'
         && $body =~ /merged/
         && $body =~ /_expand_path_aliases/
-        && $body =~ /path_aliases/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -6714,8 +6463,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'file_aliases'
+        $short_name eq 'file_aliases'
         && $body =~ /merged/
         && $body =~ /_expand_path_aliases/
         && $body =~ /file_aliases/
@@ -6733,11 +6481,9 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'global_path_aliases'
+        $short_name eq 'global_path_aliases'
         && $body =~ /load_global/
         && $body =~ /_expand_path_aliases/
-        && $body =~ /path_aliases/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -6752,8 +6498,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'global_file_aliases'
+        $short_name eq 'global_file_aliases'
         && $body =~ /load_global/
         && $body =~ /_expand_path_aliases/
         && $body =~ /file_aliases/
@@ -6771,8 +6516,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'web_workers'
+        $short_name eq 'web_workers'
         && $body =~ /workers/
         && $body =~ /return 1 if !defined \$workers/
     ) {
@@ -6787,8 +6531,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_normalize_ssl_subject_alt_names'
+        $short_name eq '_normalize_ssl_subject_alt_names'
         && $body =~ /ref\(\$names\) ne 'ARRAY'/
         && $body =~ /push \@normalized/
     ) {
@@ -6802,8 +6545,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'save_global_web_workers'
+        $short_name eq 'save_global_web_workers'
         && $body =~ /Worker count must be a positive integer/
         && $body =~ /_load_writable_global/
         && $body =~ /save_global/
@@ -6820,8 +6562,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'web_settings'
+        $short_name eq 'web_settings'
         && $body =~ /ssl_subject_alt_names/
         && $body =~ /no_editor/
         && $body =~ /no_indicators/
@@ -6838,8 +6579,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'save_global_web_settings'
+        $short_name eq 'save_global_web_settings'
         && $body =~ /Host cannot be empty/
         && $body =~ /Port must be numeric/
         && $body =~ /Worker count must be numeric/
@@ -6858,8 +6598,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && ($short_name eq 'save_global_path_alias' || $short_name eq 'save_global_file_alias')
+        ($short_name eq 'save_global_path_alias' || $short_name eq 'save_global_file_alias')
         && $body =~ /Missing .* alias name/
         && $body =~ /_normalize_home_path/
         && $body =~ /_expand_config_path/
@@ -6881,8 +6620,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && ($short_name eq 'remove_global_path_alias' || $short_name eq 'remove_global_file_alias')
+        ($short_name eq 'remove_global_path_alias' || $short_name eq 'remove_global_file_alias')
         && $body =~ /removed/
         && $body =~ /delete \$cfg/
         && $body =~ /save_global/
@@ -6902,8 +6640,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'docker_config'
+        $short_name eq 'docker_config'
         && $body =~ /merged/
         && $body =~ /cfg->\{docker\}/
     ) {
@@ -6918,8 +6655,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'providers'
+        $short_name eq 'providers'
         && $body =~ /cfg->\{providers\}/
         && $body =~ /push \@providers/
     ) {
@@ -6950,8 +6686,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_arrayref_or_empty'
+        $short_name eq '_arrayref_or_empty'
         && $body =~ /ref\(\$value\) eq 'ARRAY'/
         && $body =~ /my \@empty/
     ) {
@@ -6965,8 +6700,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_hashref_or_empty'
+        $short_name eq '_hashref_or_empty'
         && $body =~ /ref\(\$value\) eq 'HASH'/
         && $body =~ /my %empty/
     ) {
@@ -6980,8 +6714,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_defined_or_default'
+        $short_name eq '_defined_or_default'
         && $body =~ /return defined \$value \? \$value : \$default/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -6994,8 +6727,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_merge_array_items_by_identity'
+        $short_name eq '_merge_array_items_by_identity'
         && $body =~ /%positions/
         && $body =~ /_arrayref_or_empty/
         && $body =~ /exists \$positions/
@@ -7011,8 +6743,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_layers'
+        $short_name eq '_skill_layers'
         && $body =~ /skill_layers/
         && $body =~ /get_skill_path/
     ) {
@@ -7026,8 +6757,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_lookup_roots'
+        $short_name eq '_skill_lookup_roots'
         && $body =~ /reverse \$self->_skill_layers/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7041,8 +6771,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_command_root_specs'
+        $short_name eq '_command_root_specs'
         && $body =~ /split_index/
         && $body =~ /nested_segments/
         && $body =~ /command_name/
@@ -7057,8 +6786,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_nested_skill_path'
+        $short_name eq '_nested_skill_path'
         && $body =~ /push \@parts, 'skills', \$segment/
         && $body =~ /File::Spec->catdir/
     ) {
@@ -7072,8 +6800,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_page_location'
+        $short_name eq '_page_location'
         && $body =~ /_skill_lookup_roots/
         && $body =~ /dashboards/
         && $body =~ /return \( \$file, \$skill_path \) if -f \$file/
@@ -7089,8 +6816,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_bookmark_entries'
+        $short_name eq '_skill_bookmark_entries'
         && $body =~ /_skill_lookup_roots/
         && $body =~ /dashboards/
         && $body =~ /\$entries\{\$entry\} \|\|= 1/
@@ -7106,8 +6832,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_nav_route_ids'
+        $short_name eq '_skill_nav_route_ids'
         && $body =~ /_skill_lookup_roots/
         && $body =~ /dashboards', 'nav'/
         && $body =~ /\$routes\{\$entry\} \|\|= 'nav\/' \. \$entry/
@@ -7123,8 +6848,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_merge_skill_hashes'
+        $short_name eq '_merge_skill_hashes'
         && $body =~ /collectors/
         && $body =~ /providers/
         && $body =~ /_merge_array_items_by_identity/
@@ -7140,8 +6864,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'get_skill_config'
+        $short_name eq 'get_skill_config'
         && $body =~ /config\/config\.json/
         && $body =~ /decode_json/
         && $body =~ /_merge_skill_hashes/
@@ -7158,8 +6881,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'config_fragment'
+        $short_name eq 'config_fragment'
         && $body =~ /get_skill_config/
         && $body =~ /'_' \. \$skill_name/
     ) {
@@ -7174,8 +6896,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'get_skill_path'
+        $short_name eq 'get_skill_path'
         && $body =~ /manager->get_skill_path/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7188,8 +6909,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_command_spec'
+        $short_name eq '_command_spec'
         && $body =~ /_command_root_specs/
         && $body =~ /resolve_runnable_file/
         && $body =~ /skill_layers/
@@ -7207,8 +6927,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'command_path'
+        $short_name eq 'command_path'
         && $body =~ /_command_spec/
         && $body =~ /cmd_path/
     ) {
@@ -7223,8 +6942,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'command_spec'
+        $short_name eq 'command_spec'
         && $body =~ /return \$self->_command_spec/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7238,8 +6956,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'command_hook_paths'
+        $short_name eq 'command_hook_paths'
         && $body =~ /_command_spec/
         && $body =~ /cli', \"\\\$resolved_command\\.d\"/
         && $body =~ /is_runnable_file/
@@ -7255,8 +6972,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'new'
+        $short_name eq 'new'
         && $body =~ /Missing collector store/
         && $body =~ /Missing file registry/
         && $body =~ /Missing path registry/
@@ -7271,8 +6987,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'run_once'
+        $short_name eq 'run_once'
         && $body =~ /_collector_source/
         && $body =~ /_run_job/
         && $body =~ /_materialize_indicator_state/
@@ -7292,8 +7007,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_materialize_indicator_state'
+        $short_name eq '_materialize_indicator_state'
         && $body =~ /icon_template/
         && $body =~ /_render_indicator_icon_template/
     ) {
@@ -7308,8 +7022,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_render_indicator_icon_template'
+        $short_name eq '_render_indicator_icon_template'
         && $body =~ /_indicator_template_vars/
         && $body =~ /Template->new/
         && $body =~ /process/
@@ -7325,8 +7038,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_indicator_template_vars'
+        $short_name eq '_indicator_template_vars'
         && $body =~ /json_decode/
         && $body =~ /collector stdout JSON/
     ) {
@@ -7340,8 +7052,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_append_error_text'
+        $short_name eq '_append_error_text'
         && $body =~ /\$stderr \.= "\\n"/
         && $body =~ /return \$stderr \. \$error \. "\\n"/
     ) {
@@ -7355,8 +7066,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_collector_source'
+        $short_name eq '_collector_source'
         && $body =~ /return \( 'command', \$job->\{command\} \)/
         && $body =~ /missing command or code/
     ) {
@@ -7370,8 +7080,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_run_job'
+        $short_name eq '_run_job'
         && $body =~ /return \$self->_run_command\(%args\) if \$mode eq 'command'/
         && $body =~ /return \$self->_run_code\(%args\) if \$mode eq 'code'/
     ) {
@@ -7387,8 +7096,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'start_loop'
+        $short_name eq 'start_loop'
         && $body =~ /_pidfile/
         && $body =~ /_write_loop_state/
         && $body =~ /_fork_process/
@@ -7411,8 +7119,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_fork_process'
+        $short_name eq '_fork_process'
         && $body =~ /return fork/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7425,8 +7132,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_run_loop_child'
+        $short_name eq '_run_loop_child'
         && $body =~ /_scrub_coverage_environment/
         && $body =~ /_write_loop_state/
         && $body =~ /_job_is_due/
@@ -7449,8 +7155,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'stop_loop'
+        $short_name eq 'stop_loop'
         && $body =~ /_pidfile/
         && $body =~ /_is_managed_loop/
         && $body =~ /_cleanup_loop_files/
@@ -7469,8 +7174,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'running_loops'
+        $short_name eq 'running_loops'
         && $body =~ /collectors_root/
         && $body =~ /_is_managed_loop/
         && $body =~ /_cleanup_loop_files/
@@ -7491,8 +7195,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_sort_loop_names'
+        $short_name eq '_sort_loop_names'
         && $body =~ /\$a->\{name\} cmp \$b->\{name\}/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7505,8 +7208,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'loop_state'
+        $short_name eq 'loop_state'
         && $body =~ /_statefile/
         && $body =~ /json_decode/
         && $body =~ /return if !-f \$file/
@@ -7522,8 +7224,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_pidfile'
+        $short_name eq '_pidfile'
         && $body =~ /collectors_root/
         && $body =~ /"\$name\.pid"/
     ) {
@@ -7537,8 +7238,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_statefile'
+        $short_name eq '_statefile'
         && $body =~ /collector_dir/
         && $body =~ /'loop.json'/
     ) {
@@ -7552,8 +7252,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_process_title'
+        $short_name eq '_process_title'
         && $body =~ /dashboard collector: \$name/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7566,8 +7265,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_read_proc_file'
+        $short_name eq '_read_proc_file'
         && $body =~ /return if !-r \$file/
         && $body =~ /open my \$fh, '<', \$file or return/
     ) {
@@ -7581,24 +7279,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_read_process_env_marker'
-        && $body =~ m{/proc/\$pid/environ}
-        && $body =~ /split \/\\0\/, \$env/
-        && $body =~ /return \$2 if \$1 eq \$key/
-    ) {
-        my $prototype = _sub_prototype_from_source($source, $short_name);
-        return {
-            name => $short_name,
-            full_name => $full_name,
-            op => 'collector_runner_read_process_env_marker',
-            prototype => $prototype,
-        };
-    }
-
-    if (
-        _package_tail_is($package, '')
-        && $short_name eq '_read_process_title'
+        $short_name eq '_read_process_title'
         && $body =~ /_read_proc_file/
         && $body =~ /system 'ps', '-o', 'args=', '-p', \$pid/
     ) {
@@ -7613,11 +7294,9 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_is_managed_loop'
+        $short_name eq '_is_managed_loop'
         && $body =~ /_read_process_env_marker/
         && $body =~ /_read_process_title/
-        && $body =~ /_process_title/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -7632,8 +7311,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_write_loop_state'
+        $short_name eq '_write_loop_state'
         && $body =~ /_statefile/
         && $body =~ /json_encode/
         && $body =~ /rename \$tmp, \$file/
@@ -7650,8 +7328,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_cleanup_loop_files'
+        $short_name eq '_cleanup_loop_files'
         && $body =~ /unlink \$self->_pidfile/
         && $body =~ /unlink \$self->_statefile/
     ) {
@@ -7667,8 +7344,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_scrub_coverage_environment'
+        $short_name eq '_scrub_coverage_environment'
         && $body =~ /_coverage_instrumentation_active/
         && $body =~ /delete \@ENV/
     ) {
@@ -7683,8 +7359,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_coverage_instrumentation_active'
+        $short_name eq '_coverage_instrumentation_active'
         && $body =~ /PERL5OPT/
         && $body =~ /HARNESS_PERL_SWITCHES/
         && $body =~ /Devel::Cover/
@@ -7699,8 +7374,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_job_is_due'
+        $short_name eq '_job_is_due'
         && $body =~ /return 0 if \$mode eq 'manual'/
         && $body =~ /return 1 if \$mode eq 'interval'/
         && $body =~ /_cron_due/
@@ -7716,8 +7390,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_cron_due'
+        $short_name eq '_cron_due'
         && $body =~ /split \/\\s\+\/, \$expr/
         && $body =~ /last_cron_slot/
         && $body =~ /_write_loop_state/
@@ -7735,8 +7408,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_cron_match'
+        $short_name eq '_cron_match'
         && $body =~ /split \/,\/, \$spec/
         && $body =~ /\\*\/\(\\d\+\)/
         && $body =~ /if \( \$part =~ \/\^\(\\d\+\)-\(\\d\+\)\$\//
@@ -7751,8 +7423,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_slurp'
+        $short_name eq '_slurp'
         && $body =~ /Unable to read \$file/
         && $body =~ /return <\$fh>;/
     ) {
@@ -7766,8 +7437,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_run_command'
+        $short_name eq '_run_command'
         && $body =~ /shell_command_argv/
         && $body =~ /__COLLECTOR_TIMEOUT__/
         && $body =~ /chdir \$cwd/
@@ -7782,8 +7452,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_run_code'
+        $short_name eq '_run_code'
         && $body =~ /eval \$code/
         && $body =~ /__COLLECTOR_TIMEOUT__/
         && $body =~ /chdir \$cwd/
@@ -7798,8 +7467,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_shutdown_loop'
+        $short_name eq '_shutdown_loop'
         && $body =~ /_write_loop_state/
         && $body =~ /_cleanup_loop_files/
         && $body =~ /exit 0/
@@ -7818,8 +7486,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_signal_stop'
+        $short_name eq '_signal_stop'
         && $body =~ /\$SIGNAL_RUNNER->_shutdown_loop/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7832,8 +7499,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'dispatch'
+        $short_name eq 'dispatch'
         && $body =~ /unknown_skill_command_message/
         && $body =~ /execute_hooks/
         && $body =~ /_skill_env/
@@ -7853,8 +7519,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'exec_command'
+        $short_name eq 'exec_command'
         && $body =~ /unknown_skill_command_message/
         && $body =~ /_execute_hooks_streaming/
         && $body =~ /_exec_resolved_command/
@@ -7874,8 +7539,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'execute_hooks'
+        $short_name eq 'execute_hooks'
         && $body =~ /_command_spec/
         && $body =~ /_skill_env/
         && $body =~ /load_runtime_layers/
@@ -7894,8 +7558,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_execute_hooks_streaming'
+        $short_name eq '_execute_hooks_streaming'
         && $body =~ /_arrayref_or_empty/
         && $body =~ /_skill_env/
         && $body =~ /_run_child_command_streaming/
@@ -7913,8 +7576,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_run_child_command_streaming'
+        $short_name eq '_run_child_command_streaming'
         && $body =~ /_arrayref_or_empty/
         && $body =~ /_hashref_or_empty/
         && $body =~ /_defined_or_default/
@@ -7934,8 +7596,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_exec_resolved_command'
+        $short_name eq '_exec_resolved_command'
         && $body =~ /_arrayref_or_empty/
         && $body =~ /_exec_replacement/
     ) {
@@ -7951,8 +7612,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_exec_replacement'
+        $short_name eq '_exec_replacement'
         && $body =~ /!exec \@command, \@args/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7965,8 +7625,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'get_skill_config'
+        $short_name eq 'get_skill_config'
         && $body =~ /_skill_layers/
         && $body =~ /config\/', 'config\.json'|config', 'config.json/
         && $body =~ /_merge_skill_hashes/
@@ -7983,8 +7642,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'get_skill_path'
+        $short_name eq 'get_skill_path'
         && $body =~ /manager}->get_skill_path/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -7997,8 +7655,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'command_hook_paths'
+        $short_name eq 'command_hook_paths'
         && $body =~ /_command_spec/
         && $body =~ /cli', "\$resolved_command\.d"/
         && $body =~ /is_runnable_file/
@@ -8014,8 +7671,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'route_response'
+        $short_name eq 'route_response'
         && $body =~ /_skill_layers/
         && $body =~ /_skill_bookmark_entries/
         && $body =~ /_skill_page_response/
@@ -8033,8 +7689,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'skill_nav_pages'
+        $short_name eq 'skill_nav_pages'
         && $body =~ /_skill_nav_route_ids/
         && $body =~ /_load_skill_page/
     ) {
@@ -8050,8 +7705,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'all_skill_nav_pages'
+        $short_name eq 'all_skill_nav_pages'
         && $body =~ /installed_skill_roots/
         && $body =~ /skill_nav_pages/
     ) {
@@ -8066,8 +7720,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_page_response'
+        $short_name eq '_skill_page_response'
         && $body =~ /_load_skill_page/
         && $body =~ /_page_with_runtime_state/
         && $body =~ /_page_response/
@@ -8083,8 +7736,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_load_skill_page'
+        $short_name eq '_load_skill_page'
         && $body =~ /_page_location/
         && $body =~ /PageDocument->from_instruction/
         && $body =~ /source_kind/
@@ -8101,8 +7753,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_skill_env'
+        $short_name eq '_skill_env'
         && $body =~ /DEVELOPER_DASHBOARD_SKILL_NAME/
         && $body =~ /PERL5LIB/
         && $body =~ /DEVELOPER_DASHBOARD_SKILL_LOCAL_ROOT/
@@ -8295,7 +7946,6 @@ sub _compile_simple_transform_sub_from_source {
         $short_name eq 'verify_user'
         && $body =~ /get_user/
         && $body =~ /_password_hash/
-        && $body =~ /password_hash/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -8488,8 +8138,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_normalized_page_id'
+        $short_name eq '_normalized_page_id'
         && $body =~ /s\{\\A\/\+app\/\+\}\{\}/
         && $body =~ /s\{\\A\/\+\}\{\}/
     ) {
@@ -8503,8 +8152,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'page_file'
+        $short_name eq 'page_file'
         && $body =~ /Missing page id/
         && $body =~ /dashboards_root/
         && $body =~ /_normalized_page_id/
@@ -8520,8 +8168,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_page_file_candidates'
+        $short_name eq '_page_file_candidates'
         && $body =~ /dashboards_roots/
         && $body =~ /_normalized_page_id/
         && $body =~ /map \{ File::Spec->catfile/
@@ -8537,8 +8184,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_existing_page_file'
+        $short_name eq '_existing_page_file'
         && $body =~ /_page_file_candidates/
         && $body =~ /return \$file if -f \$file/
     ) {
@@ -8553,8 +8199,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'load_transient_page'
+        $short_name eq 'load_transient_page'
         && $body =~ /decode_payload/
         && $body =~ /PageDocument->from_instruction/
     ) {
@@ -8569,8 +8214,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'encode_page'
+        $short_name eq 'encode_page'
         && $body =~ /from_hash/
         && $body =~ /raw_instruction/
         && $body =~ /canonical_instruction/
@@ -8587,8 +8231,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && ($short_name eq 'editable_url' || $short_name eq 'render_url' || $short_name eq 'source_url')
+        ($short_name eq 'editable_url' || $short_name eq 'render_url' || $short_name eq 'source_url')
         && $body =~ /uri_escape/
         && $body =~ /encode_page/
     ) {
@@ -8609,8 +8252,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_looks_like_raw_nav_fragment'
+        $short_name eq '_looks_like_raw_nav_fragment'
         && $body =~ /\[%/
         && $body =~ /<\\s\*\[A-Za-z!\\\/\]\[\^>\]\*>/
     ) {
@@ -8624,8 +8266,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_normalize_legacy_icon_markup'
+        $short_name eq '_normalize_legacy_icon_markup'
         && $body =~ /1F9D1/
         && $body =~ /FFFD/
         && $body =~ /span\\s\+class="icon"/
@@ -8640,8 +8281,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_read_saved_instruction'
+        $short_name eq '_read_saved_instruction'
         && $body =~ /decode\( 'UTF-8', \$raw, FB_CROAK \)/
         && $body =~ /_normalize_legacy_icon_markup/
     ) {
@@ -8656,8 +8296,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_raw_nav_fragment_page'
+        $short_name eq '_raw_nav_fragment_page'
         && $body =~ /PageDocument->new/
         && $body =~ /raw-nav-tt/
     ) {
@@ -8672,8 +8311,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_load_page_file'
+        $short_name eq '_load_page_file'
         && $body =~ /_read_saved_instruction/
         && $body =~ /from_instruction/
         && $body =~ /_looks_like_raw_nav_fragment/
@@ -8693,8 +8331,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'read_saved_entry'
+        $short_name eq 'read_saved_entry'
         && $body =~ /Page '\$id' not found/
         && $body =~ /_existing_page_file/
         && $body =~ /_read_saved_instruction/
@@ -8711,8 +8348,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'load_saved_page'
+        $short_name eq 'load_saved_page'
         && $body =~ /_existing_page_file/
         && $body =~ /_load_page_file/
         && $body =~ /raw_instruction/
@@ -8730,8 +8366,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'save_page'
+        $short_name eq 'save_page'
         && $body =~ /canonical_instruction/
         && $body =~ /secure_file_permissions/
         && $body =~ /from_hash/
@@ -8748,8 +8383,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_saved_page_entries_for_root'
+        $short_name eq '_saved_page_entries_for_root'
         && $body =~ /File::Find::find/
         && $body =~ /abs2rel/
     ) {
@@ -8763,8 +8397,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'list_saved_pages'
+        $short_name eq 'list_saved_pages'
         && $body =~ /dashboards_roots/
         && $body =~ /_saved_page_entries_for_root/
         && $body =~ /_load_page_file/
@@ -8781,8 +8414,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'migrate_legacy_json_pages'
+        $short_name eq 'migrate_legacy_json_pages'
         && $body =~ /\.json\\z/
         && $body =~ /from_json/
         && $body =~ /canonical_instruction/
@@ -8800,8 +8432,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_indicator_file_candidates'
+        $short_name eq '_indicator_file_candidates'
         && $body =~ /indicators_roots/
         && $body =~ /status\.json/
     ) {
@@ -8815,8 +8446,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_read_indicator_file'
+        $short_name eq '_read_indicator_file'
         && $body =~ /json_decode/
         && $body =~ /<:raw/
     ) {
@@ -8830,8 +8460,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'new'
+        $short_name eq 'new'
         && $body =~ /bless \{/
         && $body =~ /title\s*=>\s*\$args\{title\}\s*\/\/\s*'Untitled'/
         && $body =~ /meta\s*=>\s*\$args\{meta\}\s*\|\|\s*\{\}/
@@ -8846,8 +8475,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'from_hash'
+        $short_name eq 'from_hash'
         && $body =~ /Page document must be a hash reference/
         && $body =~ /return \$class->new\(%\$hash\)/
     ) {
@@ -8862,8 +8490,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'from_json'
+        $short_name eq 'from_json'
         && $body =~ /json_decode/
         && $body =~ /from_hash/
     ) {
@@ -8878,8 +8505,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'from_instruction'
+        $short_name eq 'from_instruction'
         && $body =~ /source_format = 'modern'/
         && $body =~ /_parse_legacy_sections/
         && $body =~ /Instruction document did not contain any sections/
@@ -8901,8 +8527,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'merge_state'
+        $short_name eq 'merge_state'
         && $body =~ /ref\(\$state\) ne 'HASH'/
         && $body =~ /\$self->\{state\}\{\$key\} = \$state->\{\$key\}/
     ) {
@@ -8916,8 +8541,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'with_mode'
+        $short_name eq 'with_mode'
         && $body =~ /\$self->\{mode\} = \$mode if defined \$mode && \$mode ne ''/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -8930,8 +8554,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'as_hash'
+        $short_name eq 'as_hash'
         && $body =~ /source_version/
         && $body =~ /permissions/
         && $body =~ /meta/
@@ -8946,8 +8569,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'canonical_json'
+        $short_name eq 'canonical_json'
         && $body =~ /json_encode/
         && $body =~ /as_hash/
     ) {
@@ -8962,8 +8584,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'canonical_instruction'
+        $short_name eq 'canonical_instruction'
         && $body =~ /legacy_instruction/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -8977,8 +8598,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'legacy_instruction'
+        $short_name eq 'legacy_instruction'
         && $body =~ /_legacy_stash_text/
         && $body =~ /\$LEGACY_SEP/
         && $body =~ /CODE\\d\+/
@@ -8994,8 +8614,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'instruction_text'
+        $short_name eq 'instruction_text'
         && $body =~ /canonical_instruction/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -9009,8 +8628,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'render_template'
+        $short_name eq 'render_template'
         && $body =~ /return shift;/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -9023,8 +8641,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'render_html'
+        $short_name eq 'render_html'
         && $body =~ /runtime_outputs/
         && $body =~ /runtime_errors/
         && $body =~ /_legacy_bootstrap/
@@ -9042,8 +8659,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_decode_structured_json'
+        $short_name eq '_decode_structured_json'
         && $body =~ /json_decode/
         && $body =~ /return \{\} if \$text eq ''/
     ) {
@@ -9058,8 +8674,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_decode_stash_section'
+        $short_name eq '_decode_stash_section'
         && $body =~ /json_decode/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -9073,8 +8688,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_parse_legacy_sections'
+        $short_name eq '_parse_legacy_sections'
         && $body =~ /LEGACY_SEP/
         && $body =~ /\@LEGACY_KEYS/
         && $body =~ /split \/\(\?:/
@@ -9089,8 +8703,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_legacy_stash_text'
+        $short_name eq '_legacy_stash_text'
         && $body =~ /_legacy_value/
         && $body =~ /join ",\\n"/
     ) {
@@ -9105,8 +8718,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_template_value'
+        $short_name eq '_template_value'
         && $body =~ /split \/\\\.\//
         && $body =~ /exists \$value->\{\$part\}/
     ) {
@@ -9121,8 +8733,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_legacy_bootstrap'
+        $short_name eq '_legacy_bootstrap'
         && $body =~ /dashboard_ajax_singleton_cleanup/
         && $body =~ /fetch_value/
         && $body =~ /window\.__dashboardAjaxSingletons/
@@ -9138,8 +8749,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_legacy_value'
+        $short_name eq '_legacy_value'
         && $body =~ /_legacy_quote/
         && $body =~ /ref\(\$value\) eq 'ARRAY'/
         && $body =~ /ref\(\$value\) eq 'HASH'/
@@ -9155,8 +8765,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_legacy_quote'
+        $short_name eq '_legacy_quote'
         && $body =~ /s\/\\\\\/\\\\\\\\\/g/
         && $body =~ /s\/'\/\\\\'\/g/
     ) {
@@ -9170,8 +8779,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_trim'
+        $short_name eq '_trim'
         && $body =~ m{s/\\A\\s\+//}
         && $body =~ m{s/\\s\+\\z//}
     ) {
@@ -9185,8 +8793,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_trim_trailing_newline'
+        $short_name eq '_trim_trailing_newline'
         && $body =~ m{s/\\n\+\\z//}
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -9199,8 +8806,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_html'
+        $short_name eq '_html'
         && $body =~ /&amp;/
         && $body =~ /&lt;/
         && $body =~ /&gt;/
@@ -9216,8 +8822,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'build_path_registry'
+        $short_name eq 'build_path_registry'
         && $body =~ /PathRegistry->new/
         && $body =~ /workspace_roots/
         && $body =~ /project_roots/
@@ -9233,8 +8838,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'run_open_file_command'
+        $short_name eq 'run_open_file_command'
         && $body =~ /GetOptionsFromArray/
         && $body =~ /_resolve_open_file_matches/
         && $body =~ /_select_open_file_matches/
@@ -9257,8 +8861,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_default_editor'
+        $short_name eq '_default_editor'
         && $body =~ /\$ENV\{VISUAL\}/
         && $body =~ /\$ENV\{EDITOR\}/
         && $body =~ /'vim'/
@@ -9273,8 +8876,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_editor_supports_tabs'
+        $short_name eq '_editor_supports_tabs'
         && $body =~ /vim\|nvim\|vi\|gvim\|iv/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -9287,8 +8889,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_select_open_file_matches'
+        $short_name eq '_select_open_file_matches'
         && $body =~ /_unique_matches/
         && $body =~ /_selection_matches/
         && $body =~ /Invalid file selection/
@@ -9305,8 +8906,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_selection_matches'
+        $short_name eq '_selection_matches'
         && $body =~ /return \@\$matches if \$choices eq ''/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -9319,8 +8919,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_unique_matches'
+        $short_name eq '_unique_matches'
         && $body =~ /!\$seen\{\$_\}\+\+/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -9333,8 +8932,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_ordered_scope_matches'
+        $short_name eq '_ordered_scope_matches'
         && $body =~ /_scope_match_rank/
         && $body =~ /sort \{/s
     ) {
@@ -9350,8 +8948,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_scope_match_rank'
+        $short_name eq '_scope_match_rank'
         && $body =~ /_compile_open_file_regex/
         && $body =~ /basename/
         && $body =~ /score = 50/
@@ -9367,8 +8964,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_resolve_open_file_matches'
+        $short_name eq '_resolve_open_file_matches'
         && $body =~ /_named_source_matches/
         && $body =~ /File::Find::find/
         && $body =~ /_ordered_scope_matches/
@@ -9386,8 +8982,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_named_source_matches'
+        $short_name eq '_named_source_matches'
         && $body =~ /_open_file_roots/
         && $body =~ /_existing_named_files/
         && $body =~ /_java_archive_source_matches/
@@ -9406,8 +9001,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_open_file_roots'
+        $short_name eq '_open_file_roots'
         && $body =~ /cwd\(\)/
         && $body =~ /workspace_roots/
         && $body =~ /\@INC/
@@ -9422,8 +9016,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_existing_named_files'
+        $short_name eq '_existing_named_files'
         && $body =~ /catfile/
         && $body =~ /sort \@found/
     ) {
@@ -9437,8 +9030,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_open_file_registries'
+        $short_name eq '_open_file_registries'
         && $body =~ /FileRegistry->new/
         && $body =~ /Config->new/
         && $body =~ /register_named_paths/
@@ -9454,8 +9046,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_scope_relative_path_match'
+        $short_name eq '_scope_relative_path_match'
         && $body =~ /File::Spec->catfile/
         && $body =~ /return -f \$target \? \$target : undef/
     ) {
@@ -9469,8 +9060,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_compile_open_file_regex'
+        $short_name eq '_compile_open_file_regex'
         && $body =~ /Invalid regex/
         && $body =~ /qr\/\$pattern\/i/
     ) {
@@ -9484,8 +9074,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_java_archive_source_matches'
+        $short_name eq '_java_archive_source_matches'
         && $body =~ /_candidate_java_source_archives/
         && $body =~ /_extract_java_sources_from_archive/
         && $body =~ /_download_java_source_matches/
@@ -9504,8 +9093,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_candidate_java_source_archives'
+        $short_name eq '_candidate_java_source_archives'
         && $body =~ /_java_source_archive_roots/
         && $body =~ /File::Find::find/
     ) {
@@ -9520,8 +9108,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_java_source_archive_roots'
+        $short_name eq '_java_source_archive_roots'
         && $body =~ /'\.m2'/
         && $body =~ /'\.gradle'/
         && $body =~ /JAVA_HOME/
@@ -9536,8 +9123,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_extract_java_sources_from_archive'
+        $short_name eq '_extract_java_sources_from_archive'
         && $body =~ /Archive::Zip->new/
         && $body =~ /_matching_java_archive_entries/
         && $body =~ /_cached_archive_source_path/
@@ -9554,8 +9140,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_matching_java_archive_entries'
+        $short_name eq '_matching_java_archive_entries'
         && $body =~ /member->fileName/
         && $body =~ /suffix/
     ) {
@@ -9569,8 +9154,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_cached_archive_source_path'
+        $short_name eq '_cached_archive_source_path'
         && $body =~ /md5_hex/
         && $body =~ /java-sources/
     ) {
@@ -9584,8 +9168,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_download_java_source_matches'
+        $short_name eq '_download_java_source_matches'
         && $body =~ /_maven_search_documents/
         && $body =~ /_download_maven_source_jar/
         && $body =~ /_extract_java_sources_from_archive/
@@ -9603,8 +9186,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_maven_search_documents'
+        $short_name eq '_maven_search_documents'
         && $body =~ /search\.maven\.org/
         && $body =~ /uri_escape_utf8/
         && $body =~ /decode_json/
@@ -9619,8 +9201,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_download_maven_source_jar'
+        $short_name eq '_download_maven_source_jar'
         && $body =~ /repo1\.maven\.org/
         && $body =~ /mirror/
         && $body =~ /maven-sources/
@@ -9635,22 +9216,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_command_exit'
-        && $body =~ /exit \$code/
-    ) {
-        my $prototype = _sub_prototype_from_source($source, $short_name);
-        return {
-            name => $short_name,
-            full_name => $full_name,
-            op => 'open_file_command_exit',
-            prototype => $prototype,
-        };
-    }
-
-    if (
-        _package_tail_is($package, '')
-        && $short_name eq 'set_indicator'
+        $short_name eq 'set_indicator'
         && $body =~ /indicator_dir/
         && $body =~ /LOCK_EX/
         && $body =~ /secure_file_permissions/
@@ -9667,8 +9233,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'get_indicator'
+        $short_name eq 'get_indicator'
         && $body =~ /_indicator_file_candidates/
         && $body =~ /_read_indicator_file/
     ) {
@@ -9684,8 +9249,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'list_indicators'
+        $short_name eq 'list_indicators'
         && $body =~ /indicators_roots/
         && $body =~ /get_indicator/
         && $body =~ /priority/
@@ -9701,8 +9265,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_is_template_toolkit_text'
+        $short_name eq '_is_template_toolkit_text'
         && $body =~ /index\( \$text, '\[%' \)/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -9715,8 +9278,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'collector_indicator_candidate'
+        $short_name eq 'collector_indicator_candidate'
         && $body =~ /Collector indicator candidate requires a collector job hash/
         && $body =~ /managed_by_collector/
         && $body =~ /_is_template_toolkit_text/
@@ -9733,8 +9295,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'delete_indicator'
+        $short_name eq 'delete_indicator'
         && $body =~ /indicators_roots/
         && $body =~ /status\.json/
     ) {
@@ -9748,8 +9309,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_indicator_matches'
+        $short_name eq '_indicator_matches'
         && $body =~ /page_status_icon/
         && $body =~ /managed_by_collector/
     ) {
@@ -9763,8 +9323,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_local_indicator'
+        $short_name eq '_local_indicator'
         && $body =~ /_indicator_file_candidates/
         && $body =~ /_read_indicator_file/
     ) {
@@ -9780,8 +9339,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_nearest_inherited_indicator'
+        $short_name eq '_nearest_inherited_indicator'
         && $body =~ /shift \@files/
         && $body =~ /_indicator_file_candidates/
         && $body =~ /_read_indicator_file/
@@ -9798,8 +9356,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_is_placeholder_missing_indicator'
+        $short_name eq '_is_placeholder_missing_indicator'
         && $body =~ /managed_by_collector/
         && $body =~ /missing/
     ) {
@@ -9813,8 +9370,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'sync_collectors'
+        $short_name eq 'sync_collectors'
         && $body =~ /_nearest_inherited_indicator/
         && $body =~ /collector_indicator_candidate/
         && $body =~ /_indicator_matches/
@@ -9839,8 +9395,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'mark_stale'
+        $short_name eq 'mark_stale'
         && $body =~ /stale/
         && $body =~ /set_indicator/
     ) {
@@ -9856,8 +9411,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'is_stale'
+        $short_name eq 'is_stale'
         && $body =~ /updated_at/
         && $body =~ /time - \$item->\{updated_at\}/
     ) {
@@ -9871,8 +9425,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'refresh_core_indicators'
+        $short_name eq 'refresh_core_indicators'
         && $body =~ /command_in_path\('docker'\)/
         && $body =~ /rev-parse', '--is-inside-work-tree'/
         && $body =~ /diff', '--quiet', '--ignore-submodules', 'HEAD', '--'/
@@ -9888,8 +9441,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_status_icon_for'
+        $short_name eq '_status_icon_for'
         && $body =~ /\$map->\{ok\}/
         && $body =~ /\$map->\{error\}/
     ) {
@@ -9903,8 +9455,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'prompt_status_icon'
+        $short_name eq 'prompt_status_icon'
         && $body =~ /_status_icon_for/
         && $body =~ /PROMPT_STATUS_ICONS/
     ) {
@@ -9919,8 +9470,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq '_page_status_icon'
+        $short_name eq '_page_status_icon'
         && $body =~ /page_status_icon/
         && $body =~ /_status_icon_for/
     ) {
@@ -9935,8 +9485,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'page_header_items'
+        $short_name eq 'page_header_items'
         && $body =~ /list_indicators/
         && $body =~ /_page_status_icon/
         && $body =~ /prompt_visible/
@@ -9953,8 +9502,7 @@ sub _compile_simple_transform_sub_from_source {
     }
 
     if (
-        _package_tail_is($package, '')
-        && $short_name eq 'page_header_payload'
+        $short_name eq 'page_header_payload'
         && $body =~ /page_header_items/
         && $body =~ /status => \$STATUS_ICONS/
     ) {
@@ -10782,7 +10330,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_env_file_candidates'
-        && _package_tail_is($package, '')
         && $body =~ /File::Spec->catfile\( \$root, '\.env' \)/
         && $body =~ /File::Spec->catfile\( \$root, '\.env\.pl' \)/
     ) {
@@ -10797,7 +10344,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_path_identity'
-        && _package_tail_is($package, '')
         && $body =~ /abs_path/
         && $body =~ /File::Spec->canonpath/
     ) {
@@ -10812,7 +10358,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_same_or_descendant_path'
-        && _package_tail_is($package, '')
         && $body =~ /_path_identity/
         && $body =~ /index\( \$path_id, \$root_id \. '\/' \) == 0/
     ) {
@@ -10828,7 +10373,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_lookup_env_symbol'
-        && _package_tail_is($package, '')
         && $body =~ /return undef if !defined \$name \|\| \$name eq ''/
         && $body =~ /return \$ENV\{\$name\}/
     ) {
@@ -10843,7 +10387,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_plain_directory_layers'
-        && _package_tail_is($package, '')
         && $body =~ /cwd\(\)/
         && $body =~ /current_project_root/
         && $body =~ /dirname/
@@ -10862,7 +10405,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_plain_directory_env_files'
-        && _package_tail_is($package, '')
         && $body =~ /_plain_directory_layers/
         && $body =~ /_env_file_candidates/
     ) {
@@ -10879,7 +10421,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_runtime_layer_env_files'
-        && _package_tail_is($package, '')
         && $body =~ /runtime_layers/
         && $body =~ /_env_file_candidates/
     ) {
@@ -10895,7 +10436,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'load_skill_layers'
-        && _package_tail_is($package, '')
         && $body =~ /skill_layers/
         && $body =~ /_env_file_candidates/
         && $body =~ /load_files/
@@ -10913,7 +10453,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'load_runtime_layers'
-        && _package_tail_is($package, '')
         && $body =~ /Missing paths/
         && $body =~ /_plain_directory_env_files/
         && $body =~ /_runtime_layer_env_files/
@@ -10933,7 +10472,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'load_files'
-        && _package_tail_is($package, '')
         && $body =~ /_path_identity/
         && $body =~ /_load_env_pl_file/
         && $body =~ /_load_env_file/
@@ -10953,7 +10491,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_strip_env_comments'
-        && _package_tail_is($package, '')
         && $body =~ /Missing in_block_comment state/
         && $body =~ /\$\{\$state\}/
         && index($body, "return '' if \$trimmed =~ /\\A#/;") >= 0
@@ -10971,7 +10508,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_expand_env_value'
-        && _package_tail_is($package, '')
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -10986,7 +10522,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_expand_braced_env_expression'
-        && _package_tail_is($package, '')
         && $body =~ /split \/:-\/, \$expression, 2/
         && $body =~ /_call_env_function/
         && $body =~ /_lookup_env_symbol/
@@ -11006,7 +10541,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_call_env_function'
-        && _package_tail_is($package, '')
         && $body =~ /Invalid env function/
         && $body =~ /\{\$function\}\{CODE\}/
         && $body =~ /Env function \$function failed/
@@ -11024,7 +10558,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_load_env_file'
-        && _package_tail_is($package, '')
         && $body =~ /_strip_env_comments/
         && $body =~ /Invalid env line/
         && $body =~ /Invalid env key/
@@ -11047,7 +10580,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_load_env_pl_file'
-        && _package_tail_is($package, '')
         && $body =~ /delete \$INC\{\$file\}/
         && $body =~ /require \$file/
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*EnvAudit->record/
@@ -11063,7 +10595,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'new'
-        && _package_tail_is($package, '')
         && $body =~ /Missing paths registry/
         && $body =~ /paths\s*=>\s*\$paths/
     ) {
@@ -11085,7 +10616,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'paths'
-        && _package_tail_is($package, '')
         && $body =~ /\$_\[0\]->\{paths\}/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -11100,7 +10630,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'register_named_files'
-        && _package_tail_is($package, '')
         && $body =~ /ref\(\$aliases\)\s+ne\s+'HASH'/
         && $body =~ /\$self->\{named_files\}\{\$name\}\s*=\s*\$path/
     ) {
@@ -11115,7 +10644,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'unregister_named_file'
-        && _package_tail_is($package, '')
         && $body =~ /delete \$self->\{named_files\}\{\$name\}/
         && $body =~ /delete \$self->\{configured_named_files\}\{\$name\}/
     ) {
@@ -11130,10 +10658,7 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'named_files'
-        && _package_tail_is($package, '')
         && $body =~ /_load_configured_named_files/
-        && $body =~ /configured_named_files/
-        && $body =~ /named_files/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -11147,7 +10672,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'all_file_aliases'
-        && _package_tail_is($package, '')
         && $body =~ /prompt_log/
         && $body =~ /collector_log/
         && $body =~ /dashboard_log/
@@ -11178,7 +10702,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'all_files'
-        && _package_tail_is($package, '')
         && $body =~ /all_file_aliases/
         && $body =~ /named_files/
         && $body =~ /return \\\%all/
@@ -11196,7 +10719,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'locate_files'
-        && _package_tail_is($package, '')
         && $body =~ /grep \{ defined && \$_ ne '' \} \@terms/
         && $body =~ /paths->cwd/
         && $body =~ /locate_files_under/
@@ -11213,7 +10735,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq 'locate_files_under'
-        && _package_tail_is($package, '')
         && $body =~ /File::Find::find/
         && $body =~ /\$name\s*!~\s*\/\\Q\$term\\E\/i/
         && $body =~ /\$path\s*!~\s*\/\\Q\$term\\E\/i/
@@ -11230,7 +10751,6 @@ sub _compile_simple_transform_sub_from_source {
 
     if (
         $short_name eq '_load_configured_named_files'
-        && _package_tail_is($package, '')
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Config->new/
         && $body =~ /configured_named_files/
         && $body =~ /file_aliases/
@@ -11913,9 +11433,10 @@ sub _compile_simple_transform_sub_from_source {
 sub _entry_command_capture {
     my ($source, $logical_path, $sub_name, $symbolic_name) = @_;
     $sub_name ||= _entry_command_sub_name($source);
-    $symbolic_name ||= $sub_name || 'entry_command';
+    $symbolic_name ||= $sub_name;
+    $symbolic_name ||= 'entry_command';
 
-    if ($sub_name && $sub_name ne '' && (my $body = _extract_sub_body($source, $sub_name))) {
+    if ($sub_name && (my $body = _extract_sub_body($source, $sub_name))) {
         if ($body =~ /\$ENV\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\s*(?:\|\|=|\|\||\/\/)\s*([\'\"])(.*?)\2/s) {
             return {
                 env => $1,
@@ -11938,7 +11459,7 @@ sub _extract_entrypoint_assignment_fallback {
     return if $source !~ /\$ENV\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\s*\|\|=\s*([^;\n]+);/s;
 
     my $env = $1;
-    my $rhs = $2 // '';
+    my $rhs = $2;
     my $fallback = '';
 
     if ($rhs =~ /\$0\b/) {
@@ -12013,7 +11534,7 @@ sub _sibling_class {
     my ($root) = $package =~ m{^(.*)::([^:]+)$};
     $root //= '';
     my @class_parts = split m{::}, $class;
-    return join('::', grep { defined && $_ ne '' } $root, @class_parts);
+    return join('::', grep { $_ ne '' } $root, @class_parts);
 }
 
 sub _related_class_from_source {
@@ -12023,12 +11544,7 @@ sub _related_class_from_source {
     my @methods = @{ $args{methods} || [] };
     for my $scope (grep { defined && $_ ne '' } $body, $source) {
         my $qualified = _qualified_class_in_scope($scope, $class, \@methods);
-        return $qualified if defined $qualified && $qualified ne '';
-    }
-
-    for my $scope (grep { defined && $_ ne '' } $source, $body) {
-        my $imported = _imported_class_in_scope($scope, $class);
-        return $imported if defined $imported && $imported ne '';
+        return $qualified if defined $qualified;
     }
 
     return _sibling_class($package, $class);
@@ -12047,14 +11563,6 @@ sub _qualified_class_in_scope {
         }
     }
     return $1 if $scope =~ /($qualified_tail)\b/m;
-    return;
-}
-
-sub _imported_class_in_scope {
-    my ($scope, $class) = @_;
-    return if !defined $scope || !defined $class || $class eq '';
-    return $1 if $scope =~ /^\s*use\s+((?:[A-Za-z_][A-Za-z0-9_]*::)+\Q$class\E)\b/m;
-    return $1 if $scope =~ /^\s*require\s+((?:[A-Za-z_][A-Za-z0-9_]*::)+\Q$class\E)\s*;/m;
     return;
 }
 
@@ -12079,7 +11587,6 @@ sub _extract_sub_source {
     return if $source !~ /\bsub\s+\Q$sub_name\E\b[^\{]*\{/g;
     my $start = $-[0];
     my $brace = index($source, '{', $+[0] - 1);
-    return if $brace < 0;
     my $depth = 1;
     my $i = $brace + 1;
     while ($i < length($source)) {
@@ -12126,7 +11633,7 @@ sub _compile_initializers {
         };
     }
     while ($bootstrap =~ /\buse\s+([A-Za-z_][A-Za-z0-9_:]*)\b(.*?);/gs) {
-        my ($module, $arg_source) = ($1, $2 // '');
+        my ($module, $arg_source) = ($1, $2);
         next if $module =~ /^(?:strict|warnings|utf8|feature|integer|bytes|mro|open|re)$/;
         my $args = _parse_use_args($arg_source);
         return (undef) if !defined $args;
@@ -12276,7 +11783,6 @@ sub _parse_use_args {
     pos($arg_source) = 0;
     while (pos($arg_source) < length($arg_source)) {
         $arg_source =~ /\G\s*/gc;
-        last if pos($arg_source) >= length($arg_source);
         if ($arg_source =~ /\G=>/gc || $arg_source =~ /\G,/gc) {
             next;
         }
@@ -12336,7 +11842,7 @@ sub _prefer_source_fallback_over_hybrid {
     return 1 if !$supported;
 
     my $total = $supported + $unsupported;
-    my $coverage = $total ? ($supported / $total) : 0;
+    my $coverage = $supported / $total;
     return 1 if $coverage < 0.20;
     return 1 if length($source // '') >= 8_192 && $unsupported >= ($supported * 4);
     return 0;
@@ -12452,12 +11958,11 @@ sub _compiled_script_subs {
     my @subs;
     for my $full_name (_declared_subs($source, 'main')) {
         my ($short_name) = $full_name =~ /::([^:]+)\z/;
-        next if !$short_name;
         my $compiled = _compile_script_sub_from_source($source, $full_name, $short_name) or next;
         push @subs, $compiled;
     }
     my %seen;
-    return grep { !$seen{($_->{full_name} // '')}++ } @subs;
+    return grep { !$seen{$_->{full_name}}++ } @subs;
 }
 
 # Compile one extracted script sub into the same op records used for package
@@ -12499,7 +12004,7 @@ sub _native_i64_binary_leaf_shape {
         '*' => ['multiply', 6],
         '>' => ['greater_than', 0],
     );
-    my $op = $ops{$2} or return;
+    my $op = $ops{$2};
     return {
         kind => 'i64_binary_leaf',
         op => $op->[0],
@@ -12521,8 +12026,8 @@ sub _native_i64_sum_loop_shape {
     my $limit_ref = quotemeta('$' . $limit);
     my $sum_ref = quotemeta('$' . $sum);
     return if $body !~ /for\s*\(\s*my\s+\$([A-Za-z_]\w*)\s*=\s*1\s*;\s*\$\1\s*<=\s*$limit_ref\s*;\s*\$\1\+\+\s*\)\s*\{\s*$sum_ref\s*\+=\s*\$\1\s*;\s*\}/s;
-    return if $body !~ /return\s+$sum_ref\s*;/s;
     my $induction = $1;
+    return if $body !~ /return\s+$sum_ref\s*;/s;
     return {
         kind => 'i64_sum_loop',
         op => 'sum_to_n',
@@ -12547,8 +12052,8 @@ sub _native_i64_masked_mix_accum_loop_shape {
     my $limit_ref = quotemeta('$' . $limit);
     my $acc_ref = quotemeta('$' . $acc);
     return if $body !~ /for\s*\(\s*my\s+\$([A-Za-z_]\w*)\s*=\s*0\s*;\s*\$\1\s*<\s*$limit_ref\s*;\s*\$\1\+\+\s*\)\s*\{\s*$acc_ref\s*\+=\s*\(\(\s*\$\1\s*\*\s*13\s*\)\s*\^\s*\(\s*\$\1\s*>>\s*3\s*\)\)\s*&\s*0xFFFF\s*;\s*\}/s;
-    return if $body !~ /return\s+$acc_ref\s*;/s;
     my $induction = $1;
+    return if $body !~ /return\s+$acc_ref\s*;/s;
     return {
         kind => 'i64_masked_mix_accum_loop',
         op => 'masked_mix_accumulate',
@@ -12557,7 +12062,7 @@ sub _native_i64_masked_mix_accum_loop_shape {
         induction => $induction,
         smoke_left => 8,
         smoke_right => 0,
-        smoke_expected => 360,
+        smoke_expected => 364,
         source => 'source_static_scan',
     };
 }
@@ -12751,13 +12256,13 @@ sub _module_search_roots_from_source {
         push @roots, $use_lib;
     }
     my %seen_root;
-    return grep { $_ ne '' && !$seen_root{$_}++ && -d $_ } @roots;
+    return grep { !$seen_root{$_}++ && -d $_ } @roots;
 }
 
 sub _entry_command_from_env_assignment {
     my ($source, $logical_path) = @_;
     my $entry = _extract_entrypoint_assignment_fallback($source, $logical_path) or return;
-    return if ($entry->{env} // '') !~ /ENTRYPOINT/i;
+    return if $entry->{env} !~ /ENTRYPOINT/i;
     $entry->{sub_name} = _entry_command_sub_name($source) || 'entrypoint';
     return $entry;
 }
@@ -12801,7 +12306,7 @@ sub _use_lib_paths_from_source {
     my $bin_dir = File::Basename::dirname($entrypoint_path);
     while ($source =~ /^\s*use\s+lib\s+(?:q[qwxr]?|(?:[\'"]?))\s*([\'"])(.*?)\1\s*;/gsm) {
         my $path = $2;
-        next if !defined $path || $path eq '';
+        next if $path eq '';
         my $expanded = _normalize_lib_path($path, $bin_dir);
         push @paths, $expanded if $expanded;
     }
@@ -13068,9 +12573,16 @@ sub _slurp {
 sub _same_source_path {
     my ($left, $right) = @_;
     return 0 if !defined $left || !defined $right || $left eq '' || $right eq '';
-    my $left_abs = abs_path($left) || $left;
-    my $right_abs = abs_path($right) || $right;
-    return $left_abs eq $right_abs ? 1 : 0;
+    return _real_path($left) eq _real_path($right) ? 1 : 0;
+}
+
+# _real_path($path)
+# Resolve a path to its absolute form, falling back to the given path when the
+# resolver cannot (for example when a parent directory does not exist).
+sub _real_path {
+    my ($path) = @_;
+    my $real = abs_path($path);
+    return defined $real ? $real : $path;
 }
 
 1;
