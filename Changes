@@ -1,3 +1,15 @@
+0.038  Sat Oct  3 09:00:00 2026
+    - Added `t/dashboard_service_parity.t`: starts the real web service from the
+      interpreter and from the PAX-built binary and compares the HTTP
+      conversation (anonymous routes, good/wrong/unknown/empty login, session
+      cookie, `/apps`, logout, access after logout), then stops the service even
+      when a check fails. It would have caught the `restart` failure and the
+      Capture::Tiny load-order bug before they shipped.
+    - Verified by differential run against stock Perl (no code change needed):
+      installed skills with nested skills, per-level `.env`/`.env.pl` chains
+      (`foo.bar.zzz.show`), `.d` hooks, enable/disable/update/uninstall, and the
+      layered `.developer-dashboard`/`.d2` command lookup.
+
 0.037  Fri Oct  2 23:30:00 2026
     - Stale hand-written handlers can no longer silently change behaviour. A
       compiled-sub handler is a copy of application code made at one point in

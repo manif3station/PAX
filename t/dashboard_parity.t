@@ -173,4 +173,32 @@ for my $args ('showenv', 'who a b', 'which who', 'which showenv', 'config list',
     is($bin, $stock, "layered '$args' prints the same output as stock Perl");
 }
 
+# Installed skills with nested skills: each level contributes its own .env, deeper levels win,
+# and `.d` hooks run before the command.
+sub write_skills {
+    my ($home) = @_;
+    my $root = "$home/.developer-dashboard/skills/foo";
+    make_path("$root/cli/hello.d", "$root/skills/bar/cli", "$root/skills/bar/skills/zzz/cli");
+    my $put = sub { my ($path, $text, $mode) = @_; open my $o, '>', "$root/$path" or die "$path: $!"; print {$o} $text; close $o; chmod $mode, "$root/$path" if $mode; };
+    $put->('.env', "VERSION=top\nT_TOP=1\n");
+    $put->('.env.pl', "\$ENV{T_PL_TOP} = 'pltop';\n");
+    $put->('cli/hello', "#!/bin/sh\necho \"hello VERSION=\$VERSION TOP=\$T_TOP PL=\$T_PL_TOP args=\$*\"\n", 0755);
+    $put->('cli/hello.d/00-pre', "#!/bin/sh\necho pre-hook\n", 0755);
+    $put->('skills/bar/.env', "VERSION=bar\nT_BAR=2\n");
+    $put->('skills/bar/cli/mid', "#!/bin/sh\necho \"mid VERSION=\$VERSION TOP=\$T_TOP BAR=\$T_BAR\"\n", 0755);
+    $put->('skills/bar/skills/zzz/.env', "VERSION=leaf\n");
+    $put->('skills/bar/skills/zzz/cli/show', "#!/bin/sh\necho \"show VERSION=\$VERSION TOP=\$T_TOP BAR=\$T_BAR\"\n", 0755);
+    system("cd '$root' && git init -q . >/dev/null 2>&1");
+    return;
+}
+for my $args ('foo.hello a b', 'foo.bar.mid', 'foo.bar.zzz.show', 'which foo.bar.zzz.show', 'foo.nothing', 'skills list') {
+    my @args = split ' ', $args;
+    my %common = (setup => \&write_skills);
+    my ($srv, $stock) = run_command(%common, label => 'sstock', cmd => [ $^X, "-I$app/lib", "$app/bin/dashboard", @args ]);
+    my ($brc, $bin) = run_command(%common, label => 'sbin', cmd => [ $binary, @args ]);
+    $stock =~ s/\Q$app\E\/bin\/dashboard/dashboard/g;
+    is($brc, $srv, "skill '$args' exits with the same status as stock Perl");
+    is($bin, $stock, "skill '$args' prints the same output as stock Perl");
+}
+
 done_testing();
