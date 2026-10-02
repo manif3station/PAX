@@ -47,15 +47,9 @@ PL
 # ---- _handler_text_for_op
 {
     local %PAX::CodeUnitCompiler::HANDLER_TEXT_FOR_OP;
-    local $INC{'PAX/StandaloneRuntime.pm'} = '/nonexistent/StandaloneRuntime.pm';
-    is(PAX::CodeUnitCompiler::_handler_text_for_op('anything'), undef, 'an unreadable runtime file yields no handlers');
-    is(PAX::CodeUnitCompiler::_handler_text_for_op(''), '', 'the empty op has empty text');
-}
-{
-    local %PAX::CodeUnitCompiler::HANDLER_TEXT_FOR_OP;
-    delete local $INC{'PAX/StandaloneRuntime.pm'};
     like(PAX::CodeUnitCompiler::_handler_text_for_op('return_literal'), qr/\$impl/, 'handlers are found next to the compiler when the runtime is not loaded');
     is(PAX::CodeUnitCompiler::_handler_text_for_op('no_such_op'), undef, 'unknown ops have no handler');
+    is(PAX::CodeUnitCompiler::_handler_text_for_op(''), '', 'the empty op has empty text');
 }
 
 # ---- _handler_accounts_for_source
@@ -105,6 +99,7 @@ PL
     is($run->('_now_iso8601( tz => "utc" );')->{now_tz}, 'utc', 'the real tz is handed to the handler');
     ok(!exists $run->('_now_iso8601();')->{now_tz}, 'a bare helper call stays bare');
     is($run->('_now_iso8601(tz=>"utc"); _now_iso8601(tz=>"local");'), undef, 'ambiguous clock use keeps the real source');
+    ok(!exists PAX::CodeUnitCompiler::_compile_simple_transform_sub_from_source("sub other { 1 }\n", 's', 'Pkg::s')->{now_tz}, 'a body that cannot be read passes no tz');
 }
 
 # ---- the two choke points apply the guard
