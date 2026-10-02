@@ -62,6 +62,7 @@ sub run_command {
     $text =~ s{\Q$app\E/bin/\.\./lib}{LIB}g;
     $text =~ s{\Q$app\E/lib}{LIB}g;
     $text =~ s/\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?/TS/g;
+    $text =~ s{ at (?:\S+\.pm|PAX::StandaloneRuntime op \w+) line \d+\.}{ at LOC.}g;  # die location differs inside handlers
     $text =~ s/\b1\d{9}\.\d+\b/EPOCH/g;
     return ($status >> 8, $text);
 }
@@ -124,6 +125,13 @@ for my $args (
     'ps1',
     'indicator list',
     'indicator set x --status ok',
+    'housekeeper',
+    'config show',
+    'auth list-users',
+    'collector list',
+    'file list',
+    'page source nope',
+    'jq --help',
     'decode aGVsbG8=',
     'path cdr x',
 ) {

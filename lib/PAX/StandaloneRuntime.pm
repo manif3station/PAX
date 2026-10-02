@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.036';
+our $VERSION = '0.037';
 
 use strict;
 use warnings;
@@ -67,10 +67,10 @@ sub _capture_system_command {
     my (@command) = @_;
     my $exit_code = -1;
     require Capture::Tiny;
-    my ($stdout, $stderr) = Capture::Tiny::capture {
+    my ($stdout, $stderr) = Capture::Tiny::capture(sub {
         system @command;
         $exit_code = $? == -1 ? -1 : ($? >> 8);
-    };
+    });
     return ($stdout, $stderr, $exit_code);
 }
 
@@ -702,6 +702,9 @@ sub _load_compiled_unit {
 
     if (($record->{residual_mode} // '') eq 'module') {
         _load_residual_module($unit, $record);
+        # The whole real source is now defined; the handlers the compiler vouched for go back on top,
+        # because some of them (packaged-layout adapters) are meant to replace the real body.
+        _install_compiled_sub_lazily($record->{package}, $_) for @{ $record->{subs} // [] };
         return;
     }
 
@@ -2307,10 +2310,10 @@ __DATA__
                 print "-" x 40, "\n";
                 print ">> @cmd\n";
                 print "-" x 40, "\n";
-                my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture {
+                my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture(sub {
                     system @cmd;
                     return $? >> 8;
-                };
+                });
                 my $output = $stdout . $stderr;
                 print $output if defined $output && $output ne '';
                 print "\n>> Finished.\n\n";
@@ -2474,10 +2477,10 @@ __DATA__
             return if !$project_root || !-d $project_root;
             my $old = Cwd::cwd();
             chdir $project_root or return;
-            my ($stdout, undef, $exit_code) = Capture::Tiny::capture {
+            my ($stdout, undef, $exit_code) = Capture::Tiny::capture(sub {
                 system 'git', 'branch';
                 return $? >> 8;
-            };
+            });
             chdir $old or die sprintf($restore_error, $old, $!);
             return if $exit_code != 0;
             return if !defined $stdout || $stdout eq '';
@@ -3635,9 +3638,9 @@ __DATA__
             my @expected_subject_alt_names = _code_for($expected_san_method)->(
                 hosts => $args{hosts},
             );
-            my ($stdout, $stderr, $exit) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit) = Capture::Tiny::capture(sub {
                 system('openssl', 'x509', '-in', $cert_file, '-noout', '-text');
-            };
+            });
             die "Failed to inspect SSL certificate $cert_file: $stderr$stdout" if $exit != 0;
             return 0 if $stdout !~ /Basic Constraints:\s+critical\s+CA:FALSE/s;
             return 0 if $stdout !~ /Extended Key Usage:\s+TLS Web Server Authentication/s;
@@ -3650,9 +3653,9 @@ __DATA__
                     push @verify_cmd, '-verify_hostname', $subject_alt_name;
                 }
                 push @verify_cmd, $cert_file;
-                my ($verify_stdout, $verify_stderr, $verify_exit) = Capture::Tiny::capture {
+                my ($verify_stdout, $verify_stderr, $verify_exit) = Capture::Tiny::capture(sub {
                     system(@verify_cmd);
-                };
+                });
                 return 0 if $verify_exit != 0;
                 return 0 if $verify_stdout !~ /\:\s+OK\s*\z/ && $verify_stderr !~ /\:\s+OK\s*\z/;
             }
@@ -3736,9 +3739,9 @@ OPENSSL_CONFIG
                 '-out', $cert_file,
                 '-keyout', $key_file,
             );
-            my ($stdout, $stderr, $exit) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit) = Capture::Tiny::capture(sub {
                 system(@cmd);
-            };
+            });
             unlink $config_file if -f $config_file;
             die "Failed to generate SSL certificate: $stderr" if $exit != 0;
             die "Certificate file not created" if !-f $cert_file;
@@ -4969,10 +4972,10 @@ PERL
                 runtime_root => $self->{paths} ? $self->{paths}->runtime_root : '',
                 source       => $args{source} || '',
             };
-            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture(sub {
                 @returns = $package_name->__run_code($wrapped_code);
                 return $?;
-            };
+            });
             my @errors = $package_name->__errors();
             if (@errors) {
                 my $error = join '', grep { defined $_ && $_ ne '' } @errors;
@@ -5515,6 +5518,7 @@ PERL
         my $cleanup_temp_files_method = $sub->{cleanup_temp_files_method} // die 'compiled sub cleanup-temp-files method missing';
         my $rotate_collector_logs_method = $sub->{rotate_collector_logs_method} // die 'compiled sub rotate-collector-logs method missing';
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
+        my $now_tz = $sub->{now_tz};
         $impl = sub {
             my ($self, %args) = @_;
             my $min_age_seconds = defined $args{min_age_seconds} ? $args{min_age_seconds} : 3600;
@@ -5531,7 +5535,7 @@ PERL
             push @{$removed}, _code_for($rotate_collector_logs_method)->($self, scanned => $scanned, now_epoch => $args{now_epoch});
             return {
                 ok => 1,
-                happened_at => _code_for($now_method)->(),
+                happened_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
                 min_age_seconds => $min_age_seconds + 0,
                 scanned => $scanned,
                 removed => $removed,
@@ -5749,6 +5753,8 @@ PERL
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP internal_cli_shared_private_cli_root
+        # PAX_ADAPTS_PACKAGED_LAYOUT: this handler exists to relocate a shared-data lookup (dist_dir)
+        # onto the embedded assets, so it is meant to differ from the real body.
         my $dist_name = $sub->{dist_name} // die 'compiled sub dist name missing';
         $impl = sub {
             my $path = _share_dist_private_cli_dir($dist_name);
@@ -5778,6 +5784,8 @@ PERL
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP internal_cli_helper_content
+        # PAX_ADAPTS_PACKAGED_LAYOUT: serves helper scripts from the embedded wrappers first, because the
+        # install tree the real body reads from does not exist inside a packaged binary.
         my $canonical_method = $sub->{canonical_method} // die 'compiled sub canonical method missing';
         my $asset_path_method = $sub->{asset_path_method} // die 'compiled sub asset-path method missing';
         $impl = sub {
@@ -6223,10 +6231,10 @@ PERL
             my $old = Cwd::cwd();
             chdir $resolved->{project_root} or die "Unable to chdir to $resolved->{project_root}: $!";
             local @ENV{keys %{ $resolved->{env} }} = values %{ $resolved->{env} } if %{ $resolved->{env} };
-            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture(sub {
                 system @{ $resolved->{command} };
                 return $? >> 8;
-            };
+            });
             chdir $old or die "Unable to restore cwd to $old: $!";
             return { %{$resolved}, stdout => $stdout, stderr => $stderr, exit_code => $exit_code };
         };
@@ -7057,6 +7065,7 @@ PERL_EVAL
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP action_run_command_action
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
+        my $now_tz = $sub->{now_tz};
         my $run_command_method = $sub->{run_command_method} // die 'compiled sub run_command method missing';
         $impl = sub {
             require Cwd;
@@ -7079,7 +7088,7 @@ PERL_EVAL
                     return {
                         background => 1,
                         pid => $pid,
-                        started_at => _code_for($now_method)->(),
+                        started_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
                     };
                 }
                 POSIX::setsid();
@@ -7106,6 +7115,7 @@ PERL_EVAL
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP action_run_command
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
+        my $now_tz = $sub->{now_tz};
         $impl = sub {
             require Capture::Tiny;
             require Cwd;
@@ -7118,7 +7128,7 @@ PERL_EVAL
             chdir $cwd or die "Unable to chdir to $cwd: $!";
             local @ENV{ keys %{$env} } = values %{$env} if %{$env};
             my $timed_out = 0;
-            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture(sub {
                 local $SIG{ALRM} = sub { die "__ACTION_TIMEOUT__\n" };
                 alarm(int(($timeout_ms + 999) / 1000));
                 my $ok = eval {
@@ -7132,7 +7142,7 @@ PERL_EVAL
                 }
                 alarm(0);
                 return $ok;
-            };
+            });
             alarm(0);
             chdir $old or die "Unable to restore cwd to $old: $!";
             return {
@@ -7145,7 +7155,7 @@ PERL_EVAL
                 stderr => $stderr,
                 timed_out => $timed_out ? 1 : 0,
                 content_type => 'application/json; charset=utf-8',
-                started_at => _code_for($now_method)->(),
+                started_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
@@ -7393,6 +7403,7 @@ PERL_EVAL
         my $write_json_method = $sub->{write_json_method} // die 'compiled sub write-json method missing';
         my $append_log_method = $sub->{append_log_method} // die 'compiled sub append-log method missing';
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
+        my $now_tz = $sub->{now_tz};
         $impl = sub {
             my ($self, $collector_name, %result) = @_;
             my $paths = _code_for($collector_paths_method)->($self, $collector_name);
@@ -7403,7 +7414,7 @@ PERL_EVAL
                 $paths->{combined},
                 (defined $result{stdout} ? $result{stdout} : '') . (defined $result{stderr} ? $result{stderr} : ''),
             );
-            my $timestamp = _code_for($now_method)->();
+            my $timestamp = _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ());
             _code_for($write_text_method)->($self, $paths->{last_run}, $timestamp . "\n");
             my $previous = _code_for($read_status_method)->($self, $collector_name) || {};
             my $status = {
@@ -8728,6 +8739,7 @@ PERL
         my $job_is_due_method = $sub->{job_is_due_method} // die 'compiled sub job-is-due method missing';
         my $run_once_method = $sub->{run_once_method} // die 'compiled sub run-once method missing';
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
+        my $now_tz = $sub->{now_tz};
         $impl = sub {
             my ($self, %args) = @_;
             my $job = $args{job} || die 'Missing collector job';
@@ -8762,15 +8774,15 @@ PERL
                     interval     => $interval,
                     schedule     => $schedule_mode,
                     status       => 'running',
-                    heartbeat_at => _code_for($now_method)->(),
+                    heartbeat_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
                 });
                 my $due = _code_for($job_is_due_method)->($self, $job, $name);
                 eval { _code_for($run_once_method)->($self, $job) } if $due;
                 if ($@) {
                     my $error = "$@";
-                    my $message = sprintf "[%s][%s] %s\n", _code_for($now_method)->(), $name, $error;
+                    my $message = sprintf "[%s][%s] %s\n", _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()), $name, $error;
                     $self->{files}->append('collector_log', $message);
-                    $self->{collectors}->append_log_entry($name, happened_at => _code_for($now_method)->(), error => $error, source => 'loop error');
+                    $self->{collectors}->append_log_entry($name, happened_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()), error => $error, source => 'loop error');
                     _code_for($write_loop_state_method)->($self, $name, {
                         pid          => $$,
                         name         => $name,
@@ -8780,7 +8792,7 @@ PERL
                         interval     => $interval,
                         schedule     => $schedule_mode,
                         status       => 'error',
-                        heartbeat_at => _code_for($now_method)->(),
+                        heartbeat_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
                         error        => $error,
                     });
                 }
@@ -9035,7 +9047,7 @@ PERL
             chdir $cwd or die "Unable to chdir to $cwd: $!";
             local @ENV{ keys %$env } = values %$env if %$env;
             my $timed_out = 0;
-            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture(sub {
                 local $SIG{ALRM} = sub { die "__COLLECTOR_TIMEOUT__\n" };
                 alarm(int(($timeout_ms + 999) / 1000));
                 my $ok = eval {
@@ -9049,7 +9061,7 @@ PERL
                 }
                 alarm(0);
                 return $ok;
-            };
+            });
             alarm(0);
             chdir $old or die "Unable to restore cwd to $old: $!";
             return ($stdout, $stderr, $exit_code, $timed_out);
@@ -9066,7 +9078,7 @@ PERL
             chdir $cwd or die "Unable to chdir to $cwd: $!";
             local @ENV{ keys %$env } = values %$env if %$env;
             my $timed_out = 0;
-            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture(sub {
                 local $SIG{ALRM} = sub { die "__COLLECTOR_TIMEOUT__\n" };
                 alarm(int(($timeout_ms + 999) / 1000));
                 my $result = eval $code;
@@ -9083,7 +9095,7 @@ PERL
                 }
                 alarm(0);
                 return (defined $result && $result =~ /\A-?\d+\z/) ? $result : 0;
-            };
+            });
             alarm(0);
             chdir $old or die "Unable to restore cwd to $old: $!";
             return ($stdout, $stderr, $exit_code, $timed_out);
@@ -9094,14 +9106,15 @@ PERL
         my $process_title_method = $sub->{process_title_method} // die 'compiled sub process-title method missing';
         my $cleanup_loop_files_method = $sub->{cleanup_loop_files_method} // die 'compiled sub cleanup-loop-files method missing';
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
+        my $now_tz = $sub->{now_tz};
         $impl = sub {
             my ($self, $name, $status) = @_;
             _code_for($write_loop_state_method)->($self, $name, {
                 pid          => $$,
                 process_name => _code_for($process_title_method)->($self, $name),
                 status       => $status || 'stopped',
-                heartbeat_at => _code_for($now_method)->(),
-                stopped_at   => _code_for($now_method)->(),
+                heartbeat_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
+                stopped_at   => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
             });
             _code_for($cleanup_loop_files_method)->($self, $name);
             exit 0;
@@ -9144,7 +9157,7 @@ PERL
                 result_state => $hook_result->{result_state} || {},
             );
             my @command = __PAX_RUNTIME_LEGACY_NAMESPACE__::Platform::command_argv_for_path($cmd_path);
-            my ($stdout, $stderr, $exit) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit) = Capture::Tiny::capture(sub {
                 local %ENV = (%ENV, %env);
                 __PAX_RUNTIME_LEGACY_NAMESPACE__::Runtime::Result::set_current($hook_result->{result_state} || {});
                 if (ref($hook_result->{last_result}) eq 'HASH' && %{ $hook_result->{last_result} }) {
@@ -9155,7 +9168,7 @@ PERL
                 __PAX_RUNTIME_LEGACY_NAMESPACE__::EnvLoader->load_runtime_layers(paths => $self->{manager}{paths});
                 __PAX_RUNTIME_LEGACY_NAMESPACE__::EnvLoader->load_skill_layers(skill_layers => \@skill_layers);
                 system(@command, @args);
-            };
+            });
             my $hook_stdout = join '', map { defined $_->{stdout} ? $_->{stdout} : '' } values %{ $hook_result->{hooks} || {} };
             my $hook_stderr = join '', map { defined $_->{stderr} ? $_->{stderr} : '' } values %{ $hook_result->{hooks} || {} };
             return {
@@ -9240,7 +9253,7 @@ PERL
                         result_state => \%results,
                     );
                     my @command = __PAX_RUNTIME_LEGACY_NAMESPACE__::Platform::command_argv_for_path($hook_path);
-                    my ($stdout, $stderr, $exit) = Capture::Tiny::capture {
+                    my ($stdout, $stderr, $exit) = Capture::Tiny::capture(sub {
                         local %ENV = (%ENV, %env);
                         __PAX_RUNTIME_LEGACY_NAMESPACE__::Runtime::Result::set_current(\%results);
                         if (%{$last_result}) {
@@ -9251,7 +9264,7 @@ PERL
                         __PAX_RUNTIME_LEGACY_NAMESPACE__::EnvLoader->load_runtime_layers(paths => $self->{manager}{paths});
                         __PAX_RUNTIME_LEGACY_NAMESPACE__::EnvLoader->load_skill_layers(skill_layers => \@skill_layers);
                         system(@command, @args);
-                    };
+                    });
                     my $result_key = $entry;
                     if (exists $results{$entry}) {
                         my $leaf = File::Basename::basename(File::Basename::dirname($hook_path));
@@ -9583,6 +9596,7 @@ PERL
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP session_create
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
+        my $now_tz = $sub->{now_tz};
         my $after_method = $sub->{after_method} // die 'compiled sub after method missing';
         my $file_method = $sub->{file_method} // die 'compiled sub file method missing';
         $impl = sub {
@@ -9597,9 +9611,9 @@ PERL
                 username => $username,
                 role => $role,
                 remote_addr => $args{remote_addr} || '',
-                created_at => _code_for($now_method)->(),
+                created_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
                 expires_at => _code_for($after_method)->($ttl),
-                updated_at => _code_for($now_method)->(),
+                updated_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
             };
             my $file = _code_for($file_method)->($self, $session_id);
             open my $fh, '>:raw', $file or die "Unable to write $file: $!";
@@ -9683,6 +9697,7 @@ PERL
         my $file_method = $sub->{file_method} // die 'compiled sub file method missing';
         my $hash_method = $sub->{hash_method} // die 'compiled sub hash method missing';
         my $now_method = $sub->{now_method} // die 'compiled sub now method missing';
+        my $now_tz = $sub->{now_tz};
         $impl = sub {
             require Digest::SHA;
             my ($self, %args) = @_;
@@ -9699,7 +9714,7 @@ PERL
                 role => $role,
                 salt => $salt,
                 password_hash => _code_for($hash_method)->($self, $username, $password, $salt),
-                updated_at => _code_for($now_method)->(),
+                updated_at => _code_for($now_method)->(defined $now_tz ? (tz => $now_tz) : ()),
             };
             my $file = _code_for($file_method)->($self, $username);
             open my $fh, '>:raw', $file or die "Unable to write $file: $!";
@@ -11346,16 +11361,16 @@ JS
             if ($project) {
                 my $old = Cwd::cwd();
                 chdir $project or die "Unable to chdir to $project: $!";
-                my ($stdout, $stderr, $inside_exit) = Capture::Tiny::capture {
+                my ($stdout, $stderr, $inside_exit) = Capture::Tiny::capture(sub {
                     system('git', 'rev-parse', '--is-inside-work-tree');
                     return $? >> 8;
-                };
+                });
                 my $inside_work_tree = $inside_exit == 0 && $stdout =~ /^\s*true\s*$/m ? 1 : 0;
                 if ($inside_work_tree) {
-                    my (undef, undef, $dirty_exit) = Capture::Tiny::capture {
+                    my (undef, undef, $dirty_exit) = Capture::Tiny::capture(sub {
                         system('git', 'diff', '--quiet', '--ignore-submodules', 'HEAD', '--');
                         return $? >> 8;
-                    };
+                    });
                     $git_status = $dirty_exit == 0 ? 'clean' : 'dirty';
                 }
                 chdir $old or die "Unable to restore cwd to $old: $!";
@@ -11503,10 +11518,10 @@ JS
             my (%args) = @_;
             my $argv = $args{args} || [];
             die $type_error if ref($argv) ne 'ARRAY';
-            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture {
+            my ($stdout, $stderr, $exit_code) = Capture::Tiny::capture(sub {
                 system $command, @{$argv};
                 return $? >> 8;
-            };
+            });
             return {
                 stdout => $stdout,
                 stderr => $stderr,

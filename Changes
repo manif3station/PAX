@@ -1,3 +1,24 @@
+0.037  Fri Oct  2 23:30:00 2026
+    - Stale hand-written handlers can no longer silently change behaviour. A
+      compiled-sub handler is a copy of application code made at one point in
+      time; an audit of the d2 build found 95 of 498 handler-compiled subs whose
+      real body used methods, arguments or helper calls the handler never
+      mentioned. Among them: the password check (constant-time compare, PBKDF2
+      path and the unknown-user decoy), the housekeeper (`--dry-run` was ignored
+      and would really delete files) and 14 call sites of the clock helper that
+      has since required `tz => 'utc'|'local'`. The compiler now keeps a handler
+      only when every behaviour token of the real body (methods, helper calls,
+      named arguments, hash keys) appears in the handler text or in its record;
+      an unreadable body is not trusted either. Otherwise the sub keeps its real
+      source, which is always correct. Handlers that exist to relocate packaged
+      data carry a `PAX_ADAPTS_PACKAGED_LAYOUT` marker and stay trusted.
+    - The clock-helper handlers pass the same `tz` the real source passes,
+      derived from the matched body; ambiguous bodies keep the real source.
+    - Module-mode units (whole real source evaluated) now put their vouched
+      handlers back on top; before, they were ignored in that mode.
+    - Added `t/op_drift_guard.t`; `t/dashboard_parity.t` gains the commands that
+      exposed these bugs (housekeeper and others).
+
 0.036  Fri Oct  2 20:00:00 2026
     - Fixed three runtime failures in the standalone binary that only showed
       with layered configuration (stock Perl was fine):

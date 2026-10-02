@@ -979,6 +979,10 @@ delete @ENV{qw(PAX_STANDALONE_TRACE PAX_STANDALONE_EXECUTABLE PAX_STANDALONE_NAT
     call($p, '_load_compiled_unit', { logical_path => 'mod.json' });
     is_deeply(\@events, [ [ 'module', 'M' ] ], 'residual module records take the module path');
     @events = ();
+    write_json("$dir/code/modsubs.json", { package => 'M', residual_mode => 'module', subs => [ { name => 'adapter' }, { name => 'other' } ] });
+    call($p, '_load_compiled_unit', { logical_path => 'modsubs.json' });
+    is_deeply(\@events, [ [ 'module', 'M' ], [ 'sub', 'M', 'adapter' ], [ 'sub', 'M', 'other' ] ], 'a module-mode unit puts its vouched handlers back over the real definitions');
+    @events = ();
     write_json("$dir/code/full.json", {
         package => 'F',
         initializers => [ { op => 'i1' }, { op => 'i2' } ],

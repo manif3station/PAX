@@ -1,6 +1,6 @@
 package PAX::AppImage;
 
-our $VERSION = '0.036';
+our $VERSION = '0.037';
 
 use strict;
 use warnings;

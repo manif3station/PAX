@@ -39,6 +39,8 @@ TDD_TESTS = \
 	t/cov_simb_manifest.t \
 	t/cov_simb_runtime.t \
 	t/cov_srta_runtime_core.t \
+	t/capture_load_order.t \
+	t/op_drift_guard.t \
 	t/op_recursion.t \
 	t/cov_r3_compiler_rules.t \
 	t/cov_srtb_runtime_units.t \

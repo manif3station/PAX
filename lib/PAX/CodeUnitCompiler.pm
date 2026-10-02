@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.036';
+our $VERSION = '0.037';
 
 use strict;
 use warnings;
@@ -232,7 +232,7 @@ sub _compile_sub {
     }
 
     if (my $custom = _custom_sub_from_source($source, $short_name, $full_package, $name)) {
-        return $custom;
+        return _handler_accounts_for_source($custom, $source, $short_name) ? $custom : undef;
     }
 
     if (my $literal = _return_literal_from_source($source, $short_name)) {
@@ -254,12 +254,14 @@ sub _compile_sub {
 # Compiles one declared sub from source text alone and makes sure the record
 # carries the sub's prototype, because callers are parsed against it.
 # Input: module source and the fully qualified sub name.
-# Output: compiled sub record, or undef when the shape is unsupported.
+# Output: compiled sub record, or undef when the shape is unsupported or its handler no longer
+# accounts for the real body.
 sub _compile_declared_sub_from_source {
     my ($source, $full_name) = @_;
     my $record = _compile_declared_sub_from_source_unprototyped($source, $full_name) or return;
+    my ($short_name) = $full_name =~ /([^:]+)\z/;
+    return if ref($record) eq 'HASH' && defined $short_name && !_handler_accounts_for_source($record, $source, $short_name);
     if (ref($record) eq 'HASH' && !defined $record->{prototype}) {
-        my ($short_name) = $full_name =~ /([^:]+)\z/;
         my $prototype = defined $short_name ? _sub_prototype_from_source($source, $short_name) : undef;
         $record->{prototype} = $prototype if defined $prototype && $prototype ne '';
     }
@@ -394,6 +396,101 @@ sub _capture_timeout_supported {
 sub _capture_live_unit {
     my ($abs_path) = @_;
     return PAX::Capture->new(mode => 'live')->capture($abs_path);
+}
+
+our %HANDLER_TEXT_FOR_OP;
+
+# _handler_text_for_op($op)
+# Returns the source text of the hand-written handler that implements one op.
+# Input: op name. Output: handler text, or undef when no handler carries that name.
+sub _handler_text_for_op {
+    my ($op) = @_;
+    if (!%HANDLER_TEXT_FOR_OP) {
+        my $file = $INC{'PAX/StandaloneRuntime.pm'} // File::Spec->catfile(File::Basename::dirname(__FILE__), 'StandaloneRuntime.pm');
+        my $text = '';
+        if (open my $fh, '<', $file) {
+            local $/;
+            $text = <$fh>;
+            close $fh;
+        }
+        $text =~ s/\A.*?^__DATA__\n//ms;
+        for my $block (split /^(?=#\@\@PAX_OP )/m, $text) {
+            next if $block !~ s/\A#\@\@PAX_OP ([^\n]*)\n//;
+            $HANDLER_TEXT_FOR_OP{$_} = $block for split ' ', $1;
+        }
+        $HANDLER_TEXT_FOR_OP{''} = '';
+    }
+    return $HANDLER_TEXT_FOR_OP{$op};
+}
+
+# Perl's own functions and keywords: calling one is not application behaviour to account for.
+my %CORE_FUNCTION = map { $_ => 1 } (
+    (grep { /\A[a-z_]\w*\z/ } keys %CORE::),
+    qw(if elsif unless while until for foreach and or not xor qw q qq m s y tr do eval sub),
+);
+
+# _source_behavior_tokens($body)
+# Lists the identifiers that carry a sub's behaviour: methods it calls, helper functions
+# it calls, hash keys and named arguments it uses.
+# Input: sub body text. Output: sorted unique identifiers worth accounting for.
+sub _source_behavior_tokens {
+    my ($body) = @_;
+    $body =~ s/^\s*#.*$//mg;
+    my %skip = map { $_ => 1 } qw(
+        new can isa ref bless import DESTROY VERSION self class args key value name path file
+        my our if else elsif unless return shift defined scalar keys values map grep sort push pop
+        join split die warn eval local foreach for while next last sub undef exists delete length
+        lc uc sprintf print open close wantarray
+    );
+    my %token;
+    $token{$_} = 1 for $body =~ /->\s*(\w+)/g;
+    $token{$_} = 1 for $body =~ /\b(\w+)\s*=>/g;
+    $token{$_} = 1 for $body =~ /\$args\{\s*['"]?(\w+)/g;
+    $token{$_} = 1 for $body =~ /\b(_\w+)\s*\(/g;
+    $token{$_} = 1 for $body =~ /(?<![\w\$\@%&>:.])([A-Za-z]\w*)\s*\(/g;
+    $token{$_} = 1 for $body =~ /\b(?:\w+::)+(\w+)\s*\(/g;
+    return sort grep { length($_) > 2 && !$skip{$_} && !$CORE_FUNCTION{$_} } keys %token;
+}
+
+# _handler_accounts_for_source($record, $source, $short_name)
+# Decides whether a hand-written handler may stand in for a sub. Handlers are copies of
+# application code made at one point in time; when the application later grows a new
+# argument, helper call or security check, a stale copy would silently drop it. A handler
+# is therefore trusted only when every behaviour token in the real body appears in the
+# handler text or in the compiled record that parameterises it. Anything else keeps its
+# real source, which is always correct.
+# Input: compiled-sub record, module source, short sub name.
+# Output: true when the handler may be used; a body that cannot be read cannot be verified, so
+# it is not trusted either. A handler marked PAX_ADAPTS_PACKAGED_LAYOUT exists to relocate a
+# packaged-data lookup and is meant to differ from the body, so it is trusted as written.
+sub _handler_accounts_for_source {
+    my ($record, $source, $short_name) = @_;
+    my $handler = _handler_text_for_op($record->{op} // '');
+    return 1 if !defined $handler || $handler eq '';
+    return 1 if $handler =~ /^\s*#\s*PAX_ADAPTS_PACKAGED_LAYOUT\b/m;
+    my $body = _extract_sub_body($source, $short_name);
+    return 0 if !defined $body;
+    my $haystack = $handler . JSON::PP->new->canonical(1)->encode({ map { $_ => $record->{$_} } grep { !ref $record->{$_} } keys %$record });
+    for my $token (_source_behavior_tokens($body)) {
+        return 0 if $haystack !~ /\b\Q$token\E\b/;
+    }
+    return 1;
+}
+
+# _now_iso8601_tz($body)
+# Reads the explicit tz argument the real sub passes to the shared timestamp helper.
+# Handlers replace those calls, so they must pass the same tz or the helper dies.
+# Input: sub body text.
+# Output: 'utc' or 'local' when every call agrees, '' when the body makes no call with
+# arguments (the helper takes none), undef when the calls disagree or the tz is dynamic.
+sub _now_iso8601_tz {
+    my ($body) = @_;
+    my $calls = () = $body =~ /\b_now_iso8601\s*\(/g;
+    my %tz = map { $_ => 1 } $body =~ /\b_now_iso8601\s*\(\s*tz\s*=>\s*["'](utc|local)["']\s*\)/g;
+    my $literal = () = $body =~ /\b_now_iso8601\s*\(\s*tz\s*=>\s*["'](?:utc|local)["']\s*\)/g;
+    return '' if !$calls || !$literal && !($body =~ /\b_now_iso8601\s*\(\s*tz\b/);
+    return if $literal != $calls || keys %tz != 1;
+    return (keys %tz)[0];
 }
 
 sub _custom_sub_from_source {
@@ -723,7 +820,27 @@ sub _custom_sub_from_source {
     return;
 }
 
+# _compile_simple_transform_sub_from_source($source, $short_name, $full_name)
+# Matches a sub against the hand-written handlers, then makes sure a matched handler
+# still honours the clock helper's current calling contract before it is trusted.
+# Input: module source, sub name, and full sub name.
+# Output: a compiled-sub record, or nothing when the sub must keep its real source.
 sub _compile_simple_transform_sub_from_source {
+    my ($source, $short_name, $full_name) = @_;
+    my $record = _simple_transform_record($source, $short_name, $full_name) or return;
+    return $record if !defined $record->{now_method};
+    my $tz = _now_iso8601_tz(_extract_sub_body($source, $short_name) // '');
+    return if !defined $tz;
+    $record->{now_tz} = $tz if $tz ne '';
+    return $record;
+}
+
+# _simple_transform_record($source, $short_name, $full_name)
+# Holds the pattern recognisers that match a sub to a hand-written handler; the caller
+# above decides whether the match may be trusted.
+# Input: module source, sub name, and full sub name.
+# Output: compiled-sub record, or nothing when no handler matches.
+sub _simple_transform_record {
     my ($source, $short_name, $full_name) = @_;
     my ($package) = $full_name =~ /^(.*)::[^:]+$/ or return;
     my $body = _extract_sub_body($source, $short_name) or return;
