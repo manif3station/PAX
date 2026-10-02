@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.035';
+our $VERSION = '0.036';
 
 use strict;
 use warnings;
@@ -1576,7 +1576,7 @@ sub _compiled_op_handler {
         \$INDICATOR_PROMPT_STATUS_ICONS,
     );
     my $package = __PACKAGE__;
-    my $code = eval "package $package;\nuse utf8;\nsub {\n    my (\$package, \$sub, \$name, \$full) = \@_;\n    my \$impl;\n#line 1 \"PAX::StandaloneRuntime op $op\"\n$body\n}";
+    my $code = eval "package $package;\nuse utf8;\nuse feature 'current_sub';\nsub {\n    my (\$package, \$sub, \$name, \$full) = \@_;\n    my \$impl;\n#line 1 \"PAX::StandaloneRuntime op $op\"\n$body\n}";
     die "cannot compile runtime op $op: $@" if !$code;
     return $COMPILED_OP_HANDLER{$op} = $code;
 }
@@ -7741,7 +7741,7 @@ PERL_EVAL
             my %merged = (%{$left});
             for my $key (keys %{$right}) {
                 if (ref($left->{$key}) eq 'HASH' && ref($right->{$key}) eq 'HASH') {
-                    $merged{$key} = _code_for($name)->($self, $left->{$key}, $right->{$key});
+                    $merged{$key} = $self->$name($left->{$key}, $right->{$key});
                     next;
                 }
                 if (ref($left->{$key}) eq 'ARRAY' && ref($right->{$key}) eq 'ARRAY') {
@@ -8335,7 +8335,7 @@ PERL
             my %merged = (%{$left});
             for my $key (keys %{$right}) {
                 if (ref($left->{$key}) eq 'HASH' && ref($right->{$key}) eq 'HASH') {
-                    $merged{$key} = _code_for($name)->($self, $left->{$key}, $right->{$key});
+                    $merged{$key} = $self->$name($left->{$key}, $right->{$key});
                     next;
                 }
                 if (ref($left->{$key}) eq 'ARRAY' && ref($right->{$key}) eq 'ARRAY') {
@@ -12444,7 +12444,7 @@ JS
             if (-d $nested_root) {
                 opendir(my $dh, $nested_root) or die "Unable to read $nested_root: $!";
                 for my $entry (sort grep { $_ ne '.' && $_ ne '..' && -d File::Spec->catdir($nested_root, $_) } readdir($dh)) {
-                    push @entries, _code_for($name)->($self, File::Spec->catdir($nested_root, $entry), "$prefix.$entry");
+                    push @entries, $self->$name(File::Spec->catdir($nested_root, $entry), "$prefix.$entry");
                 }
                 closedir($dh);
             }
@@ -12680,7 +12680,7 @@ JS
             if (${$state}) {
                 if ($trimmed =~ s/\A.*?\*\///) {
                     ${$state} = 0;
-                    return __SUB__->($class,
+                    return $class->$name(
                         line => $trimmed,
                         file => $args{file},
                         line_no => $args{line_no},
@@ -12693,7 +12693,7 @@ JS
             if ($trimmed =~ /\A\/\*/) {
                 ${$state} = 1;
                 $trimmed =~ s/\A\/\*//;
-                return __SUB__->($class,
+                return $class->$name(
                     line => $trimmed,
                     file => $args{file},
                     line_no => $args{line_no},

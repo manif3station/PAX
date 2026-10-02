@@ -1,3 +1,17 @@
+0.036  Fri Oct  2 20:00:00 2026
+    - Fixed three runtime failures in the standalone binary that only showed
+      with layered configuration (stock Perl was fine):
+      * `.env` files with comments died with "Undefined subroutine
+        &PAX::StandaloneRuntime::__SUB__": compiled-sub handlers are now
+        compiled with `use feature 'current_sub'`, and the .env comment
+        stripper recurses through its own method like the application does.
+      * Layered config.json (parent directory + home) died with "Can't use an
+        undefined value as a subroutine reference": three recursive handlers
+        (config merge, skill-config merge, skill command collection) looked
+        themselves up by short name; they now call `$self->$name(...)`.
+    - Added `t/op_recursion.t` and layered .env/.env.pl/.d2/config.json/custom
+      command scenarios to `t/dashboard_parity.t`, diffed against stock Perl.
+
 0.035  Fri Oct  2 18:00:00 2026
     - A compiled binary is now genuinely portable: it needs only the kernel and
       glibc (libc/libm) on the machine that runs it. Tested in a root file system

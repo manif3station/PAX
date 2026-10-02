@@ -47,11 +47,13 @@ sub run_command {
     my $home = File::Spec->catdir($tmp, 'home');  # same path for both runs so padding and state keys match
     remove_tree($home);
     make_path($home);
+    $args{setup}->($home) if $args{setup};
     my $out = File::Spec->catfile($tmp, "$args{label}.out");
     local $ENV{HOME} = $home;
     local $ENV{PAX_PROGRESS} = 0;
     my $cmd = join ' ', map { "'$_'" } @{ $args{cmd} };
-    my $status = system("cd '$app' && $cmd >'$out' 2>&1 </dev/null");
+    my $cwd = $args{cwd} ? "$home/$args{cwd}" : $app;
+    my $status = system("cd '$cwd' && $cmd >'$out' 2>&1 </dev/null");
     open my $fh, '<:raw', $out or die "cannot read $out: $!";
     my $text = do { local $/; <$fh> } // '';
     close $fh;
@@ -131,6 +133,36 @@ for my $args (
     $stock =~ s/\Q$app\E\/bin\/dashboard/dashboard/g;
     is($brc, $srv, "'$args' exits with the same status as stock Perl");
     is($bin, $stock, "'$args' prints the same output as stock Perl");
+}
+
+# Layered configuration: .env / .env.pl / .d2 / config.json / custom commands are
+# discovered from the working directory up through its parents.
+sub write_layers {
+    my ($home) = @_;
+    for my $dir (qw(.developer-dashboard/cli .developer-dashboard/config proj/.developer-dashboard/cli proj/.developer-dashboard/config proj/sub/.d2/cli proj/sub/deep)) {
+        make_path("$home/$dir");
+    }
+    my $put = sub { my ($path, $text, $mode) = @_; open my $o, '>', "$home/$path" or die "$path: $!"; print {$o} $text; close $o; chmod $mode, "$home/$path" if $mode; };
+    $put->('.developer-dashboard/cli/showenv', "#!/bin/sh\nenv | grep '^T_' | sort\n", 0755);
+    $put->('.developer-dashboard/.env', "T_A=home\nT_H=fromhome\n");
+    $put->('proj/.developer-dashboard/.env', "// c\n/* block\ncomment */\nT_A=proj\nT_B=\${T_A}-b\nT_TILDE=~/x\nT_DEF=\${T_MISSING:-fallback}\nT_FN=\${Cwd::getcwd():-nofn}\n");
+    $put->('proj/.env.pl', "\$ENV{T_PL} = 'pl-proj'; \$ENV{T_A} = 'pl-' . \$ENV{T_A};\n");
+    $put->('proj/sub/.d2/.env.pl', "\$ENV{T_C} = 'd2pl';\n");
+    $put->('.developer-dashboard/config/config.json', '{"web":{"port":7001},"alias":{"a":"home"}}' . "\n");
+    $put->('proj/.developer-dashboard/config/config.json', '{"web":{"port":7002},"alias":{"b":"proj"}}' . "\n");
+    for my $dir (qw(.developer-dashboard proj/.developer-dashboard proj/sub/.d2)) {
+        $put->("$dir/cli/who", "#!/bin/sh\necho layer-$dir \$*\n", 0755);
+    }
+    return;
+}
+for my $args ('showenv', 'who a b', 'which who', 'which showenv', 'config list', 'path list', 'paths', 'doctor') {
+    my @args = split ' ', $args;
+    my %common = (setup => \&write_layers, cwd => 'proj/sub/deep');
+    my ($srv, $stock) = run_command(%common, label => 'lstock', cmd => [ $^X, "-I$app/lib", "$app/bin/dashboard", @args ]);
+    my ($brc, $bin) = run_command(%common, label => 'lbin', cmd => [ $binary, @args ]);
+    $stock =~ s/\Q$app\E\/bin\/dashboard/dashboard/g;
+    is($brc, $srv, "layered '$args' exits with the same status as stock Perl");
+    is($bin, $stock, "layered '$args' prints the same output as stock Perl");
 }
 
 done_testing();
