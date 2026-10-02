@@ -85,6 +85,8 @@ ok(call('_runtime_system_lib_exempt', '/x/linux-vdso.so.1'), 'vdso exempt');
 ok(call('_runtime_system_lib_exempt', '/x/ld-linux-x86-64.so.2'), 'loader exempt');
 ok(call('_runtime_system_lib_exempt', '/x/libc.so.6'), 'libc exempt');
 ok(!call('_runtime_system_lib_exempt', '/x/libfoo.so.1'), 'other libs are bundled');
+ok(!call('_runtime_system_lib_exempt', '/x/libcrypt.so.1'), 'libcrypt is bundled: a minimal container has no copy');
+ok(!call('_runtime_system_lib_exempt', '/x/libgcc_s.so.1'), 'libgcc_s is bundled: a minimal container has no copy');
 
 # ---- inc dir classification
 is(scalar(call('_is_core_runtime_inc_dir', '')), 0, 'core: empty');
@@ -335,13 +337,29 @@ SH
     chdir $START or die;
 }
 
+# ---- _core_pragma_modules / _lazy_core_runtime_files
+{
+    my @pragmas = call('_core_pragma_modules');
+    ok((grep { $_ eq 'lib' } @pragmas) && (grep { $_ eq 'constant' } @pragmas), 'core pragmas include lib and constant');
+    make_path("$T/lz/a/unicore/lib", "$T/lz/b/unicore");
+    write_file("$T/lz/a/Config_heavy.pl", "1;\n");
+    write_file("$T/lz/a/Config_git.pl", "1;\n");
+    write_file("$T/lz/a/unicore/lib/T.pl", "1;\n");
+    write_file("$T/lz/b/Config_heavy.pl", "1;\n");
+    write_file("$T/lz/b/unicore/Other.pl", "1;\n");
+    my @lazy = call('_lazy_core_runtime_files', [ "$T/lz/nonexistent", "$T/lz/a", "$T/lz/b" ]);
+    my @rel = sort map { s{\A\Q@{[ Cwd::abs_path("$T/lz") ]}\E/}{}r } @lazy;
+    is_deeply(\@rel, [ 'a/Config_git.pl', 'a/Config_heavy.pl', 'a/unicore/lib/T.pl' ], 'lazy files come from the first root carrying them');
+}
+
 # ---- _probe_loaded_runtime_files
 {
     is_deeply([ call('_probe_loaded_runtime_files') ], [], 'no modules, no probe');
     make_path("$T/pr/lib/Probe");
     write_file("$T/pr/lib/Probe/Mod.pm", "package Probe::Mod; 1;\n");
     my @files = call('_probe_loaded_runtime_files', modules => [ 'Probe::Mod', 'Not::There' ], lib_dirs => [ "$T/pr/lib", '/nonexistent/aa/bb' ]);
-    is_deeply(\@files, [ Cwd::abs_path("$T/pr/lib/Probe/Mod.pm") ], 'probe reports modules newly loaded from lib dirs');
+    ok((grep { $_ eq Cwd::abs_path("$T/pr/lib/Probe/Mod.pm") } @files), 'probe reports modules loaded from lib dirs');
+    ok((grep { m{/constant\.pm\z} } @files), 'probe also reports modules its own preamble loaded (they must be bundled too)');
     my @plain = call('_probe_loaded_runtime_files', modules => ['strict']);
     ok(scalar(@plain) >= 0, 'probe works without lib dirs');
 

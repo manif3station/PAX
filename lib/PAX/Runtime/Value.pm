@@ -1,6 +1,6 @@
 package PAX::Runtime::Value;
 
-our $VERSION = '0.034';
+our $VERSION = '0.035';
 
 use strict;
 use warnings;

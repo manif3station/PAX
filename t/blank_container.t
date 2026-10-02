@@ -62,13 +62,19 @@ is($build_rc >> 8, 0, 'fixture application builds');
 ok(-x $binary, 'standalone binary exists');
 
 # The binary has never run on this machine, so its payload cache does not exist yet.
+# Hide every directory this perl searches (core, perl-base, site, vendor) and the host
+# copies of the non-glibc shared libraries, so only what the binary carries is left.
+my @hide = grep { -d $_ && $_ !~ m{\A/(?:tmp|home|root)\b} && $root !~ /\A\Q$_\E/ } map { abs_path($_) // () } grep { !ref } @INC;
+push @hide, map { abs_path($_) // () } grep { -d $_ } '/usr/share/perl', '/usr/lib/x86_64-linux-gnu/perl-base', '/usr/share/perl5', '/etc/perl';
+my @hide_dirs = sort keys %{ { map { $_ => 1 } @hide } };
+my @hide_libs = grep { defined } map { my ($f) = glob("/lib/x86_64-linux-gnu/$_ /usr/lib/x86_64-linux-gnu/$_"); $f ? abs_path($f) : undef }
+    qw(libcrypt.so.1 libz.so.1 libbz2.so.1.0 libssl.so.3 libcrypto.so.3 libyaml-0.so.2);
 my $script = File::Spec->catfile($root, 'inside.sh');
 open my $fh, '>', $script or die "cannot write $script: $!";
+print {$fh} "#!/bin/sh\n";
+print {$fh} "[ -d '$_' ] && mount -t tmpfs tmpfs '$_'\n" for @hide_dirs;
+print {$fh} "mount --bind /dev/null '$_'\n" for @hide_libs;
 print {$fh} <<"SH";
-#!/bin/sh
-for d in /usr/share/perl5 /usr/lib/x86_64-linux-gnu/perl5 /usr/lib/x86_64-linux-gnu/perl /usr/share/perl /usr/local/share/perl /usr/local/lib /etc/perl; do
-  [ -d "\$d" ] && mount -t tmpfs tmpfs "\$d"
-done
 cd '$root'
 env -i PATH=/usr/bin:/bin HOME='$root' TMPDIR='$root' '$binary' 2>&1
 SH

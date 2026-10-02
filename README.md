@@ -180,7 +180,7 @@ Common options:
 - `--asset`: individual asset file to embed; repeatable.
 - `--asset-dir`: asset directory to embed recursively; repeatable.
 - `--output` / `-o`: executable output path.
-- `--runtime-mode`: runtime strategy, typically `bundled_perl` or `host_perl`.
+- `--runtime-mode`: runtime strategy, typically `bundled_perl` or `host_perl`. `bundled_perl` (the default) is portable: the binary carries perl, the pure-Perl and XS modules, core pragmas and the non-glibc shared libraries, so the target machine needs only the kernel and glibc.
 - `--compact`: compact JSON build output.
 
 ## `paxfile.yml`

@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.034';
+our $VERSION = '0.035';
 
 use strict;
 use warnings;
@@ -2231,7 +2231,7 @@ sub _runtime_system_lib_exempt {
     my $base = File::Basename::basename($path);
     return 1 if $base =~ /\A(?:linux-vdso\.so(?:\.\d+)*)\z/;
     return 1 if $base =~ /\Ald-linux[^\/]*\.so(?:\.\d+)*\z/;
-    return 1 if $base =~ /\Alib(?:c|m|pthread|dl|rt|util|resolv|nsl|nss_(?:dns|files)|gcc_s|crypt)\.so(?:\.\d+)*\z/;
+    return 1 if $base =~ /\Alib(?:c|m|pthread|dl|rt|util|resolv|nsl|nss_(?:dns|files))\.so(?:\.\d+)*\z/;
     return 0;
 }
 
@@ -2349,6 +2349,9 @@ sub _runtime_selected_files {
     my %seen_module;
     @modules = grep { !$seen_module{$_}++ } @modules;
     return () if !@modules;
+    # Lower-case pragmas are invisible to the static module scan, yet scripts load them
+    # (use lib, use constant, use parent, ...); a blank machine has no host copy to fall back on.
+    push @modules, _core_pragma_modules();
 
     my @loaded = _probe_loaded_runtime_files(
         modules => \@modules,
@@ -2376,6 +2379,7 @@ sub _runtime_selected_files {
     for my $path (_sibling_data_files([ keys %selected ], $args{inc_dirs} // [])) {
         $selected{$path} = 1;
     }
+    $selected{$_} = 1 for _lazy_core_runtime_files($args{inc_dirs} // []);
 
     my %force = map { $_ => 1 } (@helper_module_files, @hybrid_dependency_files);
     for my $path (@{ $args{exclude_files} // [] }) {
@@ -2384,6 +2388,41 @@ sub _runtime_selected_files {
     }
 
     return sort keys %selected;
+}
+
+# _lazy_core_runtime_files(\@inc_dirs)
+# Finds the files perl itself loads lazily at run time and that never show up in %INC
+# when the bundle is probed: Config_heavy.pl and Config_git.pl (Config's uncommon keys) and the unicore tables.
+# Input: the runtime inc roots. Output: absolute paths found under them, first root wins.
+sub _lazy_core_runtime_files {
+    my ($inc_dirs) = @_;
+    my (%seen, @found);
+    for my $dir (@$inc_dirs) {
+        my $root = _real_path($dir);
+        for my $name (qw(Config_heavy.pl Config_git.pl)) {
+            next if $seen{$name} || !-f File::Spec->catfile($root, $name);
+            $seen{$name} = 1;
+            push @found, File::Spec->catfile($root, $name);
+        }
+        my $unicore = File::Spec->catdir($root, 'unicore');
+        if (!$seen{unicore} && -d $unicore) {
+            $seen{unicore} = 1;
+            File::Find::find({ no_chdir => 1, wanted => sub { push @found, $File::Find::name if -f $File::Find::name } }, $unicore);
+        }
+    }
+    return map { _real_path($_) } @found;
+}
+
+# _core_pragma_modules()
+# Lists the core pragma modules every bundled runtime carries, because scripts and
+# dependencies load them without the static scan seeing a capitalised module name.
+# Input: none. Output: module names; ones absent from this perl are skipped by the probe.
+sub _core_pragma_modules {
+    return qw(
+        lib constant parent base feature overload overloading vars integer bytes utf8
+        strict warnings warnings::register fields if mro subs sort open locale re
+        version builtin experimental less filetest sigtrap
+    );
 }
 
 # _sibling_data_files(\@module_files, \@inc_dirs)
@@ -2606,7 +2645,6 @@ use JSON::PP qw(encode_json decode_json);
 
 my $payload = decode_json($ENV{PAX_RUNTIME_PROBE_PAYLOAD} // '{}');
 unshift @INC, @{ $payload->{lib_dirs} // [] };
-my %before = map { $_ => 1 } keys %INC;
 
 for my $module (@{ $payload->{modules} // [] }) {
     (my $require_path = $module) =~ s{::}{/}g;
@@ -2616,7 +2654,6 @@ for my $module (@{ $payload->{modules} // [] }) {
 
 my @files;
 for my $key (sort keys %INC) {
-    next if $before{$key};
     my $value = $INC{$key};
     next if !defined $value || ref $value;
     push @files, $value if $value ne '';

@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.034';
+our $VERSION = '0.035';
 
 1;
 
@@ -209,6 +209,8 @@ Common CLI switches include:
 =item * C<--output> / C<-o>
 
 =item * C<--runtime-mode>
+
+Runtime strategy, typically C<bundled_perl> or C<host_perl>. C<bundled_perl> (the default) is portable: the binary carries perl, the pure-Perl and XS modules, core pragmas and the non-glibc shared libraries, so the target machine needs only the kernel and glibc.
 
 =item * C<--compact>
 

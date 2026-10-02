@@ -1,3 +1,21 @@
+0.035  Fri Oct  2 18:00:00 2026
+    - A compiled binary is now genuinely portable: it needs only the kernel and
+      glibc (libc/libm) on the machine that runs it. Tested in a root file system
+      that holds nothing but glibc, the binary and /dev/null: `help`, `init`,
+      `doctor`, `ps1`, `jq`, `restart` (HTTP 200) and `stop` all work.
+    - Bundled perl now carries libcrypt and libgcc_s (they were assumed to exist
+      on the host; recent glibc images no longer ship libcrypt).
+    - The runtime module probe no longer subtracts the modules its own preamble
+      loaded (strict, warnings, JSON::PP and their dependencies such as
+      constant): those were silently left to the host's perl-base.
+    - Core pragmas (lib, constant, parent, base, feature, overload, vars, ...)
+      are always bundled, because the static scan cannot see lower-case module
+      names. Config_heavy.pl, Config_git.pl and the unicore tables, which perl
+      loads lazily and which never appear in %INC, are bundled too.
+    - `t/blank_container.t` now hides every directory in @INC (including
+      perl-base) and the host copies of libcrypt/libz/libssl/libyaml/..., so
+      this class of regression fails the test instead of passing by accident.
+
 0.034  Fri Oct  2 12:00:00 2026
     - Fixed a packaging regression from 0.032: the "do not ship the PAX helper
       twice" filter also removed the third-party modules the runtime needs
