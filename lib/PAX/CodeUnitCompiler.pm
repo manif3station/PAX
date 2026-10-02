@@ -316,7 +316,7 @@ sub _has_toplevel_statements_after_subs {
             undef $terminator if $line =~ /^\s*\Q$terminator\E\s*\z/;
             next;
         }
-        $terminator = $1 // $2 // $3 if $line =~ /<<~?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_]\w*))/;
+        ($terminator) = grep { defined } ($1, $2, $3) if $line =~ /<<~?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_]\w*))/;
         next if $line =~ /^(?:\s|#|\}|\)|sub\s|1\s*;|my\s|our\s|\z)/;
         return 1;
     }

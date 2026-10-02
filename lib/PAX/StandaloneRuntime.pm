@@ -88,7 +88,8 @@ sub _system_command_missing {
 # operator already set are left alone.
 # Input: none; reads PAX_EMBEDDED_ASSET_ROOT. Output: none.
 sub _default_framework_locations {
-    $ENV{DANCER_CONFDIR} //= $ENV{PAX_EMBEDDED_ASSET_ROOT} if defined $ENV{PAX_EMBEDDED_ASSET_ROOT};
+    return if !defined $ENV{PAX_EMBEDDED_ASSET_ROOT};
+    $ENV{DANCER_CONFDIR} = $ENV{PAX_EMBEDDED_ASSET_ROOT} if !defined $ENV{DANCER_CONFDIR};
     return;
 }
 

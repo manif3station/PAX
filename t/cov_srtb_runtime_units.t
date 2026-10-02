@@ -625,6 +625,7 @@ sub PaxCovBadInit::import { die "import failed\n" }
 
     PAX::StandaloneRuntime::_install_compiled_sub_lazily('PaxCovL', { name => 'proto', op => 'return_literal', prototype => '($)', value => 'v2' });
     is(prototype('PaxCovL::proto'), '$', 'prototyped subs are installed eagerly with their prototype');
+    is(PaxCovL::proto('arg'), 'v2', 'the prototyped stub forwards to the compiled handler');
     PAX::StandaloneRuntime::_install_compiled_sub_lazily('PaxCovL', { name => 'emptyproto', op => 'return_literal', prototype => '', value => 'v3' });
     isnt(\&PaxCovL::emptyproto, undef, 'empty prototype installs lazily');
     is(PaxCovL::emptyproto(), 'v3', 'empty prototype sub works');
