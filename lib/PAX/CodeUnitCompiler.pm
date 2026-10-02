@@ -407,12 +407,7 @@ sub _handler_text_for_op {
     my ($op) = @_;
     if (!%HANDLER_TEXT_FOR_OP) {
         my $file = File::Spec->catfile(File::Basename::dirname(__FILE__), 'StandaloneRuntime.pm');
-        my $text = '';
-        if (open my $fh, '<', $file) {
-            local $/;
-            $text = <$fh>;
-            close $fh;
-        }
+        my $text = do { local ($/, @ARGV) = (undef, $file); scalar <> };
         $text =~ s/\A.*?^__DATA__\n//ms;
         for my $block (grep { /\A#\@\@PAX_OP / } split /^(?=#\@\@PAX_OP )/m, $text) {
             $block =~ s/\A#\@\@PAX_OP ([^\n]*)\n//;
