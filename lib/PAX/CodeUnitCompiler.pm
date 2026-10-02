@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.033';
+our $VERSION = '0.034';
 
 use strict;
 use warnings;
@@ -41,6 +41,8 @@ sub compile {
     my $package = _package_name($source) or return _fallback_unit($abs_path, $kind, $logical_path, 'missing_package_declaration');
     return _fallback_unit($abs_path, $kind, $logical_path, 'unsupported_class_builder_dsl')
         if _uses_class_builder_dsl($source);
+    return _fallback_unit($abs_path, $kind, $logical_path, 'unsupported_toplevel_statements')
+        if _has_toplevel_statements_after_subs($source);
     my $has_sub_defs = ($source =~ /\bsub\s+[A-Za-z_][A-Za-z0-9_]*\b/s) ? 1 : 0;
     my @declared_subs = _declared_subs($source, $package);
     my @source_compiled_subs = map { defined $_ ? ($_) : () } map { _compile_declared_sub_from_source($source, $_) } @declared_subs;
@@ -294,6 +296,31 @@ sub _compile_declared_sub_from_source_unprototyped {
         value_type => $literal->{type},
         value => $literal->{value},
     };
+}
+
+# _has_toplevel_statements_after_subs($source)
+# True when the module has a top-level statement after its first sub (for example a
+# `get '/x' => sub {...};` route registration). The unit compiler models subs and the
+# initializers before the first sub only, so such a statement would be silently
+# dropped; the module has to ship as source instead. Heredoc text and late `my`/`our`
+# declarations do not count (the latter are handled by _residual_subs_use_file_lexicals).
+# Input: module source text. Output: 1 or 0.
+sub _has_toplevel_statements_after_subs {
+    my ($source) = @_;
+    my $code = _strip_pod($source);
+    $code =~ s/^__(?:END|DATA)__\b.*\z//ms;
+    my $first = $code =~ /^sub\s/m ? $-[0] : return 0;
+    my $terminator;
+    for my $line (split /\n/, substr($code, $first)) {
+        if (defined $terminator) {
+            undef $terminator if $line =~ /^\s*\Q$terminator\E\s*\z/;
+            next;
+        }
+        $terminator = $1 // $2 // $3 if $line =~ /<<~?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_]\w*))/;
+        next if $line =~ /^(?:\s|#|\}|\)|sub\s|1\s*;|my\s|our\s|\z)/;
+        return 1;
+    }
+    return 0;
 }
 
 # _uses_class_builder_dsl($source)
@@ -12514,7 +12541,7 @@ sub _hybrid_compiled_unit {
         $residual_sub_sources{$full} = $sub_source;
     }
     my $residual_mode = 'per_sub';
-    if (_bootstrap_has_shared_lexicals($bootstrap_source)) {
+    if (_bootstrap_has_shared_lexicals($bootstrap_source) || _residual_subs_use_file_lexicals($source, \%residual_sub_sources)) {
         %residual_sub_sources = ();
         $residual_mode = 'module';
     }
@@ -12555,6 +12582,31 @@ sub _hybrid_compiled_unit {
         c_symbol => 'pax_code_' . sha256_hex($compiled_logical),
         bytes => $bytes,
     };
+}
+
+# _residual_subs_use_file_lexicals($source, $residual_sub_sources)
+# True when a sub that stays as source mentions a file-scoped lexical (a `my` at the
+# start of a line outside any sub), wherever in the file it is declared. Residual subs
+# are compiled one by one in their own scope, so they cannot see such a variable; a
+# unit where that happens must load its whole source instead.
+# Input: module source text and a hash reference of residual sub sources by name.
+# Output: 1 or 0.
+sub _residual_subs_use_file_lexicals {
+    my ($source, $residual_sub_sources) = @_;
+    my $code = _strip_pod($source);
+    my @names;
+    while ($code =~ /^my\s+([\$\@%])(\w+)/mg) {
+        push @names, $2;
+    }
+    while ($code =~ /^my\s*\(([^)]*)\)/mg) {
+        push @names, $1 =~ /[\$\@%](\w+)/g;
+    }
+    for my $sub_source (values %$residual_sub_sources) {
+        for my $name (@names) {
+            return 1 if $sub_source =~ /[\$\@%]\Q$name\E\b/;
+        }
+    }
+    return 0;
 }
 
 sub _bootstrap_has_shared_lexicals {

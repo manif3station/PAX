@@ -39,6 +39,7 @@ TDD_TESTS = \
 	t/cov_simb_manifest.t \
 	t/cov_simb_runtime.t \
 	t/cov_srta_runtime_core.t \
+	t/cov_r3_compiler_rules.t \
 	t/cov_srtb_runtime_units.t \
 	t/capture.t \
 	t/code_unit_compiler.t \
@@ -60,7 +61,8 @@ BDD_TESTS = \
 ATDD_TESTS = \
 	t/app_image.t \
 	t/standalone_image.t \
-	t/dashboard_parity.t
+	t/dashboard_parity.t \
+	t/blank_container.t
 
 .PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release pause-release-tag cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate version-history-gate doc-gate pod-doc-all changes-gate release-gate cpan-verify-paths cpan-gate git-gate push-gate
 

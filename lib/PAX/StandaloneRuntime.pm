@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.033';
+our $VERSION = '0.034';
 
 use strict;
 use warnings;
@@ -81,6 +81,17 @@ sub _system_command_missing {
     return 0;
 }
 
+# _default_framework_locations()
+# Points frameworks that derive their config directory from the application's
+# build-time source path (Dancer2 reads DANCER_CONFDIR before that path) at the
+# embedded asset directory, which exists wherever the binary runs. Values the
+# operator already set are left alone.
+# Input: none; reads PAX_EMBEDDED_ASSET_ROOT. Output: none.
+sub _default_framework_locations {
+    $ENV{DANCER_CONFDIR} //= $ENV{PAX_EMBEDDED_ASSET_ROOT} if defined $ENV{PAX_EMBEDDED_ASSET_ROOT};
+    return;
+}
+
 sub run {
     my ($class, %args) = @_;
     my $entrypoint = $args{entrypoint} // shift(@ARGV);
@@ -98,6 +109,7 @@ sub run {
     }
     my @argv = @{ $args{argv} // \@ARGV };
     my $self_path = _standalone_executable_path();
+    _default_framework_locations();
     _install_namespace_compat();
     _install_require_hook();
     _install_pending_wrappers();
@@ -1434,17 +1446,9 @@ sub _load_residual_module {
     my $state = _state();
     my $key = $record->{require_path} || $unit->{logical_path} || $unit->{source_path} || '';
     return if $state->{residual_bootstrap_loaded}{$key};
-    {
-        no strict 'refs';
-        my $stash = \%{ ($record->{package} // '') . '::' };
-        for my $name (
-            map { $_->{name} } @{ $record->{subs} // [] },
-            map { /::([^:]+)\z/ ? $1 : () } @{ $record->{unsupported_subs} // [] },
-        ) {
-            next if !$name;
-            delete $stash->{$name};
-        }
-    }
+    # The source below redefines each sub in place. Deleting the symbol table entries first
+    # would leave call sites that were compiled earlier (for example in the entrypoint)
+    # bound to a detached glob, so they would report "Undefined subroutine".
     my $source = $record->{residual_source} // die "residual module source missing for $key";
     my $path = _virtual_source_path($unit, $record);
     my $wrapped = "no strict;\nno warnings 'redefine';\n#line 1 \"$path\"\n" . $source;

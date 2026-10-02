@@ -1,3 +1,26 @@
+0.034  Fri Oct  2 12:00:00 2026
+    - Fixed a packaging regression from 0.032: the "do not ship the PAX helper
+      twice" filter also removed the third-party modules the runtime needs
+      (JSON::PP, Digest::MD5, Encode, Storable, Time::HiRes, ...) from the
+      bundled payload. On a machine with a full Perl library nothing showed, but
+      a lone binary copied to a minimal container failed on every command except
+      `version`. Only PAX's own helper modules are filtered now.
+    - The runtime defaults DANCER_CONFDIR to the embedded asset directory (unless
+      the operator set it), so Dancer2 applications no longer fail with "did not
+      pass type constraint ReadableFilePath" when the build-time source path does
+      not exist on the machine that runs the binary.
+    - Added `t/blank_container.t`: builds a small application and runs the lone
+      binary inside a private mount namespace that hides the host's Perl module
+      directories (skips without root or unshare), plus a unit test for the
+      framework location defaults.
+    - Compiler: residual subs that reference a file-scoped lexical declared after
+      the first sub (e.g. a lookup hash) now force whole-module residual mode, and
+      modules with top-level statements after their subs (e.g. route
+      registrations) fall back to packaged source, instead of silently dropping
+      them. Fixes `restart`/`stop` and the 404 on every web route.
+    - Runtime: residual modules redefine subs in place rather than deleting the
+      stash, so call sites bound earlier no longer lose their target.
+
 0.033  Thu Oct  1 12:00:00 2026
     - Reached 100% Devel::Cover coverage (statement, branch, condition and
       subroutine) of lib/ with no `# uncoverable` pragmas, from 48% total.

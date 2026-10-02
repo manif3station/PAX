@@ -889,7 +889,22 @@ sub PaxCovBadInit::import { die "import failed\n" }
     is_deeply($r->{ret}, ['mod'], 'module residual loaded on first call');
     like($r->{err}, qr/custom warning/, 'module residual passes through ordinary warnings');
     unlike($r->{err}, qr/redefined|Prototype mismatch/, 'module residual suppresses redefinition warnings');
-    ok(!PaxCovM->can('old'), 'stale compiled sub removed before module residual load');
+    ok(PaxCovM->can('old'), 'a compiled sub is redefined in place, not detached from its symbol table entry');
+    {
+        # A call site compiled before the module loads is bound to the symbol table entry
+        # that exists then; the module must define its subs into that same entry.
+        no strict 'refs';
+        my $early_caller = eval 'package PaxCovBound; sub { PaxCovBound::fresh() }' or die $@;
+        my $brec = {
+            package => 'PaxCovBound',
+            require_path => 'PaxCovBound.pm',
+            residual_source => "package PaxCovBound; sub fresh { return 'bound-ok' } 1;",
+            subs => [],
+            unsupported_subs => ['PaxCovBound::fresh'],
+        };
+        PAX::StandaloneRuntime::_load_residual_module({ logical_path => 'b.pcu.json' }, $brec);
+        is($early_caller->(), 'bound-ok', 'a call site compiled before the module load reaches the sub it defines');
+    }
     is(PAX::StandaloneRuntime::_load_residual_module($munit, $mrec), undef, 'module residual loads once');
     $STATE->{residual_loaded} = {};
     is(PAX::StandaloneRuntime::_load_residual_sub($munit, $mrec, 'PaxCovM::mod'), 1, 'module-mode sub load succeeds');

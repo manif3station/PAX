@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.033';
+our $VERSION = '0.034';
 
 use strict;
 use warnings;
@@ -1995,8 +1995,11 @@ sub _runtime_manifest {
             lib_dirs => $args{lib_dirs} // [],
             exclude_files => $args{exclude_files} // [],
         );
-        # The runtime helper modules already ship (namespace-rewritten) as helper payloads.
-        my %helper_file = map { (_real_path($_)) => 1 } @helper_module_files;
+        # PAX's own helper modules already ship (namespace-rewritten) as helper payloads.
+        # Only those are dropped here: @helper_module_files also names the third-party
+        # modules the runtime needs (JSON::PP, Encode, ...), which must stay bundled.
+        my @helper_roots = _pax_runtime_helper_lib_roots();
+        my %helper_file = map { (_real_path($_)) => 1 } grep { defined } map { _helper_module_path($_, \@helper_roots) } _pax_runtime_helper_relative_paths();
         @selected = grep { !$helper_file{$_} } @selected;
         if (@selected) {
             my %by_dir;
