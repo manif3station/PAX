@@ -1,9 +1,10 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.040';
+our $VERSION = '0.042';
 
 use strict;
 use warnings;
+use Fcntl ();
 use Cwd qw(abs_path);
 use Config ();
 use Digest::SHA qw(sha256_hex);
@@ -1432,6 +1433,13 @@ sub _compile_launcher {
     make_path($parent) if !-d $parent;
     my $build_dir = File::Spec->catdir($parent, '.pax-launcher-build');
     make_path($build_dir) if !-d $build_dir;
+    # Builds that share an output directory run concurrently (parallel tests, parallel CI jobs);
+    # hold an exclusive lock on the shared build directory so they cannot overwrite each other's
+    # payload packages between writing them and linking the launcher.
+    my $lock_fh;
+    if (open $lock_fh, '>>', File::Spec->catfile($build_dir, '.lock')) {
+        flock($lock_fh, Fcntl::LOCK_EX());
+    }
     my $code_pkg = File::Spec->catfile($build_dir, 'code.pkg');
     my $runtime_pkg = File::Spec->catfile($build_dir, 'runtime.pkg');
     my $asset_pkg = File::Spec->catfile($build_dir, 'assets.pkg');

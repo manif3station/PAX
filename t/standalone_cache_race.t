@@ -78,4 +78,33 @@ SKIP: {
     is(scalar(@stage), 0, 'no staging directories are left behind');
 }
 
+# Builds into one output directory share the launcher build directory; concurrent builds of
+# different programs must each end up with their own payload.
+SKIP: {
+    skip 'no C compiler', 2 if !grep { -x "$_/cc" || -x "$_/gcc" } split /:/, $ENV{PATH};
+    my $dir = tempdir('pax-sharedbuild-XXXXXX', TMPDIR => 1, CLEANUP => 1);
+    my $root = File::Spec->rel2abs("$FindBin::Bin/..");
+    my @pids;
+    for my $name (qw(alpha beta gamma delta)) {
+        open my $o, '>', "$dir/$name.pl" or die $!;
+        print {$o} "print qq{$name\\n};\n";
+        close $o;
+        my $pid = fork();
+        if (!$pid) {
+            exec 'sh', '-c', 'cd "$1" && PAX_PROGRESS=0 "$2" -I"$3/lib" "$3/bin/pax" build --compact -o "$1/$4.bin" "$1/$4.pl" >/dev/null 2>&1', 'sh', $dir, $^X, $root, $name;
+            exit 99;
+        }
+        push @pids, $pid;
+    }
+    waitpid($_, 0) for @pids;
+    my $mixed = 0;
+    for my $name (qw(alpha beta gamma delta)) {
+        mkdir "$dir/cache-$name";
+        my $out = -x "$dir/$name.bin" ? `TMPDIR=$dir/cache-$name "$dir/$name.bin" 2>&1` : '';
+        $mixed++ if $out ne "$name\n";
+    }
+    is($mixed, 0, 'four concurrent builds into one directory each run their own program');
+    is(scalar(grep { -d $_ } glob("$dir/.pax-launcher-build*")), 1, 'builds share one launcher build directory');
+}
+
 done_testing();

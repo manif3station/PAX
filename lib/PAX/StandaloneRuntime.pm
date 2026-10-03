@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.040';
+our $VERSION = '0.042';
 
 use strict;
 use warnings;
@@ -5161,7 +5161,7 @@ PERL
         my $destroy_sandpit_method = $sub->{destroy_sandpit_method} // die 'compiled sub destroy-sandpit method missing';
         $impl = sub {
             my ($self, %args) = @_;
-            $self = __PACKAGE__->new if !ref($self);
+            $self = $package->new if !ref($self);
             my $page  = $args{page} || die 'Missing page';
             my $codes = $page->as_hash->{meta}{codes} || [];
             my $state = $page->{state} || {};
@@ -5310,7 +5310,7 @@ PERL
         my $render_templates_method = $sub->{render_templates_method} // die 'compiled sub render-templates method missing';
         $impl = sub {
             my ($self, %args) = @_;
-            $self = __PACKAGE__->new if !ref($self);
+            $self = $package->new if !ref($self);
             my $page = $args{page} || die 'Missing page';
             my $source = $args{source} || 'saved';
             my $runtime_context = $args{runtime_context} || {};
@@ -5613,7 +5613,7 @@ PERL
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP folder_postman
         $impl = sub {
-            my $dir = File::Spec->catdir(__PACKAGE__->configs(), 'postman');
+            my $dir = File::Spec->catdir($package->configs(), 'postman');
             File::Path::make_path($dir) if $dir ne '' && !-d $dir;
             return $dir;
         };
@@ -5630,7 +5630,7 @@ PERL
                 workspace_roots => [ grep { defined && -d } map { "$home/$_" } qw(projects src work) ],
                 project_roots => [ grep { defined && -d } map { "$home/$_" } qw(projects src work) ],
             );
-            __PACKAGE__->_load_configured_aliases();
+            $package->_load_configured_aliases();
             return ${$paths_symbol};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);

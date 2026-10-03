@@ -95,4 +95,14 @@ for my $case (
     }
 }
 
+# Handler text is compiled inside the runtime package, so __PACKAGE__ there names the runtime,
+# not the application package the sub belongs to; handlers must use the $package they are given.
+{
+    open my $rt, '<', "$FindBin::Bin/../lib/PAX/StandaloneRuntime.pm" or die "cannot read runtime: $!";
+    my $text = do { local $/; <$rt> };
+    close $rt;
+    my ($handlers) = $text =~ /\n__DATA__\n(.*)\z/s;
+    unlike($handlers // '', qr/__PACKAGE__/, 'op handlers never use __PACKAGE__ (it is the runtime package inside a handler)');
+}
+
 done_testing();

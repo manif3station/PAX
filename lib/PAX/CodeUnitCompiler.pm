@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.040';
+our $VERSION = '0.042';
 
 use strict;
 use warnings;
@@ -1182,7 +1182,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'return_method_call',
-            method => $package . '::read',
+            target => $package . '::read',
             prototype => $prototype,
         };
     }

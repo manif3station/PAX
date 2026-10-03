@@ -1,3 +1,28 @@
+0.042  Sat Oct  3 19:00:00 2026
+    - Fixed concurrent builds into one output directory corrupting each other:
+      every build wrote its payload packages into the shared
+      `.pax-launcher-build` directory before linking the launcher, so a second
+      build could swap in its code package and the first binary then shipped
+      with another program's code under its own manifest ("cannot read script
+      unit ... entrypoint/pax.script.json" from `pax-standalone-input`, the
+      intermittent `t/cli.t` 67-68 failure). Builds now hold an exclusive lock
+      on that directory for the whole launcher build. `t/standalone_cache_race.t`
+      builds four different programs at once into one directory.
+
+0.041  Sat Oct  3 18:00:00 2026
+    - Fixed `Developer::Dashboard::Folder->postman` (and the two page-runtime
+      constructors and `Folder` alias loader) in the binary: handler text used
+      `__PACKAGE__`, which inside a handler is the runtime package, so these
+      called methods on the wrong class ("Can't locate object method configs").
+      Handlers now use the `$package` they are given, and `t/op_recursion.t`
+      forbids `__PACKAGE__` in handler text.
+    - Fixed `Developer::Dashboard::File->cat`, whose compiled op carried the
+      key `method` where the runtime reads `target`, so every call died with
+      "compiled sub target missing".
+    - `t/dashboard_parity.t` gained a page that exercises the Folder/File helper
+      APIs against stock Perl. Handler coverage of the scenario corpus is now
+      213 of 364 handler-compiled subs (was 192).
+
 0.040  Sat Oct  3 15:00:00 2026
     - Fixed a race in the standalone launcher: two simultaneous first runs of
       one binary could each extract the payload into the same cache directory,

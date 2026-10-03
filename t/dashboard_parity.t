@@ -202,4 +202,42 @@ for my $args ('foo.hello a b', 'foo.bar.mid', 'foo.bar.zzz.show', 'which foo.bar
     is($bin, $stock, "skill '$args' prints the same output as stock Perl");
 }
 
+# Page code that calls the Folder/File helper APIs: each call dispatches into a handler-compiled
+# sub (home/tmp/dd/bookmarks/configs/postman/all/ls/locate and read/write/cat/touch/rm/resolve).
+sub write_api_page {
+    my ($home) = @_;
+    make_path("$home/work/sub", "$home/.developer-dashboard/dashboards");
+    open my $a, '>', "$home/work/a.txt" or die $!;
+    print {$a} "hi\n";
+    close $a;
+    my $code = join ' ', map { "$_\n" } (
+        'use Developer::Dashboard::Folder; use Developer::Dashboard::File;',
+        'print "home=", (Developer::Dashboard::Folder->home eq $ENV{HOME} ? "ok" : "no"), "\n";',
+        'print "dirs=", join(",", map { defined Developer::Dashboard::Folder->$_ ? "def" : "undef" } qw(tmp dd bookmarks configs postman)), "\n";',
+        'print join(",", sort keys %{ Developer::Dashboard::Folder->all }), "\n";',
+        'print join(",", map { s{.*/}{}r } Developer::Dashboard::Folder->ls("$ENV{HOME}/work")), "\n";',
+        'print "locate=", join(",", map { s{.*/}{}r } Developer::Dashboard::Folder->locate("sub")), "\n";',
+        'Developer::Dashboard::File->write("$ENV{HOME}/work/b.txt", "bee\n");',
+        'print "read=", Developer::Dashboard::File->read("$ENV{HOME}/work/b.txt");',
+        'print "cat=", Developer::Dashboard::File->cat("$ENV{HOME}/work/a.txt");',
+        'Developer::Dashboard::File->touch("$ENV{HOME}/work/c.txt"); print "touched=", (-e "$ENV{HOME}/work/c.txt" ? 1 : 0), "\n";',
+        'Developer::Dashboard::File->rm("$ENV{HOME}/work/c.txt"); print "rm=", (-e "$ENV{HOME}/work/c.txt" ? 0 : 1), "\n";',
+        'print "all=", join(",", sort keys %{ Developer::Dashboard::File->all }), "\n";',
+        'print "resolve=", (defined Developer::Dashboard::File->resolve("$ENV{HOME}/work/a.txt") ? 1 : 0), "\n";',
+    );
+    open my $o, '>', "$home/.developer-dashboard/dashboards/api" or die $!;
+    print {$o} "TITLE: Api\n:--------------------------------------------------------------------------------:\nBOOKMARK: api\n:--------------------------------------------------------------------------------:\nCODE1: $code";
+    close $o;
+    return;
+}
+{
+    my %common = (setup => \&write_api_page);
+    my ($srv, $stock) = run_command(%common, label => 'astock', cmd => [ $^X, "-I$app/lib", "$app/bin/dashboard", 'page', 'render', 'api' ]);
+    my ($brc, $bin) = run_command(%common, label => 'abin', cmd => [ $binary, 'page', 'render', 'api' ]);
+    s/HASH\(0x[0-9a-f]+\)/HASH/g for $stock, $bin;
+    like($stock, qr/^resolve=1$/m, 'the stock page really ran every helper call');
+    is($brc, $srv, 'helper-API page exits with the same status as stock Perl');
+    is($bin, $stock, 'helper-API page prints the same output as stock Perl');
+}
+
 done_testing();
