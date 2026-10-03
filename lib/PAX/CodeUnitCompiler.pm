@@ -980,7 +980,7 @@ sub _simple_transform_record {
             op => 'load_package_hash_from_env_json',
             hash_symbol => $package . '::' . $1,
             env_key => $2,
-            error_message => $3,
+            error_message => _unescape_literal($3),
             prototype => $prototype,
         };
     }
@@ -1014,8 +1014,8 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'record_package_hash_entry_and_sync',
-            missing_key_error => $1,
-            missing_source_error => $2,
+            missing_key_error => _unescape_literal($1),
+            missing_source_error => _unescape_literal($2),
             load_method => $package . '::_load_from_env',
             sync_method => $package . '::_sync_to_env',
             hash_symbol => $package . '::' . $3,
@@ -1283,6 +1283,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'app_file_resolve_file',
+            resolvable_accessors => _resolvable_accessors_from_source($source),
             files_symbol => $package . '::FILES',
             aliases_symbol => $package . '::ALIASES',
             config_aliases_symbol => $package . '::CONFIG_ALIASES',
@@ -2540,6 +2541,7 @@ sub _simple_transform_record {
         $short_name eq '_expand_env_path'
         && $body =~ /defined \$ENV/
         && $body =~ /return \$path/
+        && index( $body, '\\}|\\$(' ) >= 0    # single combined ${VAR}|$VAR pass, never two sequential passes
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -2599,6 +2601,7 @@ sub _simple_transform_record {
         && $body =~ /runtime_layers/
         && $body =~ /home_runtime_root/
         && $body =~ /config/
+        && $body !~ /\$runtime_root\s+eq\b/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -2744,6 +2747,7 @@ sub _simple_transform_record {
         $short_name eq 'disable_service'
         && $body =~ /_service_disabled_marker_path/
         && $body =~ /disabled: 1/
+        && $body =~ /Refusing service name that escapes/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -2759,6 +2763,7 @@ sub _simple_transform_record {
         $short_name eq 'enable_service'
         && $body =~ /_service_disabled_marker_path/
         && $body =~ /Unable to remove/
+        && $body =~ /Refusing service name that escapes/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -3383,6 +3388,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'folder_resolve_path',
+            resolvable_accessors => _resolvable_accessors_from_source($source),
             paths_method => $package . '::_paths_obj',
             load_aliases_method => $package . '::_load_configured_aliases',
             aliases_symbol => $package . '::ALIASES',
@@ -3416,6 +3422,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'folder_cd',
+            catch_errors => ($body =~ /\beval\s*\{/ && $body =~ /die\s+\$err\s+if\s+\$err/ ? 1 : 0),
             resolve_method => $package . '::_resolve_path',
             prototype => $prototype,
         };
@@ -3763,6 +3770,7 @@ sub _simple_transform_record {
         && $body =~ /(?:[A-Za-z_][A-Za-z0-9_]*::)*Web::DancerApp->build_psgi_app/
         && $body =~ /_default_headers/
         && $body =~ /_ssl_redirect_response/
+        && $body !~ /\bpaths\s*=>/    # the handler does not pass the path registry to the Dancer app
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -3836,6 +3844,7 @@ sub _simple_transform_record {
         && $body =~ /_socket_looks_like_tls/
         && $body =~ /_read_http_request_head/
         && $body =~ /_http_redirect_response/
+        && $body =~ /\$self->_request_host_from_head\(\s*\$request,\s*\$daemon\s*\)/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -3974,6 +3983,7 @@ sub _simple_transform_record {
     if (
         $short_name eq '_handle_ssl_signal'
         && $body =~ /_stop_ssl_backend\(\$SSL_BACKEND_PID\)/
+        && $body =~ /\$SSL_SHUTDOWN_REQUESTED = 1;/
         && $body =~ /_run_previous_signal/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -4047,7 +4057,7 @@ sub _simple_transform_record {
     if (
         $short_name eq '_ssl_redirect_response'
         && $body =~ /Redirecting to HTTPS/
-        && $body =~ /_https_redirect_location/
+        && $body =~ /\$self->_https_redirect_location\(\$env\)/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -5467,7 +5477,7 @@ sub _simple_transform_record {
         $short_name eq '_colorize'
         && $body =~ /return \$text if !\$self->\{color\};/
         && $body =~ /\\e\[32m\$text\\e\[0m/
-        && $body =~ /\\e\[33m\$text\\e\[0m/
+        && $body =~ /\\e\[34m\$text\\e\[0m/
         && $body =~ /\\e\[31m\$text\\e\[0m/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
@@ -5520,6 +5530,7 @@ sub _simple_transform_record {
         && $body =~ /return 1 if !\$event \|\| ref\(\$event\) ne 'HASH';/
         && $body =~ /my \$id = \$event->\{task_id\} \|\| return 1;/
         && $body =~ /\$self->render;/
+        && $body !~ /add_tasks|detail_line/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -5566,6 +5577,7 @@ sub _simple_transform_record {
         && $body =~ /Progress task missing id/
         && $body =~ /\$self->render;/
         && $body =~ /title    => \$args\{title\} \|\| 'dashboard progress'/
+        && $body !~ /detail_lines|max_detail_lines/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -5658,6 +5670,8 @@ sub _simple_transform_record {
         && $body =~ /PageDocument/
         && $body =~ /from_instruction/
         && $body =~ /run_page_action/
+        && $body =~ /Command actions cannot be executed through an encoded action token/
+        && $body =~ /source\s*=>\s*'transient'/
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
         return {
@@ -6727,6 +6741,7 @@ sub _simple_transform_record {
             full_name => $full_name,
             op => 'config_web_settings',
             merged_method => $package . '::merged',
+            ( $body =~ /ssl_validity_days\s*=>\s*\$self->ssl_validity_days/ ? ( validity_days_method => $package . '::ssl_validity_days' ) : () ),
             normalize_san_method => $package . '::_normalize_ssl_subject_alt_names',
             prototype => $prototype,
         };
@@ -6980,6 +6995,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'skill_dispatcher_skill_bookmark_entries',
+            skip_routes_json => ($body =~ /\$_ ne 'routes\.json'/ ? 1 : 0),
             skill_lookup_roots_method => $package . '::_skill_lookup_roots',
             prototype => $prototype,
         };
@@ -8281,12 +8297,21 @@ sub _simple_transform_record {
         && $body =~ /Developer Dashboard Login/
         && $body =~ /Helper access requires login/
         && $body =~ /action=\"\/login\"/
+        && $body =~ /<<"HTML";\n(.*?)\nHTML\n/s
+        && do {
+            # the page text is taken from the real heredoc so it can never drift; only $message and $redirect_to may interpolate
+            my $template = $1;
+            ( my $rest = $template ) =~ s/\$(?:message|redirect_to)\b//g;
+            $rest !~ /[\$\@\\]/;
+        }
     ) {
         my $prototype = _sub_prototype_from_source($source, $short_name);
+        my ($template) = $body =~ /<<"HTML";\n(.*?)\nHTML\n/s;
         return {
             name => $short_name,
             full_name => $full_name,
             op => 'auth_login_page',
+            template => $template . "\n",
             prototype => $prototype,
         };
     }
@@ -10200,6 +10225,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'locate_target',
+            (($body =~ /_main_gate_hook_files/) ? (main_gate_method => $package . '::_main_gate_hook_files') : ()),
             skill_method => $package . '::_locate_skill_target',
             builtin_method => $package . '::_builtin_target',
             custom_method => $package . '::_custom_target',
@@ -10405,6 +10431,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'suggest_collect_skill_commands',
+            init_entry => ($body =~ /\$logical eq '__init__' \? \$prefix : "\$prefix\.\$logical"/ ? 1 : 0),
             logical_name_method => $package . '::_logical_command_name',
             prototype => $prototype,
         };
@@ -10704,8 +10731,8 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'env_call_function',
-            invalid_error => 'Invalid env function in %s line %s: %s',
-            call_error => 'Env function %s failed in %s line %s: %s',
+            invalid_error => "Invalid env function in %s line %s: %s\n",
+            call_error => "Env function %s failed in %s line %s: %s\n",
             prototype => $prototype,
         };
     }
@@ -11760,6 +11787,16 @@ sub _extract_sub_source {
     return;
 }
 
+# _sub_source_start_line($source, $sub_name)
+# Input: module source and sub name. Output: 1-based line of the `sub NAME` text that
+# _extract_sub_source returns, so a `#line` directive can make errors point at the original file line.
+sub _sub_source_start_line {
+    my ($source, $sub_name) = @_;
+    return 1 if $source !~ /\bsub\s+\Q$sub_name\E\b[^\{]*\{/g;
+    my $before = substr($source, 0, $-[0]);
+    return 1 + ($before =~ tr/\n//);
+}
+
 sub _sub_prototype_from_source {
     my ($source, $sub_name) = @_;
     return scalar undef if $source !~ /\bsub\s+\Q$sub_name\E\s*(\([^\)]*\))?\s*\{/g;
@@ -11967,9 +12004,35 @@ sub _package_name {
     return;
 }
 
+# _strip_heredoc_bodies($source)
+# Drops here-document bodies so text inside them (for example a generated package that declares its own subs) is not mistaken for declarations of the enclosing package.
+# Input: module source text.
+# Output: source without heredoc bodies; the original text when a terminator is never found.
+sub _strip_heredoc_bodies {
+    my ($source) = @_;
+    return $source if !defined $source || $source !~ /<<~?(?:'[A-Za-z_]\w*'|"[A-Za-z_]\w*"|[A-Za-z_]\w*)/;
+    my (@out, @pending);
+    for my $line (split /(?<=\n)/, $source) {
+        if (@pending) {
+            my ($tag, $indented) = @{ $pending[0] };
+            (my $candidate = $line) =~ s/\r?\n\z//;
+            $candidate =~ s/\A\s+// if $indented;
+            shift @pending if $candidate eq $tag;
+            next;
+        }
+        push @out, $line;
+        next if $line =~ /\A\s*#/;
+        while ($line =~ /<<(~?)(?:'([A-Za-z_]\w*)'|"([A-Za-z_]\w*)"|([A-Za-z_]\w*))/g) {
+            push @pending, [ (defined $2 ? $2 : defined $3 ? $3 : $4), $1 ne '' ? 1 : 0 ];
+        }
+    }
+    return $source if @pending;
+    return join '', @out;
+}
+
 sub _declared_subs {
     my ($source, $package) = @_;
-    $source = _strip_pod($source);
+    $source = _strip_heredoc_bodies(_strip_pod($source));
     my @names;
     while ($source =~ /\bsub\s+([A-Za-z_][A-Za-z0-9_]*)\b/g) {
         push @names, $package . '::' . $1;
@@ -12646,6 +12709,18 @@ sub _compile_dispatch_unknown_action {
     return;
 }
 
+# _resolvable_accessors_from_source($source)
+# Reads the file-scoped %RESOLVABLE_ACCESSOR whitelist (map { $_ => 1 } qw(...)) so resolver ops honour the real list.
+# Input: module source text.
+# Output: array reference of accessor names, or undef when the source has no such whitelist.
+sub _resolvable_accessors_from_source {
+    my ($source) = @_;
+    return if !defined $source;
+    return if $source !~ /my\s+%RESOLVABLE_ACCESSOR\s*=\s*map\s*\{\s*\$_\s*=>\s*1\s*\}\s*qw\(([^)]*)\)/;
+    my @names = split ' ', $1;
+    return \@names;
+}
+
 sub _unescape_literal {
     my ($value) = @_;
     $value //= '';
@@ -12661,11 +12736,14 @@ sub _hybrid_compiled_unit {
     my ($path, $kind, $logical_path, $package, $initializers, $subs, $unsupported_subs, $source) = @_;
     my $bootstrap_source = _bootstrap_source($source);
     my %residual_sub_sources;
+    my %residual_sub_lines;
     for my $full (@$unsupported_subs) {
         my ($short) = $full =~ /::([^:]+)\z/;
         next if !$short;
         my $sub_source = _extract_sub_source($source, $short) or next;
         $residual_sub_sources{$full} = $sub_source;
+        # Remember where the sub starts so runtime errors report the application's own line numbers.
+        $residual_sub_lines{$full} = _sub_source_start_line($source, $short);
     }
     my $residual_mode = 'per_sub';
     if (_bootstrap_has_shared_lexicals($bootstrap_source) || _residual_subs_use_file_lexicals($source, \%residual_sub_sources)) {
@@ -12687,7 +12765,8 @@ sub _hybrid_compiled_unit {
         residual_mode => $residual_mode,
         residual_bootstrap_source => $bootstrap_source,
         residual_sub_sources => \%residual_sub_sources,
-        residual_source => $residual_mode eq 'module' ? $source : undef,
+        residual_sub_lines => $residual_mode eq 'per_sub' ? \%residual_sub_lines : {},
+        residual_source =>$residual_mode eq 'module' ? $source : undef,
         residual_source_path => $path,
     };
     my $bytes = JSON::PP->new->ascii(1)->canonical(1)->encode($record);

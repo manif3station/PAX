@@ -623,6 +623,9 @@ sub _run_standalone_managed_helper {
     # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
     utf8::downgrade($wrapped, 1);
     my $rv = eval $wrapped;
+    # A stock perl process always leaves errno ENOENT behind after resolving its module graph through @INC,
+    # and an uncaught die exits with errno; embedded loading leaves it 0 (exit 255), so restore the stock value.
+    $! = 2 if $@ && !$!;
     die $@ if $@;
     return 0 if !defined $rv;
     return $rv;
@@ -778,6 +781,7 @@ sub _run_entrypoint {
         return _run_script_unit($entrypoint);
     }
     my $rv = do $entrypoint;
+    $! = 2 if $@ && !$!;    # same stale-errno exit status as a stock perl process, see _run_standalone_managed_helper
     die $@ if $@;
     die "failed to load $entrypoint: $!" if !defined($rv) && $!;
     return $rv;
@@ -1193,13 +1197,13 @@ sub _native_runner {
 # Installs a stub that builds the real compiled handler on first call, because
 # most subs in a loaded unit are never called in one run and building each
 # handler up front dominated startup. Prototyped subs stay eager since their
-# prototype changes how callers are parsed. PAX_EAGER_SUBS=1 disables the stubs.
+# prototype changes how callers are parsed, and AUTOLOAD stays eager because perl sets $AUTOLOAD from the glob that owns the sub. PAX_EAGER_SUBS=1 disables the stubs.
 # Input: target package name and compiled sub record. Output: none.
 sub _install_compiled_sub_lazily {
     my ($package, $sub) = @_;
     my $name = $sub->{name} // die 'compiled sub name missing';
     return _install_compiled_sub($package, $sub)
-        if $ENV{PAX_EAGER_SUBS} || (defined $sub->{prototype} && $sub->{prototype} ne '');
+        if $ENV{PAX_EAGER_SUBS} || $name eq 'AUTOLOAD' || (defined $sub->{prototype} && $sub->{prototype} ne '');
     my $full = $package . '::' . $name;
     my ($real, $stub);
     $stub = sub {
@@ -1389,6 +1393,11 @@ sub _install_sub_impl {
         die $@ if !$ok;
         return;
     }
+    if ($name eq 'AUTOLOAD') {
+        # perl sets $AUTOLOAD in the package that owns the sub's glob, so the closure must be named into the app package.
+        require Sub::Util;
+        $impl = Sub::Util::set_subname($full, $impl);
+    }
     *{$full} = $impl;
     return;
 }
@@ -1430,7 +1439,9 @@ sub _load_residual_sub {
     my $source = $record->{residual_sub_sources}{$full}
         // die "residual sub source missing for $full";
     my $path = _virtual_source_path($unit, $record);
-    my $wrapped = "package $record->{package};\nno strict;\nno warnings 'redefine';\n#line 1 \"$path\"\n" . $source;
+    my $line = ($record->{residual_sub_lines} || {})->{$full};
+    $line = 1 if !defined $line || $line !~ /\A\d+\z/ || $line < 1;
+    my $wrapped = "package $record->{package};\nno strict;\nno warnings 'redefine';\n#line $line \"$path\"\n" . $source;
     local $SIG{__WARN__} = sub {
         my ($warning) = @_;
         return if defined $warning && $warning =~ /\ASubroutine .+ redefined at \Q$path\E line \d+\.\n\z/;
@@ -2297,11 +2308,12 @@ __DATA__
             require Capture::Tiny;
             require File::Spec;
             my ($self) = @_;
-            my @running = _code_for($running_method)->($self);
-            _code_for($stop_method)->($self, @running);
+            local $?;
             my @results;
             my $dir = _code_for($updates_dir_method)->($self);
             return \@results if !-d $dir;
+            my @running = _code_for($running_method)->($self);
+            _code_for($stop_method)->($self, @running);
             opendir my $dh, $dir or die sprintf($open_error, $dir, $!);
             for my $file (sort readdir $dh) {
                 next if $file eq '.' || $file eq '..';
@@ -3395,7 +3407,7 @@ __DATA__
             }
             my $request = _code_for($read_http_request_head_method)->($client);
             my $response = _code_for($http_redirect_response_method)->(
-                host   => _code_for($request_host_from_head_method)->($request, $daemon),
+                host   => _code_for($request_host_from_head_method)->($self, $request, $daemon),
                 target => _code_for($request_target_from_head_method)->($request),
             );
             syswrite($client, $response);
@@ -3503,6 +3515,7 @@ __DATA__
         my $run_previous_method = $sub->{run_previous_method} // die 'compiled sub run-previous method missing';
         $impl = sub {
             my ($signal_name) = @_;
+            $__PAX_RUNTIME_LEGACY_NAMESPACE__::Web::Server::SSL_SHUTDOWN_REQUESTED = 1;
             _code_for($stop_backend_method)->($__PAX_RUNTIME_LEGACY_NAMESPACE__::Web::Server::SSL_BACKEND_PID);
             return _code_for($run_previous_method)->($__PAX_RUNTIME_LEGACY_NAMESPACE__::Web::Server::SSL_PREVIOUS_SIGNAL{$signal_name});
         };
@@ -3551,8 +3564,8 @@ __DATA__
 #@@PAX_OP web_server_ssl_redirect_response
         my $redirect_location_method = $sub->{redirect_location_method} // die 'compiled sub redirect-location method missing';
         $impl = sub {
-            my ($env) = @_;
-            my $location = _code_for($redirect_location_method)->($env);
+            my ($self, $env) = @_;
+            my $location = _code_for($redirect_location_method)->($self, $env);
             return [
                 307,
                 [
@@ -4745,8 +4758,9 @@ OPENSSL_CONFIG
             my ($self, $state) = @_;
             $state ||= {};
             my @keys = grep { /^[A-Za-z_][A-Za-z0-9_]*$/ } sort keys %{$state};
-            return '' if !@keys;
-            my $header = sprintf 'my (%s) = @{ $stash }{qw(%s)};' . "\n",
+            my $header = "use __PAX_RUNTIME_LEGACY_NAMESPACE__::DataHelper qw(j je);\n";
+            return $header if !@keys;
+            $header .= sprintf 'my (%s) = @{ $stash }{qw(%s)};' . "\n",
                 join(', ', map { '$' . $_ } @keys),
                 join(' ', @keys);
             $header .= sprintf 'my (%s) = map { \\$stash->{$_} } qw(%s);' . "\n",
@@ -5660,6 +5674,7 @@ PERL
         my $load_aliases_method = $sub->{load_aliases_method} // die 'compiled sub load aliases method missing';
         my $aliases_symbol = $sub->{aliases_symbol} // die 'compiled sub aliases symbol missing';
         my $config_aliases_symbol = $sub->{config_aliases_symbol} // die 'compiled sub config aliases symbol missing';
+        my %resolvable_accessor = map { $_ => 1 } @{ $sub->{resolvable_accessors} || [] };
         $impl = sub {
             my ($class, $where) = @_;
             return if !defined $where || $where eq '';
@@ -5674,7 +5689,7 @@ PERL
             if (my $legacy = $legacy_aliases{$where}) {
                 return $class->$legacy() if $class->can($legacy);
             }
-            return $class->$where() if $class->can($where);
+            return $class->$where() if $resolvable_accessor{$where};
             {
                 no strict 'refs';
                 return ${$aliases_symbol}{$where} if defined ${$aliases_symbol}{$where};
@@ -5711,13 +5726,17 @@ PERL
             return if !$dir || !-d $dir;
             chdir $dir or return;
             my $parent = File::Basename::dirname($dir);
-            my $result = $code->({
-                caller => $pwd,
-                parent => $parent,
-                dir => $dir,
-                stay => sub { $pwd = $_[0] if defined $_[0] && $_[0] ne '' },
-            });
+            my $result = eval {
+                $code->({
+                    caller => $pwd,
+                    parent => $parent,
+                    dir => $dir,
+                    stay => sub { $pwd = $_[0] if defined $_[0] && $_[0] ne '' },
+                });
+            };
+            my $err = $@;
             chdir $pwd if $pwd;
+            die $err if $err;
             return $result;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
@@ -5930,8 +5949,10 @@ PERL
         $impl = sub {
             my ($self, $path) = @_;
             return $path if !defined $path || $path eq '';
-            $path =~ s/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/defined $ENV{$1} ? $ENV{$1} : ''/ge;
-            $path =~ s/\$([A-Za-z_][A-Za-z0-9_]*)/defined $ENV{$1} ? $ENV{$1} : ''/ge;
+            $path =~ s/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/
+                my $env_name = defined $1 ? $1 : $2;
+                defined $ENV{$env_name} ? $ENV{$env_name} : '';
+            /gex;
             return $path;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
@@ -5959,10 +5980,7 @@ PERL
             my ($self, %args) = @_;
             my @layers = $self->{paths}->runtime_layers;
             my $runtime_root = @layers ? $layers[-1] : $self->{paths}->home_runtime_root;
-            my $home_runtime_root = $self->{paths}->home_runtime_root;
-            return $runtime_root eq $home_runtime_root
-                ? File::Spec->catdir($runtime_root, 'config', 'docker')
-                : File::Spec->catdir($runtime_root, 'docker');
+            return File::Spec->catdir($runtime_root, 'config', 'docker');
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP docker_compose_service_disabled_marker_path
@@ -6198,6 +6216,7 @@ PERL
             my ($self, %args) = @_;
             my $service = $args{service} || die "Usage: dashboard docker disable <service>\n";
             my $marker = _code_for($disabled_marker_method)->($self, project_root => $args{project_root}, service => $service);
+            die "Refusing service name that escapes the docker config root: $service\n" if !defined $marker;
             my (undef, $dir) = File::Spec->splitpath($marker);
             File::Path::make_path($dir) if !-d $dir;
             open my $fh, '>', $marker or die "Unable to write $marker: $!";
@@ -6212,6 +6231,7 @@ PERL
             my ($self, %args) = @_;
             my $service = $args{service} || die "Usage: dashboard docker enable <service>\n";
             my $marker = _code_for($disabled_marker_method)->($self, project_root => $args{project_root}, service => $service);
+            die "Refusing service name that escapes the docker config root: $service\n" if !defined $marker;
             unlink $marker or die "Unable to remove $marker: $!" if -e $marker;
             return { action => 'enable', disabled => 0, marker => $marker, service => $service };
         };
@@ -6835,7 +6855,7 @@ PERL_EVAL
             my ($self, $text, $status) = @_;
             return $text if !$self->{color};
             return "\e[32m$text\e[0m" if defined $status && $status eq 'done';
-            return "\e[33m$text\e[0m" if defined $status && $status eq 'running';
+            return "\e[34m$text\e[0m" if defined $status && $status eq 'running';
             return "\e[31m$text\e[0m" if defined $status && $status eq 'failed';
             return $text;
         };
@@ -6850,6 +6870,9 @@ PERL_EVAL
                 my $task = $self->{tasks}{$id} || next;
                 my $prefix = _code_for($prefix_method)->($self, $task->{status});
                 push @lines, sprintf '%s %s', _code_for($colorize_method)->($self, $prefix, $task->{status}), $task->{label};
+                if ($task->{status} ne 'done' && ref($task->{detail_lines}) eq 'ARRAY') {
+                    push @lines, map { sprintf '   %s', $self->_colorize_detail($_, $task->{status}) } @{ $task->{detail_lines} };
+                }
             }
             return join("\n", @lines) . "\n";
         };
@@ -6861,13 +6884,14 @@ PERL_EVAL
             my $stream = $self->{stream};
             my $board = _code_for($render_text_method)->($self);
             if ($self->{dynamic} && $self->{rendered}) {
-                my $line_count = scalar(split /\n/, $board);
-                for (1 .. $line_count) {
+                for (1 .. ($self->{last_rendered_line_count} || 0)) {
                     print {$stream} "\e[1A\e[2K";
                 }
             }
             print {$stream} $board;
             $self->{rendered} = 1;
+            my @rendered_lines = split /\n/, $board;
+            $self->{last_rendered_line_count} = scalar @rendered_lines;
             return 1;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
@@ -7040,11 +7064,14 @@ PERL_EVAL
             my ($self, %args) = @_;
             my $payload = _code_for($decode_method)->($self, $args{token} || '');
             my $page = $page_class->from_instruction($payload->{page_source} || '');
+            my $action = $payload->{action};
+            die "Command actions cannot be executed through an encoded action token\n"
+                if ref($action) eq 'HASH' && ($action->{kind} || 'builtin') eq 'command';
             return _code_for($run_page_action_method)->(
                 $self,
-                action => $payload->{action},
+                action => $action,
                 page => $page,
-                source => $payload->{source} || 'saved',
+                source => 'transient',
                 params => $args{params} || {},
             );
         };
@@ -8089,6 +8116,7 @@ PERL
                 no_editor             => $web->{no_editor} ? 1 : 0,
                 no_indicators         => $web->{no_indicators} ? 1 : 0,
                 ssl_subject_alt_names => _code_for($normalize_san_method)->($self, $web->{ssl_subject_alt_names}),
+                ( defined $sub->{validity_days_method} ? ( ssl_validity_days => _code_for($sub->{validity_days_method})->($self) ) : () ),
             };
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
@@ -8317,6 +8345,7 @@ PERL
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP skill_dispatcher_skill_bookmark_entries
         my $skill_lookup_roots_method = $sub->{skill_lookup_roots_method} // die 'compiled sub skill-lookup-roots method missing';
+        my $skip_routes_json = $sub->{skip_routes_json};
         $impl = sub {
             my ($self, $skill_name) = @_;
             return () if !$skill_name;
@@ -8327,7 +8356,7 @@ PERL
                 opendir(my $dh, $dashboards_root) or die "Unable to read $dashboards_root: $!";
                 for my $entry (
                     grep {
-                        $_ ne '.' && $_ ne '..' && $_ ne 'nav' && -f File::Spec->catfile($dashboards_root, $_)
+                        $_ ne '.' && $_ ne '..' && $_ ne 'nav' && !($skip_routes_json && $_ eq 'routes.json') && -f File::Spec->catfile($dashboards_root, $_)
                     } readdir($dh)
                 ) {
                     $entries{$entry} ||= 1;
@@ -9473,10 +9502,10 @@ PERL
                     return [200, 'application/json; charset=utf-8', JSON::XS::encode_json({ skill => $skill_name, bookmarks => \@items })];
                 }
                 my $legacy_id = join '/', @parts[1 .. $#parts];
-                return _code_for($page_response_method)->(%args, skill_name => $skill_name, route_id => $legacy_id);
+                return _code_for($page_response_method)->($self, %args, skill_name => $skill_name, route_id => $legacy_id);
             }
             my $route_id = @parts ? join('/', @parts) : 'index';
-            return _code_for($page_response_method)->(%args, skill_name => $skill_name, route_id => $route_id);
+            return _code_for($page_response_method)->($self, %args, skill_name => $skill_name, route_id => $route_id);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP skill_dispatcher_skill_nav_pages
@@ -9923,6 +9952,7 @@ PERL
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP auth_login_page
+        my $page_template = $sub->{template} // die 'compiled sub login page template missing';
         $impl = sub {
             my ($self, %args) = @_;
             my $message = $args{message} || 'Helper access requires login.';
@@ -9934,37 +9964,9 @@ PERL
             $redirect_to =~ s/</&lt;/g;
             $redirect_to =~ s/>/&gt;/g;
             $redirect_to =~ s/"/&quot;/g;
-            return <<"HTML";
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Developer Dashboard Login</title>
-  <style>
-    body { margin: 0; font-family: Georgia, serif; background: #f6efe4; color: #1f2a2e; }
-    main { max-width: 520px; margin: 60px auto; background: #fffdf8; border: 1px solid #ddd3c2; padding: 28px; }
-    label { display: block; margin: 14px 0 6px; }
-    input { width: 100%; box-sizing: border-box; padding: 10px; font-size: 16px; }
-    button { margin-top: 18px; padding: 10px 18px; font-size: 16px; }
-  </style>
-</head>
-<body>
-<main>
-  <h1>Developer Dashboard</h1>
-  <p>$message</p>
-  <form method="post" action="/login">
-    <input name="redirect_to" type="hidden" value="$redirect_to">
-    <label for="username">Username</label>
-    <input id="username" name="username" type="text" autocomplete="username">
-    <label for="password">Password</label>
-    <input id="password" name="password" type="password" autocomplete="current-password">
-    <button type="submit">Login</button>
-  </form>
-</main>
-</body>
-</html>
-HTML
+            my $page = $page_template;
+            $page =~ s/\$(message|redirect_to)\b/$1 eq 'message' ? $message : $redirect_to/ge;
+            return $page;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP result_current
@@ -10221,8 +10223,10 @@ HTML
             }
             my $normalized = $script;
             $normalized =~ s{[\\/]+\z}{} if $normalized !~ m{\A(?:[\\/]|[A-Za-z]:[\\/]?)\z};
-            return $fallback
-                if $normalized eq '' || $normalized eq '/' || $normalized eq '\\' || $normalized =~ m{\A[A-Za-z]:[\\/]?\z};
+            if ($normalized eq '' || $normalized eq '/' || $normalized eq '\\' || $normalized =~ m{\A[A-Za-z]:[\\/]?\z}) {
+                my $static_name = _state()->{manifest}{app}{command} // '';
+                return $static_name ne '' ? $static_name : $fallback;
+            }
             my $base = basename($normalized);
             return $base if $base ne '' && $base ne '/' && $base ne '\\' && $base ne 'run';
             my $parent = basename(dirname($normalized));
@@ -10543,8 +10547,9 @@ HTML
             my $state = _code_for($decode_stash_method)->(join("\n", @{ $sections{STASH} || [] }));
             my %meta;
             $meta{icon} = _code_for($trim_method)->(join("\n", @{ $sections{ICON} || [] })) if exists $sections{ICON};
+            $meta{head} = _code_for($trim_trailing_method)->(join("\n", @{ $sections{HEAD} })) if exists $sections{HEAD};
             my @codes;
-            for my $section (sort grep { /^CODE\d+$/ } keys %sections) {
+            for my $section (sort { ($a =~ /(\d+)/)[0] <=> ($b =~ /(\d+)/)[0] } grep { /^CODE\d+$/ } keys %sections) {
                 push @codes, {
                     id => $section,
                     body => _code_for($trim_trailing_method)->(join("\n", @{ $sections{$section} })),
@@ -10624,6 +10629,7 @@ HTML
             my @sections;
             push @sections, [ 'TITLE', $self->{title} // 'Untitled' ];
             push @sections, [ 'ICON', $self->{meta}{icon} ] if defined $self->{meta}{icon} && $self->{meta}{icon} ne '';
+            push @sections, [ 'HEAD', $self->{meta}{head} ] if defined $self->{meta}{head} && $self->{meta}{head} ne '';
             push @sections, [ 'BOOKMARK', $self->{id} ] if defined $self->{id} && $self->{id} ne '';
             push @sections, [ 'NOTE', $self->{description} ] if defined $self->{description} && $self->{description} ne '';
             push @sections, [ 'STASH', _code_for($legacy_stash_method)->($self->{state} || {}) ];
@@ -10818,7 +10824,8 @@ HTML
                 return $value if ref($value) eq 'HASH';
                 return {};
             }
-            my $hash = eval "+{ $text }";
+            my $safe_eval = _code_for($package . '::_safe_eval_stash_literal');
+            my $hash = $safe_eval ? $safe_eval->($text) : eval "+{ $text }";
             return ref($hash) eq 'HASH' ? $hash : {};
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
@@ -12134,11 +12141,12 @@ JS
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP app_entry_command
+        my $entry_env = $sub->{entrypoint_env};
+        my $entry_fallback = $sub->{entrypoint_fallback};
         $impl = sub {
-            return _app_entry_command(
-                sub_env => $sub->{entrypoint_env},
-                sub_fallback => $sub->{entrypoint_fallback},
-            );
+            # Mirror the source exactly: $ENV{NAME} || 'fallback' and nothing else (no app-prefix guessing).
+            my $entrypoint = $ENV{$entry_env} || $entry_fallback;
+            return ($entrypoint);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP exec_command_argv
@@ -12265,21 +12273,18 @@ JS
         my $skill_method = $sub->{skill_method} // die 'compiled sub skill method missing';
         my $builtin_method = $sub->{builtin_method} // die 'compiled sub builtin method missing';
         my $custom_method = $sub->{custom_method} // die 'compiled sub custom method missing';
+        my $main_gate_method = $sub->{main_gate_method};
         $impl = sub {
             my (%args) = @_;
             my $paths = $args{paths} || die "Missing paths registry\n";
             my $target = $args{target} || '';
             return { command => '', hooks => [] } if $target eq '';
-            if (my $skill = _code_for($skill_method)->(paths => $paths, target => $target)) {
-                return $skill;
-            }
-            if (my $helper = _code_for($builtin_method)->(paths => $paths, target => $target)) {
-                return $helper;
-            }
-            if (my $custom = _code_for($custom_method)->(paths => $paths, target => $target)) {
-                return $custom;
-            }
-            return { command => '', hooks => [] };
+            my $located = _code_for($skill_method)->(paths => $paths, target => $target)
+                || _code_for($builtin_method)->(paths => $paths, target => $target)
+                || _code_for($custom_method)->(paths => $paths, target => $target);
+            return { command => '', hooks => [] } if !$located;
+            unshift @{ $located->{hooks} }, _code_for($main_gate_method)->(paths => $paths) if $main_gate_method;
+            return $located;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP run_which_command
@@ -12461,6 +12466,7 @@ JS
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP suggest_collect_skill_commands
         my $logical_name_method = $sub->{logical_name_method} // die 'compiled sub logical name method missing';
+        my $init_entry = $sub->{init_entry};
         $impl = sub {
             my ($self, $skill_root, $prefix) = @_;
             my @entries;
@@ -12471,7 +12477,7 @@ JS
                     my $logical = _code_for($logical_name_method)->($entry);
                     next if !$logical;
                     next if !__PAX_RUNTIME_LEGACY_NAMESPACE__::Platform::is_runnable_file(File::Spec->catfile($cli_root, $logical));
-                    push @entries, { full => "$prefix.$logical" };
+                    push @entries, { full => ($init_entry && $logical eq '__init__') ? $prefix : "$prefix.$logical" };
                 }
                 closedir($dh);
             }
@@ -12787,8 +12793,8 @@ JS
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP env_call_function
-        my $invalid_error = $sub->{invalid_error} // 'Invalid env function in %s line %s: %s';
-        my $call_error = $sub->{call_error} // 'Env function %s failed in %s line %s: %s';
+        my $invalid_error = $sub->{invalid_error} // "Invalid env function in %s line %s: %s\n";
+        my $call_error = $sub->{call_error} // "Env function %s failed in %s line %s: %s\n";
         $impl = sub {
             my ($class, %args) = @_;
             my $function = $args{function} || '';
@@ -13001,6 +13007,7 @@ JS
         my $config_aliases_symbol = $sub->{config_aliases_symbol} // die 'compiled sub config aliases symbol missing';
         my $files_method = $sub->{files_method} // die 'compiled sub files method missing';
         my $load_aliases_method = $sub->{load_aliases_method} // die 'compiled sub load aliases method missing';
+        my %resolvable_accessor = map { $_ => 1 } @{ $sub->{resolvable_accessors} || [] };
         $impl = sub {
             my ($class, $where) = @_;
             return if !defined $where || $where eq '';
@@ -13013,7 +13020,7 @@ JS
             $files = Scalar::Util::blessed(${$files_symbol}) ? ${$files_symbol} : undef;
             %aliases = %{$aliases_symbol};
             %config_aliases = %{$config_aliases_symbol};
-            return $files->$where() if $files && $files->can($where);
+            return $files->$where() if $files && $resolvable_accessor{$where};
             return $aliases{$where} if defined $aliases{$where};
             return $config_aliases{$where} if defined $config_aliases{$where};
             my $app_env = _app_env_prefix() . '_FILE_' . uc($where);
@@ -13037,13 +13044,26 @@ JS
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP file_registry_resolve_file
+        my %resolvable_accessor = map { $_ => 1 } @{ $sub->{resolvable_accessors} || [] };
         $impl = sub {
             my ($self, $name) = @_;
             return $name if File::Spec->file_name_is_absolute($name);
-            return $self->{named_files}{$name} if exists $self->{named_files}{$name};
-            $self->_load_configured_named_files;
-            return $self->{configured_named_files}{$name} if exists $self->{configured_named_files}{$name};
-            return $self->$name() if $self->can($name);
+            my $entry =
+                exists $self->{named_files}{$name} ? $self->{named_files}{$name}
+              : do { $self->_load_configured_named_files; exists $self->{configured_named_files}{$name} ? $self->{configured_named_files}{$name} : undef };
+            if (defined $entry) {
+                my ($path, $create, $mode) =
+                    ref($entry) eq 'HASH' ? ($entry->{path}, $entry->{create}, $entry->{mode}) : ($entry, undef, undef);
+                if ($create) {
+                    my $parent = (File::Spec->splitpath($path))[1];
+                    if (defined $parent && $parent ne '' && !-d $parent) {
+                        File::Path::make_path($parent);
+                        chmod(oct($mode), $parent) if defined $mode && $mode ne '';
+                    }
+                }
+                return $path;
+            }
+            return $self->$name() if $sub->{resolvable_accessors} ? $resolvable_accessor{$name} : $self->can($name);
             die "Unknown file name '$name'";
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
@@ -13074,10 +13094,16 @@ JS
         $impl = sub {
             my ($self) = @_;
             _code_for($load_method)->($self);
-            return {
+            my %raw = (
                 %{ $self->{configured_named_files} || {} },
                 %{ $self->{named_files} || {} },
-            };
+            );
+            my %plain;
+            for my $alias_name (keys %raw) {
+                my $entry = $raw{$alias_name};
+                $plain{$alias_name} = ref($entry) eq 'HASH' ? $entry->{path} : $entry;
+            }
+            return \%plain;
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP file_registry_all_file_aliases

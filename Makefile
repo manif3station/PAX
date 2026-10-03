@@ -42,6 +42,7 @@ TDD_TESTS = \
 	t/capture_load_order.t \
 	t/op_drift_guard.t \
 	t/op_recursion.t \
+	t/declared_subs_heredoc.t \
 	t/cov_r3_compiler_rules.t \
 	t/cov_srtb_runtime_units.t \
 	t/capture.t \
@@ -68,6 +69,7 @@ ATDD_TESTS = \
 	t/standalone_hermetic.t \
 	t/docker_distros.t \
 	t/dashboard_service_parity.t \
+	t/dashboard_ssl_parity.t \
 	t/dashboard_parity.t \
 	t/dashboard_unit_parity.t \
 	t/blank_container.t
