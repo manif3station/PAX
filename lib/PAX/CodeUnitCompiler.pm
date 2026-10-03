@@ -10846,6 +10846,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'file_registry_named_files',
+            flatten_hash_entries => ($body =~ /ref\(\$entry\) eq 'HASH'/ ? 1 : 0),
             load_method => $package . '::_load_configured_named_files',
             prototype => $prototype,
         };

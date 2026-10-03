@@ -619,13 +619,14 @@ sub _run_standalone_managed_helper {
     }
     local @ARGV = @helper_argv;
     local $0 = $path if defined $path && $path ne '';
+    # Stock perl execs the helper as a fresh process: the switchboard's STDOUT/STDERR autoflush must not leak into it.
+    require IO::Handle;
+    STDOUT->autoflush(0);
+    STDERR->autoflush(0);
     my $wrapped = "package main;\n#line 1 \"$path\"\n" . $source;
     # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
     utf8::downgrade($wrapped, 1);
     my $rv = eval $wrapped;
-    # A stock perl process always leaves errno ENOENT behind after resolving its module graph through @INC,
-    # and an uncaught die exits with errno; embedded loading leaves it 0 (exit 255), so restore the stock value.
-    $! = 2 if $@ && !$!;
     die $@ if $@;
     return 0 if !defined $rv;
     return $rv;
@@ -781,7 +782,6 @@ sub _run_entrypoint {
         return _run_script_unit($entrypoint);
     }
     my $rv = do $entrypoint;
-    $! = 2 if $@ && !$!;    # same stale-errno exit status as a stock perl process, see _run_standalone_managed_helper
     die $@ if $@;
     die "failed to load $entrypoint: $!" if !defined($rv) && $!;
     return $rv;
@@ -5726,14 +5726,18 @@ PERL
             return if !$dir || !-d $dir;
             chdir $dir or return;
             my $parent = File::Basename::dirname($dir);
-            my $result = eval {
-                $code->({
-                    caller => $pwd,
-                    parent => $parent,
-                    dir => $dir,
-                    stay => sub { $pwd = $_[0] if defined $_[0] && $_[0] ne '' },
-                });
+            my $call_info = {
+                caller => $pwd,
+                parent => $parent,
+                dir => $dir,
+                stay => sub { $pwd = $_[0] if defined $_[0] && $_[0] ne '' },
             };
+            if (!$sub->{catch_errors}) {
+                my $plain_result = $code->($call_info);
+                chdir $pwd if $pwd;
+                return $plain_result;
+            }
+            my $result = eval { $code->($call_info) };
             my $err = $@;
             chdir $pwd if $pwd;
             die $err if $err;
@@ -13098,6 +13102,7 @@ JS
                 %{ $self->{configured_named_files} || {} },
                 %{ $self->{named_files} || {} },
             );
+            return \%raw if !$sub->{flatten_hash_entries};
             my %plain;
             for my $alias_name (keys %raw) {
                 my $entry = $raw{$alias_name};
