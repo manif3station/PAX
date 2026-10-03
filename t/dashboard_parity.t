@@ -50,6 +50,7 @@ sub run_command {
     $args{setup}->($home) if $args{setup};
     my $out = File::Spec->catfile($tmp, "$args{label}.out");
     local $ENV{HOME} = $home;
+    local $ENV{TMPDIR} = $tmp;   # payload extraction lands in the tempdir that is removed afterwards
     local $ENV{PAX_PROGRESS} = 0;
     my $cmd = join ' ', map { "'$_'" } @{ $args{cmd} };
     my $cwd = $args{cwd} ? "$home/$args{cwd}" : $app;
@@ -58,7 +59,7 @@ sub run_command {
     my $text = do { local $/; <$fh> } // '';
     close $fh;
     $text =~ s/\Q$home\E/HOME/g;
-    $text =~ s{/tmp/pax-standalone-cache-[0-9a-f]+/(?:code/lib/lib|runtime/inc/\d+)}{LIB}g;
+    $text =~ s{\S*?/pax-standalone-cache-[0-9a-f]+/(?:code/lib/lib|runtime/inc/\d+)}{LIB}g;
     $text =~ s{\Q$app\E/bin/\.\./lib}{LIB}g;
     $text =~ s{\Q$app\E/lib}{LIB}g;
     $text =~ s/\d{4}-\d{2}-\d{2}[T ][\d:.]+Z?/TS/g;

@@ -82,4 +82,17 @@ for my $case (
     is_deeply($node, { a => 'text', b => { _attributes => { id => 1 }, c => [ 'x', 'y' ] } }, 'nested XML elements decode through __SUB__');
 }
 
+# A lazily compiled sub may be called for the first time as a sort comparator, where perl
+# forbids `goto &sub`; the stubs must forward with an ordinary call.
+{
+    PAX::StandaloneRuntime::_install_compiled_sub_lazily('PaxOpRecSort', { name => 'tie', op => 'return_literal', value_type => 'number', value => 0 });
+    PAX::StandaloneRuntime::_install_compiled_sub_lazily('PaxOpRecSort', { name => 'tie_proto', op => 'return_literal', value_type => 'number', value => 0, prototype => '($$)' });
+    for my $comparator (qw(PaxOpRecSort::tie PaxOpRecSort::tie_proto)) {
+        no strict 'refs';
+        my @sorted = eval { sort $comparator (3, 1, 2) };
+        is($@, '', "a stub used as a sort comparator ($comparator) does not goto");
+        is(scalar(@sorted), 3, "the sort over $comparator completes");
+    }
+}
+
 done_testing();

@@ -1,3 +1,17 @@
+0.039  Sat Oct  3 12:00:00 2026
+    - Fixed the application's `share/` tree (`dist_dir()`/`File::ShareDir`
+      assets such as the favicon) being absent from the binary: it is now
+      bundled at `auto/share/dist/<Dist>/`, so `/favicon.ico` no longer
+      answers 500.
+    - Fixed saved Perl Ajax routes (`/ajax?file=x.pl`) failing in the binary
+      because the process-group launcher ran in a child perl that could not load
+      application modules; the launcher is now inlined.
+    - Fixed `dashboard stop` dying with "Can't goto subroutine from a sort sub":
+      lazy-sub stubs now forward with a call instead of `goto &`.
+    - Extended `t/dashboard_service_parity.t` to cover `/favicon.ico` and a
+      saved Ajax route; added a sort-comparator regression to
+      `t/op_recursion.t`; parity tests extract payloads under their own temp dir.
+
 0.038  Sat Oct  3 09:00:00 2026
     - Added `t/dashboard_service_parity.t`: starts the real web service from the
       interpreter and from the PAX-built binary and compares the HTTP

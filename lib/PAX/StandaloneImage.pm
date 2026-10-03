@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.038';
+our $VERSION = '0.039';
 
 use strict;
 use warnings;
@@ -1961,6 +1961,46 @@ sub _string_array_c {
     return join '', @chunks;
 }
 
+# _application_share_payloads(\$index, \@bundled_inc_roots, \@lib_dirs)
+# Bundles the distribution share directory (the `share/` tree next to a lib dir) where
+# File::ShareDir looks for it, `auto/share/dist/<Dist>/` under an inc root, so a module
+# that finds its static assets with dist_dir() works unmodified inside the binary.
+# Input: running inc-root counter, the list of bundled inc roots to extend, and lib dirs.
+# Output: runtime_inc payloads for every share file; each share dir adds one inc root.
+sub _application_share_payloads {
+    my ($index, $roots, $lib_dirs) = @_;
+    my (%seen, @payloads);
+    for my $lib (@$lib_dirs) {
+        next if !defined $lib || !-d $lib;
+        my $root = dirname(_real_path($lib));
+        my $share = File::Spec->catdir($root, 'share');
+        next if !-d $share || $seen{$share}++;
+        my $prefix = sprintf('inc/%03d', $$index++);
+        push @$roots, $prefix;
+        push @payloads, _tree_payloads($share, "$prefix/auto/share/dist/$_", 'runtime_inc', []) for _share_dist_names($lib, $root);
+    }
+    return @payloads;
+}
+
+# _share_dist_names($lib_dir, $project_root)
+# Names the distribution(s) the application asks File::ShareDir about.
+# Input: lib dir and the project root that owns the share dir.
+# Output: distribution names found in dist_dir()/dist_file() calls, else the project directory name.
+sub _share_dist_names {
+    my ($lib, $root) = @_;
+    my %names;
+    File::Find::find({
+        no_chdir => 1,
+        wanted => sub {
+            return if $File::Find::name !~ /\.pm\z/ || !-f $File::Find::name;
+            my $text = _slurp_bytes($File::Find::name);
+            $names{$_} = 1 for $text =~ /\bdist_(?:dir|file)\s*\(\s*['"]([A-Za-z0-9][\w.-]*)['"]/g;
+        },
+    }, $lib);
+    return sort keys %names if %names;
+    return (basename($root));
+}
+
 sub _runtime_manifest {
     my (%args) = @_;
     my $mode = $args{mode} // 'bundled_perl';
@@ -2057,6 +2097,7 @@ sub _runtime_manifest {
             } @payloads;
         push @payloads, _runtime_shared_lib_payloads($perl, \@inc_dirs, \@runtime_shared_objects);
     }
+    push @payloads, _application_share_payloads(\$index, \@bundled_inc_roots, $args{lib_dirs} // []);
     push @payloads, @helper_payloads;
 
     my $sha = Digest::SHA->new(256);

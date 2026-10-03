@@ -1,6 +1,6 @@
 package PAX::StandaloneAnalysis;
 
-our $VERSION = '0.038';
+our $VERSION = '0.039';
 
 use strict;
 use warnings;

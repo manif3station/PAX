@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.038';
+our $VERSION = '0.039';
 
 use strict;
 use warnings;
@@ -5015,6 +5015,21 @@ sub _simple_transform_record {
             full_name => $full_name,
             op => 'page_runtime_saved_ajax_command',
             perl_wrapper_method => $package . '::_saved_ajax_perl_wrapper',
+            prototype => $prototype,
+        };
+    }
+
+    if (
+        $short_name eq '_saved_ajax_launch_command'
+        && $body =~ /Missing saved ajax command/
+        && $body =~ /is_windows\(\)/
+        && $body =~ /_exec_saved_ajax_command\(\@ARGV\)/
+    ) {
+        my $prototype = _sub_prototype_from_source($source, $short_name);
+        return {
+            name => $short_name,
+            full_name => $full_name,
+            op => 'page_runtime_saved_ajax_launch_command',
             prototype => $prototype,
         };
     }

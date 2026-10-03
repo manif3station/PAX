@@ -54,6 +54,7 @@ my $base = "http://127.0.0.1:$port";
 sub command {
     my ($launcher, @args) = @_;
     local $ENV{HOME} = $home;
+    local $ENV{TMPDIR} = $tmp;   # the binary extracts its payload under TMPDIR, which the tempdir cleanup then removes
     local $ENV{PAX_PROGRESS} = 0;
     return system(join(' ', map { "'$_'" } @$launcher, @args) . " >/dev/null 2>&1 </dev/null");
 }
@@ -84,7 +85,8 @@ sub http {
     my ($status) = $raw =~ m{\AHTTP/\d\.\d (\d+)};
     my ($location) = $raw =~ /^Location: *([^\r\n]*)/mi;
     my ($cookie) = $raw =~ /^Set-Cookie: *([^\r\n]*)/mi;
-    return { status => $status // 599, location => $location, cookie => $cookie };
+    my ($payload) = $raw =~ /\r?\n\r?\n(.*)\z/s;
+    return { status => $status // 599, location => $location, cookie => $cookie, body => $payload // '' };
 }
 
 # observe(\@launcher) returns one comparable line per request of the HTTP conversation.
@@ -107,7 +109,7 @@ sub observe {
     command($launcher, 'auth', 'add-user', 'bob', 'password123');
     command($launcher, 'restart');
     if (wait_for_port(1)) {
-        $get->("anon $_", $_) for '/', '/apps', '/app/index', '/nosuch';
+        $get->("anon $_", $_) for '/', '/apps', '/app/index', '/nosuch', '/favicon.ico';
         my $session;
         for my $creds ('username=bob&password=password123', 'username=bob&password=wrong', 'username=nobody&password=password123', 'username=bob&password=') {
             my $res = http('POST', '/login', Origin => "http://$host", body => $creds);
@@ -116,6 +118,12 @@ sub observe {
         }
         if (defined $session) {
             $get->("session $_", $_, Cookie => $session) for '/', '/apps', '/nosuch';
+            make_path("$home/.developer-dashboard/dashboards/ajax");
+            open my $ajax, '>', "$home/.developer-dashboard/dashboards/ajax/hello.pl" or die $!;
+            print {$ajax} "print qq{ajax-hello\\n};\n";
+            close $ajax;
+            my $ran = http('GET', '/ajax?file=hello.pl&type=text', Cookie => $session);
+            push @seen, "saved ajax $ran->{status} body=" . ($ran->{body} =~ s/\s+\z//r);
             $get->('logout', '/logout', Cookie => $session);
             $get->('after logout', '/', Cookie => $session);
         }

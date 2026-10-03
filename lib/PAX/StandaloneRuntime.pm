@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.038';
+our $VERSION = '0.039';
 
 use strict;
 use warnings;
@@ -414,7 +414,7 @@ sub _install_namespace_alias {
             _sync_namespace_alias_for_module($legacy_package, $app_package);
             my $cv = *{"$app_package\::$method"}{CODE};
             die "Undefined subroutine $AUTOLOAD\n" if !defined $cv;
-            goto &$cv;
+            return &$cv;   # not goto: perl forbids goto from a sort callback, where a stub can be hit first
         };
     }
     $state->{namespace_aliases}{$legacy_package} = $app_package;
@@ -1207,7 +1207,7 @@ sub _install_compiled_sub_lazily {
                 if !$installed || $installed == $stub;
             $real = $installed;
         }
-        goto &$real;
+        return &$real;   # not goto: perl forbids goto from a sort callback, where a stub can be hit first
     };
     no strict 'refs';
     no warnings 'redefine';
@@ -1380,7 +1380,7 @@ sub _install_sub_impl {
         my $impl_name = sprintf '__PAX_IMPL_%s_%d_%d', $name, $$, int(rand(1_000_000));
         my $impl_full = $package . '::' . $impl_name;
         *{$impl_full} = $impl;
-        my $code = "package $package; no warnings 'redefine'; sub $name $prototype { goto &$impl_full } 1;";
+        my $code = "package $package; no warnings 'redefine'; sub $name $prototype { return &$impl_full } 1;";
         my $ok = eval $code;
         die $@ if !$ok;
         return;
@@ -1401,7 +1401,7 @@ sub _install_residual_stubs {
         *{$full} = sub {
             _load_residual_sub($unit, $record, $full);
             my $cv = _code_for($full) or die "residual source did not define $full";
-            goto &$cv;
+            return &$cv;   # not goto: perl forbids goto from a sort callback, where a stub can be hit first
         };
     }
 }
@@ -4529,7 +4529,22 @@ OPENSSL_CONFIG
             return _code_for($legacy_value_method)->($value);
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
+#@@PAX_OP page_runtime_saved_ajax_launch_command
+        # PAX_ADAPTS_PACKAGED_LAYOUT: the process-group launcher runs in a child perl that cannot load application modules from the packaged code tree, so it is inlined.
+        $impl = sub {
+            my ($self, @command) = @_;
+            die "Missing saved ajax command\n" if !@command;
+            return @command if __PAX_RUNTIME_LEGACY_NAMESPACE__::Platform::is_windows();
+            return (
+                $^X,
+                '-e',
+                'use POSIX (); defined POSIX::setpgid( 0, 0 ) or die "Unable to isolate saved ajax process $$: $!\n"; die "Missing saved ajax command\n" if !@ARGV; exec { $ARGV[0] } @ARGV; die "Unable to exec saved ajax command $ARGV[0]: $!\n";',
+                @command,
+            );
+        };
+        return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP page_runtime_saved_ajax_command
+        # PAX_ADAPTS_PACKAGED_LAYOUT: launches a saved Perl ajax file through a self-contained wrapper script, because the child perl cannot load application modules from the packaged code tree.
         my $perl_wrapper_method = $sub->{perl_wrapper_method} // die 'compiled sub perl-wrapper method missing';
         $impl = sub {
             my ($self, %args) = @_;
@@ -4747,6 +4762,7 @@ OPENSSL_CONFIG
         };
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP page_runtime_saved_ajax_perl_wrapper
+        # PAX_ADAPTS_PACKAGED_LAYOUT: produces the self-contained wrapper script for saved Perl ajax files (the child perl cannot load application modules from the packaged code tree).
         $impl = sub {
             return <<'PERL';
 use strict;
