@@ -627,8 +627,9 @@ is($inspect_cli_data->{name}, 'override-standalone', 'standalone-inspect manifes
 my $why_not_data = PAX::StandaloneImage->new(root => $root)->load(name => 'override-standalone');
 is($why_not_data->{name}, 'override-standalone', 'standalone-why-not identifies target image');
 
-my $run_cli = `$override_build->{standalone}{output_path} status`;
-is($? >> 8, 0, 'standalone executable runs directly');
+my $run_cli = `$override_build->{standalone}{output_path} status 2>$tmp_base/run_cli.err`;
+is($? >> 8, 0, 'standalone executable runs directly')
+    or diag(do { local (@ARGV, $/) = ("$tmp_base/run_cli.err"); <> } // '');
 is($run_cli, "slowload-ready\n", 'standalone-run output matches direct execution');
 
 my $native_rebuilt = $builder->build(

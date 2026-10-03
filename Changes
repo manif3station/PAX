@@ -1,3 +1,14 @@
+0.040  Sat Oct  3 15:00:00 2026
+    - Fixed a race in the standalone launcher: two simultaneous first runs of
+      one binary could each extract the payload into the same cache directory,
+      so one run executed while the other overwrote its files (segfaults and
+      "failed to extract" in the wild, intermittent failures under parallel
+      `prove`). Extraction now happens in a private staging directory that is
+      renamed into place atomically; the loser of the rename uses the winner's
+      cache. Eight concurrent cold starts of the old launcher failed 14 of 48
+      times; the new one 0 of 48.
+    - Added `t/standalone_cache_race.t` (in the ATDD gate).
+
 0.039  Sat Oct  3 12:00:00 2026
     - Fixed the application's `share/` tree (`dist_dir()`/`File::ShareDir`
       assets such as the favicon) being absent from the binary: it is now

@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.039';
+our $VERSION = '0.040';
 
 use strict;
 use warnings;
@@ -1526,6 +1526,7 @@ sub _launcher_source {
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1706,6 +1707,15 @@ static int extract_roots(const char *root, char *code_root, size_t code_size, ch
     return 0;
 }
 
+static int remove_tree_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftwbuf) {
+    (void)sb; (void)flag; (void)ftwbuf;
+    return remove(path);
+}
+
+static void remove_tree(const char *path) {
+    nftw(path, remove_tree_entry, 16, FTW_DEPTH | FTW_PHYS);
+}
+
 static int extract_runtime(char *tmpdir, size_t size, char *entrypoint, size_t entry_size, char *perl_exec, size_t perl_size, char *libpath, size_t lib_size, char *asset_root, size_t asset_size) {
     const char *base = getenv("TMPDIR");
     if (!base || !*base) base = "/tmp";
@@ -1716,18 +1726,43 @@ static int extract_runtime(char *tmpdir, size_t size, char *entrypoint, size_t e
     char manifest_path[4096];
     FILE *manifest_out;
     if (snprintf(tmpdir, size, "%s/pax-standalone-cache-%s", base, $source_hash) >= (int)size) return 111;
-    if (mkdir(tmpdir, 0700) != 0 && errno != EEXIST) return 111;
     if (resolve_roots(tmpdir, code_root, sizeof(code_root), runtime_root, sizeof(runtime_root), assets_root, sizeof(assets_root)) != 0) return 111;
     if (snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", tmpdir) >= (int)sizeof(manifest_path)) return 111;
     if (access(manifest_path, F_OK) != 0 || access(code_root, F_OK) != 0 || access(runtime_root, F_OK) != 0 || access(assets_root, F_OK) != 0) {
-        if (extract_roots(tmpdir, code_root, sizeof(code_root), runtime_root, sizeof(runtime_root), assets_root, sizeof(assets_root)) != 0) return 111;
-        manifest_out = fopen(manifest_path, "wb");
-        if (!manifest_out) return 111;
+        /* Extract into a private staging dir and rename it into place, so a concurrent first run
+           never sees (or overwrites) a half-written cache; the loser of the rename uses the winner's. */
+        char staging[4096];
+        char stage_code[4096];
+        char stage_runtime[4096];
+        char stage_assets[4096];
+        char stage_manifest[4096];
+        if (snprintf(staging, sizeof(staging), "%s.stage-%ld", tmpdir, (long)getpid()) >= (int)sizeof(staging)) return 111;
+        remove_tree(staging);
+        if (mkdir(staging, 0700) != 0) { fprintf(stderr, "pax: cannot create %s: %s\\n", staging, strerror(errno)); return 111; }
+        if (extract_roots(staging, stage_code, sizeof(stage_code), stage_runtime, sizeof(stage_runtime), stage_assets, sizeof(stage_assets)) != 0) { fprintf(stderr, "pax: cannot extract payload into %s: %s\\n", staging, strerror(errno)); remove_tree(staging); return 111; }
+        if (snprintf(stage_manifest, sizeof(stage_manifest), "%s/manifest.json", staging) >= (int)sizeof(stage_manifest)) { remove_tree(staging); return 111; }
+        manifest_out = fopen(stage_manifest, "wb");
+        if (!manifest_out) { fprintf(stderr, "pax: cannot write manifest in %s: %s\\n", staging, strerror(errno)); remove_tree(staging); return 111; }
         if (fwrite($manifest_literal, 1, strlen($manifest_literal), manifest_out) != strlen($manifest_literal)) {
             fclose(manifest_out);
+            remove_tree(staging);
             return 111;
         }
         fclose(manifest_out);
+        if (rename(staging, tmpdir) != 0) {
+            remove_tree(staging);
+            if (access(manifest_path, F_OK) != 0) {
+                /* A stale incomplete cache blocks the rename: replace it. */
+                remove_tree(tmpdir);
+                if (mkdir(staging, 0700) != 0) { fprintf(stderr, "pax: cannot create %s: %s\\n", staging, strerror(errno)); return 111; }
+                if (extract_roots(staging, stage_code, sizeof(stage_code), stage_runtime, sizeof(stage_runtime), stage_assets, sizeof(stage_assets)) != 0) { fprintf(stderr, "pax: cannot extract payload into %s: %s\\n", staging, strerror(errno)); remove_tree(staging); return 111; }
+                manifest_out = fopen(stage_manifest, "wb");
+                if (!manifest_out) { fprintf(stderr, "pax: cannot write manifest in %s: %s\\n", staging, strerror(errno)); remove_tree(staging); return 111; }
+                fwrite($manifest_literal, 1, strlen($manifest_literal), manifest_out);
+                fclose(manifest_out);
+                if (rename(staging, tmpdir) != 0) { int rename_errno = errno; remove_tree(staging); if (access(manifest_path, F_OK) != 0) { fprintf(stderr, "pax: cannot move payload into %s: %s\\n", tmpdir, strerror(rename_errno)); return 111; } }
+            }
+        }
     }
 
     if (snprintf(entrypoint, entry_size, "%s/%s", code_root, $entrypoint_logical) >= (int)entry_size) return 111;

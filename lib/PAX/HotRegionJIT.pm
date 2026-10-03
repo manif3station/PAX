@@ -1,6 +1,6 @@
 package PAX::HotRegionJIT;
 
-our $VERSION = '0.039';
+our $VERSION = '0.040';
 
 use strict;
 use warnings;

@@ -317,7 +317,8 @@ make_path($standalone_blank);
 my $standalone_input_build_json = `cd $standalone_blank && env -i PATH=/nonexistent TMPDIR=/tmp PAX_PROGRESS=0 $self_binary build --compact -o $standalone_input_binary $self_binary`;
 is($? >> 8, 0, 'self-built pax can rebuild from a standalone pax binary input');
 my $standalone_input_build = decode_json($standalone_input_build_json);
-is($standalone_input_build->{status}, 'built', 'standalone pax input rebuild reports success');
+is($standalone_input_build->{status}, 'built', 'standalone pax input rebuild reports success')
+    or diag(substr($standalone_input_build_json, 0, 2000));
 ok(-x $standalone_input_binary, 'standalone pax input rebuild writes an executable');
 my $standalone_input_help = `env -i PATH=/nonexistent TMPDIR=/tmp $standalone_input_binary help`;
 is($? >> 8, 0, 'rebuilt standalone pax binary from standalone input executes');

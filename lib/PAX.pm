@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.039';
+our $VERSION = '0.040';
 
 1;
 
