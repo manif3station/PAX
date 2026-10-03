@@ -1,3 +1,12 @@
+0.043  Sat Oct  3 20:00:00 2026
+    - Verified the binary is self-contained for the web UI: `t/dashboard_service_parity.t`
+      now runs the PAX-built dashboard inside a root that holds only the binary,
+      glibc (libc, libm) and the `/dev/null` and `/dev/urandom` nodes (no perl,
+      no Dancer2, no Starman, no shell, no /usr) and checks that the web service
+      starts, a login succeeds, bundled static assets are served and a saved
+      Ajax route runs. Needs root and chroot; skipped otherwise. Requirements on
+      a target machine are therefore just a glibc Linux with libc and libm.
+
 0.042  Sat Oct  3 19:00:00 2026
     - Fixed concurrent builds into one output directory corrupting each other:
       every build wrote its payload packages into the shared

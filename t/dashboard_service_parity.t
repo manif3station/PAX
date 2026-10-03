@@ -155,4 +155,54 @@ ok((grep { /^login username=bob&password=password123 302 .* cookie$/ } @stock), 
 is_deeply(\@bin, \@stock, 'the standalone binary answers the same HTTP conversation as the interpreter');
 ok(!IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $port, Timeout => 1), 'no service is left running');
 
+# The binary must be self-contained: run it in a root that holds nothing but the binary and libc
+# (no perl, no CPAN modules, no shell) and serve the web UI from there. Needs root and chroot.
+SKIP: {
+    skip 'bare-root check needs root and chroot', 4 if $> != 0 || !grep { -x "$_/chroot" } split /:/, $ENV{PATH};
+    my $root = "$tmp/bare";
+    make_path(map { "$root/$_" } qw(bin lib/x86_64-linux-gnu lib64 tmp etc root dev));
+    system('mknod', '-m', '666', "$root/dev/null", 'c', '1', '3');
+    system('mknod', '-m', '666', "$root/dev/urandom", 'c', '1', '9');
+    my $ok = system('cp', $binary, "$root/bin/app") == 0;
+    # Only glibc comes from the host: the launcher needs libc and its bundled perl also needs libm.
+    my %libs = map { $_ => 1 } map { m{=> (/\S+)} ? $1 : m{^\s*(/\S+)} ? $1 : () } `ldd '$binary' 2>/dev/null`, grep { m{/lib(?:m|c)\.so|ld-linux} } `ldd '$^X' 2>/dev/null`;
+    my @libs = sort keys %libs;
+    for my $lib (@libs) {
+        $lib =~ s/^\s+//;
+        my $dest = "$root$lib";
+        make_path(dirname_of($dest));
+        $ok &&= system('cp', $lib, $dest) == 0;
+    }
+    open my $pw, '>', "$root/etc/passwd" or die $!;
+    print {$pw} "root:x:0:0:root:/root:/bin/sh\n";
+    close $pw;
+    skip 'could not assemble the bare root', 4 if !$ok;
+    my $in_root = sub { return system('chroot', $root, '/bin/app', @_) };
+    local $ENV{HOME} = '/root';
+    local $ENV{PAX_PROGRESS} = 0;
+    $in_root->('init');
+    $in_root->('auth', 'add-user', 'bob', 'password123');
+    make_path("$root/root/.developer-dashboard/dashboards/ajax");
+    open my $aj, '>', "$root/root/.developer-dashboard/dashboards/ajax/hello.pl" or die $!;
+    print {$aj} "print qq{ajax-hello\\n};\n";
+    close $aj;
+    $in_root->('restart');
+    my ($up, $login, $favicon, $ajax_body) = (wait_for_port(1), undef, undef, '');
+    if ($up) {
+        $login = http('POST', '/login', Origin => "http://$host", body => 'username=bob&password=password123');
+        $favicon = http('GET', '/favicon.ico');
+        my ($session) = ($login->{cookie} // '') =~ /\A(dashboard_session=[^;]*)/;
+        $ajax_body = http('GET', '/ajax?file=hello.pl&type=text', Cookie => $session // '')->{body} if $session;
+    }
+    $in_root->('stop');
+    wait_for_port(0);
+    ok($up, 'the web service starts from a root with no perl and no CPAN modules');
+    is($login->{status}, 302, 'a login succeeds from the bare root');
+    is($favicon->{status}, 200, 'bundled static assets are served from the bare root');
+    like($ajax_body, qr/\Aajax-hello\s*\z/, 'a saved Ajax route runs from the bare root');
+}
+
+# dirname_of($path) returns the directory part of a path without loading File::Basename.
+sub dirname_of { my ($p) = @_; $p =~ s{/[^/]*\z}{}; return $p }
+
 done_testing();
