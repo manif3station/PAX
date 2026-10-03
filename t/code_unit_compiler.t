@@ -103,9 +103,9 @@ my $inline_record = JSON::PP->new->decode($inline->{bytes});
 ok((grep { ($_ // '') eq 'InlineOneLine::run' } @{ $inline_record->{unsupported_subs} // [] }) >= 1, 'inline one-line module tracks unsupported sub for residual execution');
 
 my $capture_module = $compiler->compile(
-    path => "$FindBin::Bin/../lib/PAX/Capture.pm",
+    path => "$FindBin::Bin/../lib/PAX/Benchmark.pm",
     kind => 'lib',
-    logical_path => 'lib/lib/PAX/Capture.pm',
+    logical_path => 'lib/lib/PAX/Benchmark.pm',
 );
 is($capture_module->{packaging}, 'source_payload_fallback', 'complex low-coverage modules fall back to source payloads instead of brittle hybrid PCUs');
 is($capture_module->{fallback_reason}, 'hybrid_coverage_too_low', 'source fallback records hybrid coverage reason');

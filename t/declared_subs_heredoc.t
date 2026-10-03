@@ -9,11 +9,20 @@ use PAX::CodeUnitCompiler;
 
 t/declared_subs_heredoc.t - subs declared inside here-document bodies are not declarations of the enclosing package
 
+=head1 WHY IT EXISTS
+
+The binary once defined PageRuntime::stash, hide, void, stop and params, which stock Perl does not (their text
+lives in a here-document), so C<< ->can('stash') >> answered true only in the binary.
+
 =head1 DESCRIPTION
 
 A module that generates another package from a here-document (a page sandpit, a helper script wrapper)
 contains C<sub NAME {> text that is not a sub of the module itself. The compiler must not treat those as
 declared subs, or it installs phantom subs the interpreter never defines.
+
+=head1 HOW TO RUN
+
+  prove -l t/declared_subs_heredoc.t
 
 =cut
 

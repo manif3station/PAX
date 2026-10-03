@@ -43,6 +43,9 @@ plan skip_all => 'no Developer Dashboard checkout found (set PAX_PARITY_APP)' if
 plan skip_all => 'IO::Socket::SSL is not installed' if !eval { require IO::Socket::SSL; 1 };
 plan skip_all => 'openssl is not installed' if system('openssl version >/dev/null 2>&1') != 0;
 use Fcntl qw(:flock);
+# The SSL frontend's backend listens on the default port 7890, so take that lock first (same order as the other service tests).
+open my $backend_lock, '>>', '/tmp/pax-port-7890.lock' or die "cannot open port lock: $!";
+flock($backend_lock, LOCK_EX);
 open my $port_lock, '>>', '/tmp/pax-port-7891.lock' or die "cannot open port lock: $!";
 flock($port_lock, LOCK_EX);
 my $port = 7891;

@@ -1,3 +1,42 @@
+0.046  Sat Oct  3 23:59:00 2026
+    - Goal "everything working as stock perl": every one of the 359
+      handler-compiled dashboard subs now executes under a stock-vs-binary
+      differential (was 213 of 364), and ~30 handler/source drifts found that
+      way are fixed:
+      * PageRuntime/PageDocument/Folder/File/FileRegistry/EnvAudit/EnvLoader:
+        `_declared_subs` no longer counts `sub name` text inside heredocs (the
+        binary used to define phantom subs such as PageRuntime::stash); page
+        code header keeps `use ...DataHelper qw(j je)`; HEAD sections and numeric
+        CODE ordering; AUTOLOAD handlers get `$AUTOLOAD` and are installed
+        eagerly; resolvers use the source's accessor whitelist; Folder::cd
+        restores cwd on die; FileRegistry::named_files flattens entries; die
+        messages keep their trailing newline.
+      * Config/DockerCompose/Auth: `web_settings` keeps ssl_validity_days;
+        `_expand_env_path` is a single pass; `_service_toggle_root` and the
+        enable/disable path-escape guard follow the source; the login page text
+        is taken from the real heredoc.
+      * CLI/Skills/Update/Action: progress colours and detail lines, `which`
+        hook files and entry command, suggest `__init__`, skill bookmark
+        routes.json exclusion, skill route_response, UpdateManager order and
+        `local $?`, encoded-action guard, autoflush no longer leaks into
+        in-process helpers.
+      * Web::Server SSL: plain-HTTP redirect on the SSL port, signal handling
+        sets the shutdown flag, redirect location call, `psgi_app` keeps `paths`.
+      * `build_paths_registry` no longer adds a `cwd` the source does not pass.
+    - Uncaught-die exit codes now match stock (`which`, `skills usage`, ...):
+      the require wrapper leaves errno as stock perl would instead of
+      clobbering it with loader bookkeeping.
+    - Residual (source-fallback) subs keep their original line numbers in
+      error messages (`#line` per sub).
+    - Added `t/dashboard_unit_parity.t` with 22 sub-level differential
+      fixtures in `t/fixtures/diff/`, `t/dashboard_ssl_parity.t` (HTTPS,
+      redirects, certificate generation, signals), `t/declared_subs_heredoc.t`,
+      and `tools/trace_build.sh` (instrumented build that records which
+      handlers a scenario reaches).
+    - Known limit: errors raised inside handler-compiled subs still read
+      `at PAX::StandaloneRuntime op <name> line N.` instead of the app's file
+      and line; the handler text is a rewrite shared by every sub of an op.
+
 0.045  Sat Oct  3 23:00:00 2026
     - Added `t/docker_distros.t`: runs the PAX-built dashboard in real
       containers (an image with nothing in it, Alpine/musl, Debian bookworm,

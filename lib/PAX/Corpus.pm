@@ -1,6 +1,6 @@
 package PAX::Corpus;
 
-our $VERSION = '0.045';
+our $VERSION = '0.046';
 
 use strict;
 use warnings;

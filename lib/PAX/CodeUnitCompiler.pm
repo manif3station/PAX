@@ -1,6 +1,6 @@
 package PAX::CodeUnitCompiler;
 
-our $VERSION = '0.045';
+our $VERSION = '0.046';
 
 use strict;
 use warnings;
@@ -1837,6 +1837,7 @@ sub _simple_transform_record {
             name => $short_name,
             full_name => $full_name,
             op => 'build_paths_registry',
+            with_cwd => ($body =~ /\bcwd\s*=>\s*(?:Cwd::)?cwd\(\)/ ? 1 : 0),
             prototype => $prototype,
         };
     }
@@ -12716,8 +12717,8 @@ sub _compile_dispatch_unknown_action {
 # Output: array reference of accessor names, or undef when the source has no such whitelist.
 sub _resolvable_accessors_from_source {
     my ($source) = @_;
-    return if !defined $source;
-    return if $source !~ /my\s+%RESOLVABLE_ACCESSOR\s*=\s*map\s*\{\s*\$_\s*=>\s*1\s*\}\s*qw\(([^)]*)\)/;
+    return undef if !defined $source;   # explicit undef: the callers sit inside hash constructors
+    return undef if $source !~ /my\s+%RESOLVABLE_ACCESSOR\s*=\s*map\s*\{\s*\$_\s*=>\s*1\s*\}\s*qw\(([^)]*)\)/;
     my @names = split ' ', $1;
     return \@names;
 }

@@ -2070,9 +2070,11 @@ my $table =
     "pkgcheck" => 0,
     "tail" => "",
     "terms" => [
+      "return <<\"HTML\";",
       "Developer Dashboard Login",
       "Helper access requires login",
-      "action=\"/login\""
+      "action=\"/login\"",
+      "HTML"
     ]
   },
   {

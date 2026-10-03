@@ -27,6 +27,7 @@ for my $e (@err) { my $r = eval { $hk->_only_missing_tree_errors($e) }; print "m
 wr("$home/bq_file", 'x'); age("$home/bq_file", 100);
 for my $a (0, 50, 99, 100, 101, 1000, '0') { print "old_enough($a)=", $hk->_path_is_old_enough("$home/bq_file", $a), "\n" }
 print "old_enough_missing=", $hk->_path_is_old_enough("$home/bq_nosuch", 0), "\n";
+age($home, 10);   # a directory that was just modified is racy at second granularity
 print "old_enough_dir=", $hk->_path_is_old_enough($home, 0), "\n";
 # _read_state_metadata
 make_path("$home/md1", "$home/md2", "$home/md3", "$home/md4", "$home/md5", "$home/md0");

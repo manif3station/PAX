@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.045';
+our $VERSION = '0.046';
 
 use strict;
 use warnings;
@@ -282,6 +282,11 @@ sub _install_require_hook {
     no warnings 'redefine';
     *CORE::GLOBAL::require = sub {
         my ($target) = @_;
+        # An uncaught die exits with errno, so the loader must leave it as stock perl would: a module served from
+        # the compiled payload involves no file probing (errno stays as it was before the call), while a real
+        # @INC search keeps whatever that search left. Either way the loader's own bookkeeping must not change it.
+        my $errno_before = $! + 0;
+        my $served_from_payload = 0;
         my $rv = eval {
             if (!defined $target) {
                 die "require target missing\n";
@@ -292,12 +297,15 @@ sub _install_require_hook {
             my $mapped = _legacy_require_path_to_app_require_path($target);
             $target = $mapped if defined $mapped;
             if (my $loaded = _load_compiled_require($target)) {
+                $served_from_payload = 1;
                 return $loaded;
             }
             return CORE::require($target);
         };
         die $@ if $@;
+        my $errno_final = $served_from_payload ? $errno_before : $! + 0;
         _install_pending_wrappers();
+        $! = $errno_final;
         return $rv;
     };
     $state->{require_hook_installed} = 1;
@@ -621,8 +629,11 @@ sub _run_standalone_managed_helper {
     local $0 = $path if defined $path && $path ne '';
     # Stock perl execs the helper as a fresh process: the switchboard's STDOUT/STDERR autoflush must not leak into it.
     require IO::Handle;
-    STDOUT->autoflush(0);
-    STDERR->autoflush(0);
+    {
+        local $!;    # the isatty probe behind autoflush must not leak an errno into the helper's die exit status
+        STDOUT->autoflush(0);
+        STDERR->autoflush(0);
+    }
     my $wrapped = "package main;\n#line 1 \"$path\"\n" . $source;
     # Stored source is raw file bytes; keep it a byte string so the source's own `use utf8` decodes literals once.
     utf8::downgrade($wrapped, 1);
@@ -2686,12 +2697,16 @@ __DATA__
         return _install_sub_impl($package, $name, $sub->{prototype}, $impl);
 #@@PAX_OP build_paths_registry
         $impl = sub {
-            require Cwd;
             my $home = $ENV{HOME} || '';
             my @roots = grep { defined && -d } map { "$home/$_" } qw(projects src work);
+            my @cwd;
+            if ($sub->{with_cwd}) {
+                require Cwd;
+                @cwd = (cwd => Cwd::cwd());
+            }
             return __PAX_RUNTIME_LEGACY_NAMESPACE__::PathRegistry->new(
                 home => $home,
-                cwd => Cwd::cwd(),
+                @cwd,
                 workspace_roots => \@roots,
                 project_roots => \@roots,
             );

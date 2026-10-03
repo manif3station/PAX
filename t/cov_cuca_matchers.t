@@ -674,7 +674,7 @@ __DATA__
           paths  => $paths,
       }, $class;
   }
-#@@ Developer::Dashboard::DockerCompose _expand_env_path docker_compose_expand_env_path 12 w13 p1
+#@@ Developer::Dashboard::DockerCompose _expand_env_path docker_compose_expand_env_path 10,12 w13 p1
   sub _expand_env_path {
       my ( $self, $path ) = @_;
       return $path if !defined $path || $path eq '';
@@ -841,7 +841,7 @@ __DATA__
   
       return @services;
   }
-#@@ Developer::Dashboard::DockerCompose disable_service docker_compose_disable_service 3,12,19 w10 p1
+#@@ Developer::Dashboard::DockerCompose disable_service docker_compose_disable_service 3,7,12,19 w15 p1
   sub disable_service {
       my ( $self, %args ) = @_;
       my $service = $args{service} || die "Usage: dashboard docker disable <service>\n";
@@ -863,7 +863,7 @@ __DATA__
           service  => $service,
       };
   }
-#@@ Developer::Dashboard::DockerCompose enable_service docker_compose_enable_service 3,9,15 w13 p1
+#@@ Developer::Dashboard::DockerCompose enable_service docker_compose_enable_service 3,7,9,15 w17 p1
   sub enable_service {
       my ( $self, %args ) = @_;
       my $service = $args{service} || die "Usage: dashboard docker enable <service>\n";
