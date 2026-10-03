@@ -1,3 +1,23 @@
+0.044  Sat Oct  3 22:00:00 2026
+    - Standalone binaries are now fully independent of the machine they run
+      on (goal: "compile the binary 100% independent"). glibc (libc, libm,
+      libcrypt, ...) and its dynamic loader are bundled into the payload; the
+      launcher is linked statically (`cc -static`, falling back to a dynamic link
+      when libc.a is missing); the bundled perl is started through the bundled
+      loader with `--library-path` instead of `LD_LIBRARY_PATH`, so host programs
+      the app spawns never see the bundled libc. Child processes that run `$^X`
+      go through `<cache>/shim/perl`, a symlink back to the launcher, which then
+      behaves as perl. A binary now runs in a root that contains nothing but the
+      binary and the /dev nodes (no libc, no libm, no perl, no shell).
+      `PAX_HERMETIC=0` restores the previous host-glibc behavior.
+    - A hermetic binary that builds another binary (self-hosted `pax build`)
+      bundles the real perl it runs (`PAX_STANDALONE_REAL_PERL`), not the
+      launcher shim that `$^X` points at.
+    - Added `t/standalone_hermetic.t`; the dashboard web-UI check in
+      `t/dashboard_service_parity.t` now runs in a library-free root.
+    - Measured on the dashboard: `version` 3 ms, `help` 65 ms, `ps1` 97 ms
+      (stock Perl 84 / 82 / 142 ms).
+
 0.043  Sat Oct  3 20:00:00 2026
     - Verified the binary is self-contained for the web UI: `t/dashboard_service_parity.t`
       now runs the PAX-built dashboard inside a root that holds only the binary,

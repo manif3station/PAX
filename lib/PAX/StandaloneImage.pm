@@ -1,6 +1,6 @@
 package PAX::StandaloneImage;
 
-our $VERSION = '0.043';
+our $VERSION = '0.044';
 
 use strict;
 use warnings;
@@ -235,6 +235,7 @@ sub build {
             source_tree_required => JSON::PP::false,
             perl_binary => $runtime->{perl_binary},
             perl_binary_logical_path => $runtime->{perl_binary_logical_path},
+            loader_logical_path => $runtime->{loader_logical_path},
             bundled_inc_roots => $runtime->{bundled_inc_roots},
             runtime_hash => $runtime->{runtime_hash},
         },
@@ -1473,19 +1474,15 @@ sub _compile_launcher {
         die "objcopy assets.pkg failed" if ($? >> 8) != 0;
         system($objcopy, '--input', 'binary', '--output', 'elf64-x86-64', '--binary-architecture', 'i386:x86-64', 'native.pkg', 'native.pkg.o');
         die "objcopy native.pkg failed" if ($? >> 8) != 0;
-        system(
-            $cc,
-            '-O2',
-            '-Wl,-z,noexecstack',
-            '-o',
-            $manifest->{output_path},
-            $source_path,
-            'code.pkg.o',
-            'runtime.pkg.o',
-            'assets.pkg.o',
-            'native.pkg.o',
-        );
-        die "launcher compile failed" if ($? >> 8) != 0;
+        # Statically linked when the toolchain can (glibc's libc.a), so the launcher itself needs
+        # nothing from the target machine; otherwise fall back to a dynamic link.
+        my @link = ('-O2', '-Wl,-z,noexecstack', '-o', $manifest->{output_path}, $source_path,
+            'code.pkg.o', 'runtime.pkg.o', 'assets.pkg.o', 'native.pkg.o');
+        my $static_ok = ($ENV{PAX_HERMETIC} // 1) ne '0' ? do { system($cc, '-static', @link); ($? >> 8) == 0 } : 0;
+        if (!$static_ok) {
+            system($cc, @link);
+            die "launcher compile failed" if ($? >> 8) != 0;
+        }
         1;
     };
     my $build_error = $@;
@@ -1526,6 +1523,7 @@ sub _launcher_source {
     my $native_payload_count = scalar @{ $manifest->{native_payloads} // [] };
     my $runtime_mode = _c_string($manifest->{runtime}{mode} // 'host_perl');
     my $runtime_perl = _c_string($manifest->{runtime}{perl_binary_logical_path} // '');
+    my $runtime_loader = _c_string($manifest->{runtime}{loader_logical_path} // '');
     my $native_package_present = $native_payload_count ? '1' : '0';
     my $runtime_inc_roots = _string_array_c('pax_runtime_inc_roots', $manifest->{runtime}{bundled_inc_roots} // []);
     my $code_lib_roots = _string_array_c('pax_code_lib_roots', $manifest->{lib_dirs} // []);
@@ -1724,6 +1722,60 @@ static void remove_tree(const char *path) {
     nftw(path, remove_tree_entry, 16, FTW_DEPTH | FTW_PHYS);
 }
 
+/* Hermetic mode: perl runs through the bundled dynamic loader against the bundled glibc, so the
+   target machine only needs a kernel. These are filled in by extract_runtime. */
+static char pax_loader_exec[4096];
+static char pax_lib_dir[4096];
+static char pax_shim_path[4096];
+static const char *pax_argv0 = "";
+
+static int pax_is_hermetic(void) {
+    return pax_loader_exec[0] != 0;
+}
+
+/* Finds this executable's own path without relying on /proc, which a minimal root may lack. */
+static int pax_self_path(char *out, size_t size) {
+    ssize_t n = readlink("/proc/self/exe", out, size - 1);
+    if (n > 0) { out[n] = 0; return 0; }
+    if (strchr(pax_argv0, '/')) {
+        char *rp = realpath(pax_argv0, NULL);
+        if (rp && strlen(rp) < size) { strcpy(out, rp); free(rp); return 0; }
+        free(rp);
+        return -1;
+    }
+    const char *path = getenv("PATH");
+    if (!path) return -1;
+    char *dup = strdup(path);
+    char *save = NULL;
+    for (char *dir = strtok_r(dup, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
+        char cand[4096];
+        if (snprintf(cand, sizeof(cand), "%s/%s", *dir ? dir : ".", pax_argv0) >= (int)sizeof(cand)) continue;
+        if (access(cand, X_OK) == 0) {
+            char *rp = realpath(cand, NULL);
+            if (rp && strlen(rp) < size) { strcpy(out, rp); free(rp); free(dup); return 0; }
+            free(rp);
+        }
+    }
+    free(dup);
+    return -1;
+}
+
+/* Creates <cache>/shim/perl, a symlink to this executable: child processes that run $^X land back in
+   the launcher, which then starts the bundled perl through the bundled loader. */
+static void pax_make_shim(const char *tmpdir) {
+    char dir[4096];
+    char self[4096];
+    char current[4096];
+    if (snprintf(dir, sizeof(dir), "%s/shim", tmpdir) >= (int)sizeof(dir)) return;
+    if (snprintf(pax_shim_path, sizeof(pax_shim_path), "%s/perl", dir) >= (int)sizeof(pax_shim_path)) { pax_shim_path[0] = 0; return; }
+    if (pax_self_path(self, sizeof(self)) != 0) { pax_shim_path[0] = 0; return; }
+    mkdir(dir, 0700);
+    ssize_t n = readlink(pax_shim_path, current, sizeof(current) - 1);
+    if (n > 0) { current[n] = 0; if (strcmp(current, self) == 0) return; }
+    unlink(pax_shim_path);
+    if (symlink(self, pax_shim_path) != 0 && errno != EEXIST) pax_shim_path[0] = 0;
+}
+
 static int extract_runtime(char *tmpdir, size_t size, char *entrypoint, size_t entry_size, char *perl_exec, size_t perl_size, char *libpath, size_t lib_size, char *asset_root, size_t asset_size) {
     const char *base = getenv("TMPDIR");
     if (!base || !*base) base = "/tmp";
@@ -1779,6 +1831,12 @@ static int extract_runtime(char *tmpdir, size_t size, char *entrypoint, size_t e
     if (strcmp($runtime_mode, "bundled_perl") == 0 && strlen($runtime_perl) > 0) {
         if (snprintf(perl_exec, perl_size, "%s/%s", runtime_root, $runtime_perl) >= (int)perl_size) return 111;
         chmod(perl_exec, 0700);
+        if (strlen($runtime_loader) > 0) {
+            if (snprintf(pax_loader_exec, sizeof(pax_loader_exec), "%s/%s", runtime_root, $runtime_loader) >= (int)sizeof(pax_loader_exec)) return 111;
+            chmod(pax_loader_exec, 0700);
+            snprintf(pax_lib_dir, sizeof(pax_lib_dir), "%s", runtime_lib_root);
+            pax_make_shim(tmpdir);
+        }
     } else {
         if (snprintf(perl_exec, perl_size, "%s", "perl") >= (int)perl_size) return 111;
     }
@@ -1797,7 +1855,7 @@ static int extract_runtime(char *tmpdir, size_t size, char *entrypoint, size_t e
     setenv("PAX_EMBEDDED_ASSET_ROOT", asset_root, 1);
     setenv("PAX_STANDALONE_TMPDIR", tmpdir, 1);
     setenv("PAX_STANDALONE_MANIFEST_PATH", manifest_path, 1);
-    if (access(runtime_lib_root, F_OK) == 0) {
+    if (!pax_is_hermetic() && access(runtime_lib_root, F_OK) == 0) {
         const char *old_ld = getenv("LD_LIBRARY_PATH");
         char merged_ld[16384];
         if (old_ld && *old_ld) snprintf(merged_ld, sizeof(merged_ld), "%s:%s", runtime_lib_root, old_ld);
@@ -1831,6 +1889,7 @@ int main(int argc, char **argv) {
     char perl_exec[4096];
     char libpath[8192];
     char asset_root[4096];
+    pax_argv0 = (argc > 0 && argv[0]) ? argv[0] : "";
     if (extract_runtime(tmpdir, sizeof(tmpdir), entrypoint, sizeof(entrypoint), perl_exec, sizeof(perl_exec), libpath, sizeof(libpath), asset_root, sizeof(asset_root)) != 0) {
         fprintf(stderr, "failed to extract standalone payload\\n");
         return 111;
@@ -1845,6 +1904,34 @@ int main(int argc, char **argv) {
         if (old && *old) snprintf(merged, sizeof(merged), "%s:%s", libpath, old);
         else snprintf(merged, sizeof(merged), "%s", libpath);
         setenv("PERL5LIB", merged, 1);
+    }
+
+    if (pax_is_hermetic()) {
+        const char *base = strrchr(pax_argv0, '/');
+        base = base ? base + 1 : pax_argv0;
+        int as_perl = strcmp(base, "perl") == 0;
+        char **hnext = calloc((size_t)argc + 9, sizeof(char *));
+        int k = 0;
+        if (!hnext) return 111;
+        hnext[k++] = pax_loader_exec;
+        hnext[k++] = "--library-path";
+        hnext[k++] = pax_lib_dir;
+        hnext[k++] = perl_exec;
+        if (as_perl) {
+            /* Invoked through the shim as $^X: behave exactly like perl. */
+            for (int i = 1; i < argc; i++) hnext[k++] = argv[i];
+        } else {
+            if (pax_shim_path[0]) setenv("PAX_STANDALONE_PERL_SHIM", pax_shim_path, 1);
+            setenv("PAX_STANDALONE_REAL_PERL", perl_exec, 1);
+            hnext[k++] = "-MPAX::StandaloneRuntime";
+            hnext[k++] = "-e";
+            hnext[k++] = $bootstrap_code;
+            hnext[k++] = entrypoint;
+            for (int i = 1; i < argc; i++) hnext[k++] = argv[i];
+        }
+        execv(pax_loader_exec, hnext);
+        perror("execv bundled loader");
+        return 111;
     }
 
     char **next = calloc((size_t)argc + 5, sizeof(char *));
@@ -2069,7 +2156,8 @@ sub _runtime_manifest {
 
     my $perl;
     if ($mode eq 'bundled_perl') {
-        $perl = _real_path($^X);
+        # Inside a hermetic binary $^X is the launcher shim; the perl to bundle is the real one it runs.
+        $perl = _real_path(($ENV{PAX_STANDALONE_REAL_PERL} // '') ne '' && -x $ENV{PAX_STANDALONE_REAL_PERL} ? $ENV{PAX_STANDALONE_REAL_PERL} : $^X);
         my @inc_dirs = _runtime_inc_dirs($args{exclude_dirs} // []);
         push @payloads, _file_payload($perl, 'runtime_binary', 'bin/perl');
         my @selected = _runtime_selected_files(
@@ -2153,6 +2241,7 @@ sub _runtime_manifest {
         bundled_inc_roots => \@bundled_inc_roots,
         perl_binary => $perl,
         perl_binary_logical_path => ($mode eq 'bundled_perl' ? 'bin/perl' : undef),
+        loader_logical_path => scalar(do { my ($loader) = map { $_->{logical_path} } grep { $_->{logical_path} =~ m{\Alib/ld-linux[^/]*\.so(?:\.\d+)*\z} } @payloads; $loader }),
         runtime_hash => $sha->hexdigest,
     };
 }
@@ -2314,6 +2403,9 @@ sub _runtime_system_lib_exempt {
     return 1 if !$path;
     my $base = File::Basename::basename($path);
     return 1 if $base =~ /\A(?:linux-vdso\.so(?:\.\d+)*)\z/;
+    # Hermetic by default: glibc and its dynamic loader are bundled too, so the binary needs nothing
+    # from the target machine but its kernel. PAX_HERMETIC=0 restores the host-glibc behavior.
+    return 0 if ($ENV{PAX_HERMETIC} // 1) ne '0';
     return 1 if $base =~ /\Ald-linux[^\/]*\.so(?:\.\d+)*\z/;
     return 1 if $base =~ /\Alib(?:c|m|pthread|dl|rt|util|resolv|nsl|nss_(?:dns|files))\.so(?:\.\d+)*\z/;
     return 0;

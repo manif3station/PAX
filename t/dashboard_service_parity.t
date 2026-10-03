@@ -155,24 +155,17 @@ ok((grep { /^login username=bob&password=password123 302 .* cookie$/ } @stock), 
 is_deeply(\@bin, \@stock, 'the standalone binary answers the same HTTP conversation as the interpreter');
 ok(!IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $port, Timeout => 1), 'no service is left running');
 
-# The binary must be self-contained: run it in a root that holds nothing but the binary and libc
-# (no perl, no CPAN modules, no shell) and serve the web UI from there. Needs root and chroot.
+# The binary must be fully self-contained: run it in a root that holds nothing but the binary and
+# the /dev nodes every kernel provides (no perl, no CPAN modules, no shell, no libc) and serve the
+# web UI from there. Needs root and chroot.
 SKIP: {
     skip 'bare-root check needs root and chroot', 4 if $> != 0 || !grep { -x "$_/chroot" } split /:/, $ENV{PATH};
     my $root = "$tmp/bare";
-    make_path(map { "$root/$_" } qw(bin lib/x86_64-linux-gnu lib64 tmp etc root dev));
+    make_path(map { "$root/$_" } qw(bin tmp etc root dev));
     system('mknod', '-m', '666', "$root/dev/null", 'c', '1', '3');
     system('mknod', '-m', '666', "$root/dev/urandom", 'c', '1', '9');
     my $ok = system('cp', $binary, "$root/bin/app") == 0;
-    # Only glibc comes from the host: the launcher needs libc and its bundled perl also needs libm.
-    my %libs = map { $_ => 1 } map { m{=> (/\S+)} ? $1 : m{^\s*(/\S+)} ? $1 : () } `ldd '$binary' 2>/dev/null`, grep { m{/lib(?:m|c)\.so|ld-linux} } `ldd '$^X' 2>/dev/null`;
-    my @libs = sort keys %libs;
-    for my $lib (@libs) {
-        $lib =~ s/^\s+//;
-        my $dest = "$root$lib";
-        make_path(dirname_of($dest));
-        $ok &&= system('cp', $lib, $dest) == 0;
-    }
+    # No libc, no libm, no loader: the binary must carry everything.
     open my $pw, '>', "$root/etc/passwd" or die $!;
     print {$pw} "root:x:0:0:root:/root:/bin/sh\n";
     close $pw;
@@ -196,7 +189,7 @@ SKIP: {
     }
     $in_root->('stop');
     wait_for_port(0);
-    ok($up, 'the web service starts from a root with no perl and no CPAN modules');
+    ok($up, 'the web service starts from a root with no perl, no CPAN modules and no libc');
     is($login->{status}, 302, 'a login succeeds from the bare root');
     is($favicon->{status}, 200, 'bundled static assets are served from the bare root');
     like($ajax_body, qr/\Aajax-hello\s*\z/, 'a saved Ajax route runs from the bare root');

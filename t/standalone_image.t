@@ -177,6 +177,7 @@ close $fake_readelf_fh;
 chmod 0755, $fake_readelf;
 {
     local $ENV{PATH} = join(':', $fake_ldd_root, ($ENV{PATH} // '/usr/bin:/bin'));
+    local $ENV{PAX_HERMETIC} = 0;   # the fixture's exempt system libs are only skipped when not hermetic
     my @closure = PAX::StandaloneImage::_shared_lib_dependency_closure($fake_xs);
     is_deeply(\@closure, [$fake_dep_real], 'shared library closure includes non-system XS dependency and skips exempt system libs');
 }

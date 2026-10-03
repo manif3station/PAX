@@ -1,6 +1,6 @@
 package PAX::StandaloneRuntime;
 
-our $VERSION = '0.043';
+our $VERSION = '0.044';
 
 use strict;
 use warnings;
@@ -96,6 +96,10 @@ sub _default_framework_locations {
 sub run {
     my ($class, %args) = @_;
     my $entrypoint = $args{entrypoint} // shift(@ARGV);
+    # Hermetic binaries: child processes that run $^X must come back through the launcher (which starts
+    # the bundled perl on the bundled glibc), because the bundled perl cannot run on its own without
+    # the host's dynamic loader.
+    $^X = $ENV{PAX_STANDALONE_PERL_SHIM} if defined $ENV{PAX_STANDALONE_PERL_SHIM} && $ENV{PAX_STANDALONE_PERL_SHIM} ne '';
     _state();
     if (!defined $entrypoint || !_entrypoint_looks_valid($entrypoint)) {
         my $fallback = _resolve_entrypoint_from_manifest($entrypoint);

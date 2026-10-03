@@ -82,8 +82,13 @@ ok(!call('_looks_like_shared_object', 'a/b.pm'), 'module is not an object');
 ok(!call('_looks_like_shared_object', ''), 'empty path');
 ok(call('_runtime_system_lib_exempt', ''), 'empty path exempt');
 ok(call('_runtime_system_lib_exempt', '/x/linux-vdso.so.1'), 'vdso exempt');
-ok(call('_runtime_system_lib_exempt', '/x/ld-linux-x86-64.so.2'), 'loader exempt');
-ok(call('_runtime_system_lib_exempt', '/x/libc.so.6'), 'libc exempt');
+ok(!call('_runtime_system_lib_exempt', '/x/ld-linux-x86-64.so.2'), 'loader is bundled by default (hermetic)');
+ok(!call('_runtime_system_lib_exempt', '/x/libc.so.6'), 'libc is bundled by default (hermetic)');
+{
+    local $ENV{PAX_HERMETIC} = 0;
+    ok(call('_runtime_system_lib_exempt', '/x/ld-linux-x86-64.so.2'), 'loader exempt when PAX_HERMETIC=0');
+    ok(call('_runtime_system_lib_exempt', '/x/libc.so.6'), 'libc exempt when PAX_HERMETIC=0');
+}
 ok(!call('_runtime_system_lib_exempt', '/x/libfoo.so.1'), 'other libs are bundled');
 ok(!call('_runtime_system_lib_exempt', '/x/libcrypt.so.1'), 'libcrypt is bundled: a minimal container has no copy');
 ok(!call('_runtime_system_lib_exempt', '/x/libgcc_s.so.1'), 'libgcc_s is bundled: a minimal container has no copy');
@@ -167,8 +172,10 @@ SH
         "$T/ld/C.so" => [],
     );
     local *PAX::StandaloneImage::_linked_shared_lib_paths = sub { return @{ $graph{ Cwd::abs_path($_[0]) || $_[0] } || [] } };
-    my @closure = call('_shared_lib_dependency_closure', undef, '', '/nonexistent/qq/x', "$T/ld/A.so", "$T/ld/A.so");
-    is_deeply(\@closure, [ map { Cwd::abs_path("$T/ld/$_") } qw(A.so B.so C.so) ], 'dependency closure is transitive and exempts system libs');
+    my @closure = do { local $ENV{PAX_HERMETIC} = 0; call('_shared_lib_dependency_closure', undef, '', '/nonexistent/qq/x', "$T/ld/A.so", "$T/ld/A.so") };
+    is_deeply(\@closure, [ map { Cwd::abs_path("$T/ld/$_") } qw(A.so B.so C.so) ], 'dependency closure is transitive and exempts system libs when not hermetic');
+    my @hermetic = call('_shared_lib_dependency_closure', undef, '', '/nonexistent/qq/x', "$T/ld/A.so", "$T/ld/A.so");
+    is_deeply(\@hermetic, [ map { Cwd::abs_path("$T/ld/$_") } qw(A.so B.so C.so libc.so.6) ], 'hermetic closure also bundles libc');
     is_deeply([ call('_shared_lib_dependency_closure') ], [], 'empty closure');
 }
 

@@ -65,6 +65,7 @@ ATDD_TESTS = \
 	t/app_image.t \
 	t/standalone_image.t \
 	t/standalone_cache_race.t \
+	t/standalone_hermetic.t \
 	t/dashboard_service_parity.t \
 	t/dashboard_parity.t \
 	t/blank_container.t

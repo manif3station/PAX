@@ -3,7 +3,7 @@ package PAX;
 use strict;
 use warnings;
 
-our $VERSION = '0.043';
+our $VERSION = '0.044';
 
 1;
 
@@ -210,7 +210,7 @@ Common CLI switches include:
 
 =item * C<--runtime-mode>
 
-Runtime strategy, typically C<bundled_perl> or C<host_perl>. C<bundled_perl> (the default) is portable: the binary carries perl, the pure-Perl and XS modules, core pragmas and the non-glibc shared libraries, so the target machine needs only the kernel and glibc.
+Runtime strategy, typically C<bundled_perl> or C<host_perl>. C<bundled_perl> (the default) is portable: the binary carries perl, the pure-Perl and XS modules, core pragmas and every shared library including glibc and its dynamic loader (the launcher itself is linked statically), so the binary is fully independent: the target machine needs only a Linux kernel of the same CPU architecture. C<PAX_HERMETIC=0> falls back to the host's glibc.
 
 =item * C<--compact>
 
@@ -762,10 +762,11 @@ selective by supported semantic pattern.
 =item * Bundled runtime executables are larger than wrappers because they carry
 runtime payloads needed to run without the source tree.
 
-=item * Bundled-perl binaries are validated for builder and runtime
-environments from the same libc family; arbitrary host-built cross-distro
-portability is not a release guarantee, so multi-stage Docker deployment
-should build inside the target container family.
+=item * Bundled-perl binaries carry their own glibc and loader and are linked
+statically, so they run on any Linux of the same CPU architecture (verified in
+a root that contains only the binary). They are not portable across CPU
+architectures, and a kernel older than the bundled glibc supports (3.2 for
+glibc 2.39) cannot run them.
 
 =item * Docker validation requires local Docker access.
 

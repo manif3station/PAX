@@ -180,7 +180,7 @@ Common options:
 - `--asset`: individual asset file to embed; repeatable.
 - `--asset-dir`: asset directory to embed recursively; repeatable.
 - `--output` / `-o`: executable output path.
-- `--runtime-mode`: runtime strategy, typically `bundled_perl` or `host_perl`. `bundled_perl` (the default) is portable: the binary carries perl, the pure-Perl and XS modules, core pragmas and the non-glibc shared libraries, so the target machine needs only the kernel and glibc.
+- `--runtime-mode`: runtime strategy, typically `bundled_perl` or `host_perl`. `bundled_perl` (the default) is portable: the binary carries perl, the pure-Perl and XS modules, core pragmas and every shared library including glibc and its dynamic loader (the launcher itself is linked statically), so the binary is fully independent: the target machine needs only a Linux kernel of the same CPU architecture. `PAX_HERMETIC=0` falls back to the host's glibc.
 - `--compact`: compact JSON build output.
 
 ## `paxfile.yml`
@@ -621,10 +621,11 @@ public facade.
   selective by supported semantic pattern.
 - Bundled runtime artifacts are larger than source-only wrappers because they
   include enough Perl/runtime payload to run without the source tree.
-- Bundled-perl binaries are validated for builder and runtime environments from
-  the same libc family; arbitrary host-built cross-distro portability is not a
-  release guarantee, so build inside the target container family for
-  multi-stage Docker deployment.
+- Bundled-perl binaries carry their own glibc and loader and are linked
+  statically, so they run on any Linux of the same CPU architecture (verified in
+  a root that contains only the binary). They are not portable across CPU
+  architectures, and a kernel older than the bundled glibc supports (3.2 for
+  glibc 2.39) cannot run them.
 - Docker validation requires a local Docker daemon and build access.
 
 ## FAQ
