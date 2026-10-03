@@ -115,6 +115,7 @@ sub _skip_tree {
     return 1 if $path =~ m{\APAX-\d};
     return 1 if $path =~ m{\ADD Source Code(?:/|\z)};
     return 1 if $path =~ m{\At/tmp};
+    return 1 if $path =~ m{\At/fixtures/diff(?:/|\z)};   # plain differential scripts run as page code; documented by t/dashboard_unit_parity.t
     return 1 if $path =~ m{\A(?:cover_db|projects|project|examples|pax-webapp)(?:/|\z)};
     return 0;
 }
