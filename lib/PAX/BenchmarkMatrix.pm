@@ -1,6 +1,6 @@
 package PAX::BenchmarkMatrix;
 
-our $VERSION = '0.044';
+our $VERSION = '0.045';
 
 use strict;
 use warnings;

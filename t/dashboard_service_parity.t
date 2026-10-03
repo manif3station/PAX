@@ -37,6 +37,10 @@ when a check fails. Skips without the application checkout, its dependencies or 
 
 my $app = $ENV{PAX_PARITY_APP} // abs_path("$FindBin::Bin/../../developer-dashboard") // '';
 plan skip_all => 'no Developer Dashboard checkout found (set PAX_PARITY_APP)' if !$app || !-f "$app/bin/dashboard";
+# Several tests use the dashboard's fixed port; serialize them across parallel `prove -j` workers.
+use Fcntl qw(:flock);
+open my $port_lock, '>>', '/tmp/pax-port-7890.lock' or die "cannot open port lock: $!";
+flock($port_lock, LOCK_EX);
 my $port = 7890;
 plan skip_all => "port $port is already in use" if IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $port, Timeout => 1);
 

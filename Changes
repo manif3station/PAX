@@ -1,3 +1,12 @@
+0.045  Sat Oct  3 23:00:00 2026
+    - Added `t/docker_distros.t`: runs the PAX-built dashboard in real
+      containers (an image with nothing in it, Alpine/musl, Debian bookworm,
+      plus any in `PAX_DOCKER_IMAGES`) and checks login, a bundled static
+      asset, an authenticated route and a saved Ajax route. Also verified by
+      hand on Ubuntu 18.04 and Fedora 40. Skips without a Docker daemon.
+    - `t/docker_distros.t` and `t/dashboard_service_parity.t` serialize on a
+      lock file because both use the dashboard's fixed port 7890.
+
 0.044  Sat Oct  3 22:00:00 2026
     - Standalone binaries are now fully independent of the machine they run
       on (goal: "compile the binary 100% independent"). glibc (libc, libm,

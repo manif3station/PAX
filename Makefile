@@ -66,6 +66,7 @@ ATDD_TESTS = \
 	t/standalone_image.t \
 	t/standalone_cache_race.t \
 	t/standalone_hermetic.t \
+	t/docker_distros.t \
 	t/dashboard_service_parity.t \
 	t/dashboard_parity.t \
 	t/blank_container.t
