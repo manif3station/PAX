@@ -69,6 +69,7 @@ ATDD_TESTS = \
 	t/docker_distros.t \
 	t/dashboard_service_parity.t \
 	t/dashboard_parity.t \
+	t/dashboard_unit_parity.t \
 	t/blank_container.t
 
 .PHONY: test tdd-gate bdd-gate atdd-gate qa-gate all-gates build run docker-build docker-test docker-shell docker-build-app docker-run cpan-clean cpan-reset cpan-dist cpan-build cpan-release pause-release-tag cpan-sync-versions cpan-bump-version cpan-auto-bump version-gate version-history-gate doc-gate pod-doc-all changes-gate release-gate cpan-verify-paths cpan-gate git-gate push-gate
